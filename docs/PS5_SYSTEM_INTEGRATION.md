@@ -20,6 +20,14 @@ The launch page is a small local bootstrap. The store itself is the compiled C++
 
 ## Important loader behavior
 
+### Payload Manager launch attempt
+
+The user reported sending `ps5library.elf` through **pldmgr** on firmware 4.51 and remaining on the PS5 home screen. This is an unsuccessful/uncertain launch attempt, not evidence that the storefront rendered or that a home entry was installed.
+
+In [pldmgr v0.5.1 source](https://github.com/itsPLK/ps5-payload-manager/blob/218f291d0ea1e97d7a21e308ecff794e63bedb4a/src/ps5_launcher.c), `ps5_launch_elf` streams the file to the local port-9021 payload loader. That launch path does not invoke the foreground homebrew loader used by this SDL frontend. **LIKELY:** the launch context explains the absent UI. **UNKNOWN:** the user's installed pldmgr version, whether execution reached our startup code, and the actual error without console logs. Inspect the existing foreground launcher and bootstrap before another launch; do not infer that pldmgr's own home icon provides that bootstrap.
+
+The websrv homebrew menu expects `/data/homebrew/<app>/eboot.elf` and `<app>/sce_sys/icon0.png`; merely uploading the ELF into pldmgr's payload list does not add a homebrew-menu entry. The PS5Library home-menu installer is a separate path with the prerequisites below.
+
 In the pinned websrv `src/ps5/hbldr.c`, `hbldr_launch` first ensures the generic `FAKE00000` bootstrap exists. Its fallback can remount `/system_ex` and create that bootstrap. It then stops the currently running BigApp before launching the requested homebrew. Therefore:
 
 - A PS5Library installer must require an already configured Homebrew Launcher bootstrap. Creating one is not silently bundled into our installation.

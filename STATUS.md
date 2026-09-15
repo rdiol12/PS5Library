@@ -10,7 +10,7 @@ First vertical slice: source manifest → visual catalog → one-confirmation du
 
 - Inspected Windows, WSL2, toolchains, storage, Docker availability; started the installed Docker engine.
 - Created a new Git repository at `C:\Users\rdiol\dev\PS5Library` (no existing PS5Library repository found in inspected development roots).
-- Cloned and pinned sixteen upstream repositories/source snapshots, including all seven requested high-priority projects.
+- Cloned and pinned seventeen upstream repositories/source snapshots, including all seven requested high-priority projects and the user's pldmgr launcher.
 - Established that PS5-FPKG-Builder's current Git tree contains only README.md; programmatic integration will use verified library source instead.
 
 ## Implemented and checked
@@ -44,6 +44,8 @@ First vertical slice: source manifest → visual catalog → one-confirmation du
 - Source code evidence is not console execution evidence. Firmware support is never inferred from a successful desktop build.
 - Native iOS compilation/signing requires macOS/Xcode, unavailable on this Windows host.
 - User's console firmware is **4.51**; the user is unsure which runtime/launcher is installed. Runtime and console address remain unconfirmed. Tests use generated project-owned content.
+- First user-reported launch attempt: `ps5library.elf` sent through **pldmgr**, with the PS5 still showing its home screen. Pinned pldmgr source sends to the port-9021 payload loader; it does not perform foreground `hbldr` launch. Existing homebrew bootstrap/services and console logs must be checked before claiming the cause or retrying. This is not successful PS5 execution validation.
+- The PC API is healthy but currently listens only on `127.0.0.1:3150`; the production database has no accounts or paired consoles yet. Local-network access and first-account setup remain part of this hardware onboarding.
 - Product target is all jailbreakable firmware, with negotiated per-feature support. No firmware/runtime combination is yet hardware-validated; do not equate broad design intent with verified support.
 - No automatic warez sources or commercial game/library assets are included.
 

@@ -75,6 +75,11 @@
     "commit": "ea771e535378740b6a058b8e5419eb8a0e0e0ec8"
   },
   {
+    "name": "ps5-payload-manager",
+    "url": "https://github.com/itsPLK/ps5-payload-manager.git",
+    "commit": "218f291d0ea1e97d7a21e308ecff794e63bedb4a"
+  },
+  {
     "name": "elf-sdk-downgrade",
     "url": "https://gist.github.com/2ded24b7b5ff296f21792a8202542aaa.git",
     "commit": "4e8d85e7cde3782a80dfa1e16f1af0a04f1bd797"
