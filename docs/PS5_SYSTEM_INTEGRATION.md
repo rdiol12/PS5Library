@@ -1,6 +1,6 @@
 # PS5 system integration
 
-Research date: 2026-09-15. **No physical-console execution has been performed.** VERIFIED below means inspected source, not verified on every firmware.
+Research date: 2026-09-15. Physical-console onboarding has begun, but storefront rendering and home-entry installation have not succeeded. VERIFIED source findings and the limited hardware observations below are separate; neither implies support on every firmware.
 
 ## How the home entry can work
 
@@ -24,7 +24,7 @@ The launch page is a small local bootstrap. The store itself is the compiled C++
 
 The user reported sending `ps5library.elf` through **pldmgr** on firmware 4.51 and remaining on the PS5 home screen. This is an unsuccessful/uncertain launch attempt, not evidence that the storefront rendered or that a home entry was installed.
 
-In [pldmgr v0.5.1 source](https://github.com/itsPLK/ps5-payload-manager/blob/218f291d0ea1e97d7a21e308ecff794e63bedb4a/src/ps5_launcher.c), `ps5_launch_elf` streams the file to the local port-9021 payload loader. That launch path does not invoke the foreground homebrew loader used by this SDL frontend. **LIKELY:** the launch context explains the absent UI. **UNKNOWN:** the user's installed pldmgr version, whether execution reached our startup code, and the actual error without console logs. Inspect the existing foreground launcher and bootstrap before another launch; do not infer that pldmgr's own home icon provides that bootstrap.
+In [pldmgr v0.5.1 source](https://github.com/itsPLK/ps5-payload-manager/blob/218f291d0ea1e97d7a21e308ecff794e63bedb4a/src/ps5_launcher.c), `ps5_launch_elf` streams the file to the local port-9021 payload loader. That launch path does not invoke the foreground homebrew loader used by this SDL frontend. **LIKELY:** the launch context explains the absent UI. Subsequent LAN inspection confirmed pldmgr 0.5.1 and PS5Library startup asset extraction. The exact point at which the storefront stopped remains **UNKNOWN**. Do not infer that pldmgr's own home icon provides the foreground bootstrap.
 
 The websrv homebrew menu expects `/data/homebrew/<app>/eboot.elf` and `<app>/sce_sys/icon0.png`; merely uploading the ELF into pldmgr's payload list does not add a homebrew-menu entry. The PS5Library home-menu installer is a separate path with the prerequisites below.
 
@@ -35,6 +35,31 @@ In the pinned websrv `src/ps5/hbldr.c`, `hbldr_launch` first ensures the generic
 - websrv must be running after the jailbreak. A persistent icon does not imply the jailbreak or websrv survives a reboot.
 - `/elfldr` launches a daemon; it is not interchangeable with `/hbldr` for an SDL foreground application.
 - Upstream reports that launching another homebrew while one is running can crash. This needs testing with the user's exact runtime.
+
+**Additional startup side effect:** websrv v0.34 `src/ps5/sys.c`, `sys_init`, calls `install_launcher` after initializing AppInstUtil. This can create `/user/app/FAKE00000/sce_sys/param.json` and `icon0.png` and request registration; its `install_app` falls back to broad `sceAppInstUtilAppInstallAll`. This happens when starting the helper, independently of a later `/hbldr` request. It is distinct from the `/system_ex/app/FAKE00000` executable bootstrap. Starting unmodified websrv must not be described as read-only. Our diagnostic rebuild disabled this automatic registration; our PS5Library installer already excludes the broad fallback.
+
+### Hardware session: 2026-09-15
+
+**VERIFIED observations, not a working launch:**
+
+- The console's pldmgr `/version` returned 0.5.1; its process list showed OnionHEN daemon/utility/loader, kstuff and ShadowMountPlus. The console owner reports firmware 4.51 and confirmed that home-screen controller navigation still responds during diagnosis. Running process names do not establish exact runtime versions or health.
+- pldmgr logs record three sends of the 21,071,864-byte storefront, followed by deletion of that payload from its list. Existing `/data/ps5library/DejaVuSans.ttf`, license, CA bundle and artwork-cache directory establish that our startup ran. No pairing configuration or performance report was present. An existing 107.8 MiB `payload.elf` process could be the storefront, but its identity was not proven and it was not killed.
+- Started the already-present ftpsrv v0.21.1 through pldmgr; FTP on port 2121 works. Staged our files under `/data/homebrew/PS5Library` using `.part` uploads, read-back verification and rename. The directory carries the exact marker `PS5Library homebrew v1\n`. Existing configuration/assets were preserved.
+
+| Staged file | Bytes | Read-back SHA-256 |
+| --- | ---: | --- |
+| `eboot.elf` | 21,071,864 | `8a86f4327ec20755467c043c199a4c8060bce76dad374209ca6e1cfb277bd9fc` |
+| `sce_sys/icon0.png` | 373,767 | `eb11262f81d226293a9a104bb1d5907bd481ac28f7ea70e5326c97ee6de0b763` |
+
+- The official [websrv v0.34 release](https://github.com/ps5-payload-dev/websrv/releases/tag/v0.34), source commit `4d35610914273f8f4fc37af2b1d5bfb069dfba5b`, was downloaded and its published SHA-256 verified: `54730c867c6e1148536fdcb370e63a7762d989ea87b62488ad4caff64d43f263` (1,597,864 bytes). Sending it created a process but never opened port 8080. This is a failed helper launch, not a successful installation.
+- A local rebuild from that tag disabled automatic launcher installation and logged at entry to `sys_init`. It also failed before creating that log. A separate minimal SDK v0.43 probe wrote its startup log and then blocked while loading `libSceSystemService.sprx`. A second probe loaded `libSceIpmi.sprx` successfully and then blocked at the same SystemService load. No guessed firmware patch was applied.
+- The saved OnionHEN utility log shows repeated signal 11 reports beginning at its monotonic timestamp `21996.518`; its supervisor continues logging. **UNKNOWN:** whether the utility failure caused the loading hang, resulted from this session's payload activity, or has another cause. Do not call this a proven OnionHEN compatibility defect.
+- Earlier websrv processes disappeared after exact-PID stop requests. The two minimal probe processes remained listed after successful kill-request responses. An accepted kill request is not confirmation that a process exited. No more payloads were sent after this finding.
+- Final FTP inspection still found no `/user/app/FAKE00000`, `/user/appmeta/FAKE00000`, `/system_ex/app/FAKE00000` or `/user/app/BREW05001`. No `/hbldr` request, PS5Library installer, system remount or title-database edit was performed. The home icon is **not installed**.
+
+Private LAN details, diagnostic source/build patches, logs and process snapshots are preserved locally under ignored `data/console-setup`. They are not bundled into releases. The foreground ELF itself was not changed during this session.
+
+**Next check:** restart the console normally and run the usual jailbreak, keeping PS5Library closed. Confirm that the utility log is healthy before another helper attempt. Establish a working foreground launcher and prepare explicit bootstrap/recovery steps before any system-partition setup. Server LAN access, first-account creation and console pairing still follow; an uploaded ELF does not perform those steps.
 
 ## Registration differences
 

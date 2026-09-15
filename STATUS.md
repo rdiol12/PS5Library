@@ -1,6 +1,6 @@
 # PS5Library status
 
-Updated: 2026-09-15. Implementation in progress. No physical PS5 or macOS/Xcode validation yet.
+Updated: 2026-09-15. Implementation in progress. Physical PS5 onboarding has started; storefront rendering, pairing and macOS/Xcode validation remain outstanding.
 
 ## Current milestone
 
@@ -32,7 +32,7 @@ First vertical slice: source manifest → visual catalog → one-confirmation du
 
 ## Next engineering work
 
-- Validate the native storefront, input, TLS and pairing on the user's 4.51 console; identify its runtime and launcher before enabling registration.
+- Resume hardware onboarding after a clean PS5 restart and the user's normal jailbreak. Check OnionHEN utility health before retrying websrv; its system-library initialization is currently blocked. Then validate foreground launch, input, TLS and pairing before enabling registration.
 - Exercise home-entry install/launch/exit/upgrade/uninstall on hardware, then ShadowMount registration. FPKG installation needs a verified completion/inventory adapter.
 - Finish native WebSocket consumption, background-agent lifecycle and broader inventory/storage management.
 - Complete exact-profile backport application and base-plus-compatible-update orchestration; implement live external metadata providers.
@@ -43,8 +43,9 @@ First vertical slice: source manifest → visual catalog → one-confirmation du
 
 - Source code evidence is not console execution evidence. Firmware support is never inferred from a successful desktop build.
 - Native iOS compilation/signing requires macOS/Xcode, unavailable on this Windows host.
-- User's console firmware is **4.51**; the user is unsure which runtime/launcher is installed. Runtime and console address remain unconfirmed. Tests use generated project-owned content.
-- First user-reported launch attempt: `ps5library.elf` sent through **pldmgr**, with the PS5 still showing its home screen. Pinned pldmgr source sends to the port-9021 payload loader; it does not perform foreground `hbldr` launch. Existing homebrew bootstrap/services and console logs must be checked before claiming the cause or retrying. This is not successful PS5 execution validation.
+- User reports firmware **4.51**. LAN inspection found pldmgr **0.5.1**, OnionHEN, kstuff and ShadowMountPlus running. Exact runtime component versions are not established. Tests use generated project-owned content.
+- The pldmgr launch reached PS5Library asset extraction but did not produce a visible storefront. Foreground Homebrew Launcher bootstrap and the PS5Library home entry are absent. The frontend and original icon have now been uploaded to `/data/homebrew/PS5Library` and verified by reading their SHA-256 hashes back from the console.
+- Hardware blocker: official websrv v0.34 did not open port 8080. A minimal probe reaches `dlopen("libSceSystemService.sprx", RTLD_NOW)` and does not return; preloading Ipmi did not resolve it. OnionHEN's utility log repeatedly reports signal 11 in this session. The relationship and underlying cause are UNKNOWN. The user confirms the home screen still responds. Diagnostic probes remained listed after kill requests; stop retries and begin the next test in a clean session. See [hardware evidence](docs/PS5_SYSTEM_INTEGRATION.md#hardware-session-2026-09-15).
 - The PC API is healthy but currently listens only on `127.0.0.1:3150`; the production database has no accounts or paired consoles yet. Local-network access and first-account setup remain part of this hardware onboarding.
 - Product target is all jailbreakable firmware, with negotiated per-feature support. No firmware/runtime combination is yet hardware-validated; do not equate broad design intent with verified support.
 - No automatic warez sources or commercial game/library assets are included.
