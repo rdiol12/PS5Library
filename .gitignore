@@ -1,0 +1,13 @@
+node_modules/
+dist/
+data/
+upstream/
+.env
+.env.test
+**/bin/
+**/obj/
+**/.build/
+**/build/
+*.log
+.DS_Store
+ios/**/*.xcodeproj/xcuserdata/

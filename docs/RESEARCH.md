@@ -1,0 +1,49 @@
+# Upstream research
+
+Inspected on 2026-09-15. Exact checkouts are in [upstream-lock.json](upstream-lock.json); local clones are deliberately excluded from Git. Reproduce them with `npm run upstream`.
+
+**VERIFIED** means read in the pinned source, or an explicitly described local check. **LIKELY** is an inference requiring validation. **UNKNOWN** has no sufficient evidence. **EXPERIMENTAL** is implemented/researched but not yet validated on a physical console. A successful cross-build is not proof of firmware compatibility.
+
+## Package and compatibility projects
+
+| Repository / pinned revision | Source and symbol | Verified behavior / limitation |
+| --- | --- | --- |
+| [PS5-FPKG-Builder](https://github.com/Phoenixx1202/PS5-FPKG-Builder/tree/2314d41e12692f5199dd59526b1ba672f8d0ea15), 1.0.1 | `README.md`; no implementation class available | Current Git tree contains a README, not builder source. Format conversion claims are documentation claims. No invented CLI or GUI automation is used. |
+| [LibProsperoPKG](https://github.com/SvenGDK/LibProsperoPKG/tree/748eabf1b7d17819528cabf367d8e27109d8fce3), 2.6.0 | `src/LibProsperoPkg/ProsperoPackageBuilder.cs`, `ProsperoPackageBuilder.Build`, `ProsperoBuildOptions` | .NET 10 library accepts prepared folders. `OutputFormat.DebugImage` produces an FIH/debug image containing CNT; metadata-only output is not equivalent. Builder may temporarily alter modules, so our adapter supplies only a staging copy. Built and exercised locally. |
+| Same | `PKG/ProsperoPkgReader.cs`, `Read`; `ProsperoPkgValidator.Validate`; `PKG/ProsperoPkgEnums.cs`, `ProsperoEntryId.ParamJson` | Reader exposes embedded CNT offset and entry table. Param JSON ID is `0x2000`. Structural validation is not a launch test or a proof of retail decryption. |
+| Same | `PKG/ProsperoPackageExtractor.cs`, `Inspect`; `Content/ProsperoFself.cs`, `Parse`, `MakeFself` | Retail/encrypted inputs and supplied-key requirements are represented explicitly. Fake-SELF tooling exists. Our lossless plaintext conversion rejects encrypted segments and digest mismatches. No keys are inferred or distributed. |
+| [UFS2Tool](https://github.com/SvenGDK/UFS2Tool/tree/b5307a60d5b4e3a68ba680e0e33cfadf05017c77), 4.1.0 | `Ufs2ImageCreator.MakeFsImage`; `Ufs2Image.FsckUfs`, `Find`, `ReadFile` | Actual UFS image builder/reader. Select filesystem format **2** explicitly; default is 1. Built with .NET 10 targeting net8. Our generated image passed fsck and identity inspection. |
+| Same | `Ufs2Image.cs`, `ReadFile`, `ExtractFile`, `ExtractToDirectory` | `ReadFile` buffers an entire file and has an `int.MaxValue` limit. Directory extraction does not preserve a symlink as a symlink. This is not used blindly for multi-GB dump conversion. |
+| [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus/tree/3530d8d88ea1fa0d907545eda7ac95d4240a0213) | `sm_image.c`, `detect_image_fs_type`; `sm_fakelib.c`; `sm_install.c` | Supports the filesystem-image workflow, runtime library overlays and title registration. `.pkg` is not an input to our ShadowMount adapter. Exact manual-list/status and overlay findings are in [SHADOWMOUNT.md](SHADOWMOUNT.md). |
+| [BackPork](https://github.com/BestPig/BackPork/tree/ebac9ffd79723d28658e9091ac55b1939ed1ee87) | `main.c`, `patch_game`; README / patch assets | Runtime union mounts can overlay game-specific libraries. Supplied patches target particular firmware/module combinations. This is different from rewriting a game's minimum-firmware metadata. |
+| [kstuff](https://github.com/EchoStretch/kstuff/tree/d44a25400ecfab7e31afe9eb2c7c7c99770e8f56), 1.6.7 | Repository runtime/payload source and README | Patches platform behavior needed by supported homebrew/fake content. Presence alone does not establish that a newer-SDK game will run. |
+| [kstuff-lite](https://github.com/EchoStretch/kstuff-lite/tree/4363fbd78eb4e3bd00310c12fe57c8b665e025a4), README 1.11 | Repository payload source and README | FSELF/NPDRM/PFS runtime work is distinct from per-game symbol/library compatibility. No blanket firmware guarantee is inferred. |
+| [ELF SDK downgrade script](https://gist.github.com/idlesauce/2ded24b7b5ff296f21792a8202542aaa/4e8d85e7cde3782a80dfa1e16f1af0a04f1bd797) | `ps5_elf_sdk_downgrade.py` | Accepts ELF, rejects SELF; validates SCE process/module parameter records and changes SDK fields at offsets 0x10/0x14. Does not resolve missing symbols or create a universal backport. |
+
+## Native application and system projects
+
+| Repository / revision | Source / behavior | Limits |
+| --- | --- | --- |
+| [PS5 payload SDK](https://github.com/ps5-payload-dev/sdk/tree/3b6ea8044e153b0f98f3a6fbc7a19785cd3e62d1), binary v0.43 | `include/ps5/kernel.h`, `kernel_get_fw_version`; `samples/mntinfo/main.c`; `samples/notify_debug/main.c`; `samples/install_app` | Open homebrew SDK, not Sony's SDK. Firmware bytes are BCD. Our frontend/agent/installer use this toolchain. Individual OS exports still depend on the target environment. |
+| [PS5 SDL2](https://github.com/ps5-payload-dev/SDL/tree/a47182a20e741e4735d1fcd41e8656bf338b0c72) | `src/joystick/ps5/SDL_ps5joystick.c`, `btn_map`, `PS5_JoystickGetGamepadMapping`; `src/video/ps5/SDL_ps5keyboard.c` | Cross → SDL A, Circle → B, Square → X, Triangle → Y; shoulders/Options/D-pad use SDL mappings. Native keyboard feeds `SDL_SendKeyboardText`. Actual controller/IME behavior remains a console check. |
+| [ps5-ezremote-client](https://github.com/cy33hc/ps5-ezremote-client/tree/b5a716c56a815f8d51bc1cc24439f03c81049456), 2.11 | CMake and source use SDL2/SDL_image, ImGui/GL, libcurl, JSON and TLS | A working upstream example of the stack. PS5Library implements its own storefront widgets; no default ImGui panels or site scrapers are copied. |
+| [etaHEN](https://github.com/etaHEN/etaHEN/tree/dafa13b562ddb137a4b4a97b9aaa287c0c57cc9c) | `Source Code/util/source/DirectPKGInstaller.cpp`, source README; `shellui/src/HookFunctions.cpp`, `prx.cpp`, `MonoUtils.cpp` | TCP 9090 JSON URL intake is documented as work in progress. Result 0 means acceptance, not completed installation. ShellUI injection/Mono hooks are internal runtime code, not a stable plugin API. |
+| [websrv](https://github.com/ps5-payload-dev/websrv/tree/1afd476c5044d68df4e45dc773769e5de3b2cdd6) | `src/websrv.c`, `hbldr_request`; `src/ps5/sys.c`, `sys_launch_homebrew`; `src/ps5/hbldr.c`, `hbldr_launch` | `/hbldr` starts foreground native homebrew, `/elfldr` starts a daemon. Foreground launch may stop a running game. Missing generic bootstrap can trigger system-folder setup; our installer requires it to exist already. |
+| [ftpsrv](https://github.com/ps5-payload-dev/ftpsrv/tree/70f7b8614d3f36f6ceda0a37d6189b675f9d3f29) | `install-ps5.c`, `install_app`; `assets/param.json` | Source-backed `/user/app` home-entry registration and loopback deeplink. Exact-title API resolved with NID `Wudg3Xe3heE`; broad fallback exists upstream but is not enabled by our installer. |
+| [elfldr](https://github.com/ps5-payload-dev/elfldr/tree/02cfe91eb3f9697787460ad77d73ff951f801f50) | README and payload loader source | ELF payload transport on port 9021. Receiving ELF bytes is not app installation. |
+| [ps5link-sdk](https://github.com/Rufidj/ps5link-sdk/tree/ea771e535378740b6a058b8e5419eb8a0e0e0ec8) | `linker/link_real`, `crt1_ps5.o`, README | Real title-linker research. README reports C success on 9.00; C++, TLS and libc limitations remain. An alternative research path, not proof that our SDL payload is a normal title binary. |
+
+## Metadata providers
+
+**VERIFIED documentation:** [IGDB](https://api-docs.igdb.com/) exposes game/artwork data through its v4 API, requires Twitch application credentials, and documents request/concurrency limits. [RAWG](https://rawg.io/apidocs) exposes metadata through a registered API key with usage/attribution terms. Neither inspected interface establishes a universal authoritative PS5 Title-ID → exact release/hash mapping.
+
+The implemented provider is `ExactCatalogMetadataProvider`: owner-scoped Title-ID or Content-ID lookup. Source metadata and inspected package identity work without external accounts. External name matches must be reviewed before association. API keys, external attribution UI and live provider adapters are **not yet implemented**.
+
+The visual preview uses the user's local reference screenshot and an official promotional hero downloaded by an explicit preview script. These files remain in ignored `data/reference`; they are not game-download sources or bundled production catalog content.
+
+## Evidence boundaries
+
+- VERIFIED local checks: Node build/tests, PostgreSQL/Redis lifecycle, actual .NET FPKG/UFS builds, ELF cross-linking, SDL host rendering and focus/rollback checks.
+- LIKELY: the source-backed home-entry bridge will work on a configured compatible 4.51 runtime. This remains an inference until exercised.
+- UNKNOWN: launch correctness of real games, thermal/frame behavior on PS5, persistent-agent coexistence, every jailbreakable firmware/runtime combination, macOS/iOS compilation.
+- EXPERIMENTAL: PS5 manual mount/registration, native notifications and home-entry installer. Deeper ShellUI hooks are disabled.

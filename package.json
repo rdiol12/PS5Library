@@ -1,0 +1,42 @@
+{
+  "name": "ps5library",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file=.env dist/server/src/main.js",
+    "dev": "node --env-file=.env --import tsx server/src/main.ts",
+    "migrate": "node --env-file=.env --import tsx server/src/migrate.ts",
+    "test": "node --import tsx --test server/tests/*.test.ts",
+    "test:integration": "node --env-file=.env --import tsx --test --test-concurrency=1 server/tests/integration/*.test.ts",
+    "build:worker": "dotnet build worker/PS5Library.Worker.csproj -c Release",
+    "test:worker": "dotnet run --project worker/Tests/PS5Library.Worker.Checks.csproj -c Release",
+    "setup": "node scripts/setup.mjs",
+    "demo": "node --env-file=.env --import tsx scripts/demo.ts",
+    "upstream": "node scripts/upstream.mjs",
+    "test:native": "node --env-file=.env --import tsx --test server/tests/native/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.2",
+    "@fastify/rate-limit": "10.3.0",
+    "@fastify/websocket": "11.3.0",
+    "bullmq": "5.81.5",
+    "fastify": "5.12.4",
+    "ioredis": "5.11.1",
+    "ipaddr.js": "2.5.0",
+    "pg": "8.23.0",
+    "sharp": "0.35.4",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "@types/pg": "8.23.1",
+    "@types/ws": "8.18.1",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
+  }
+}
