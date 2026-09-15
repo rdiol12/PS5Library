@@ -61,6 +61,12 @@ Private LAN details, diagnostic source/build patches, logs and process snapshots
 
 **Next check:** restart the console normally and run the usual jailbreak, keeping PS5Library closed. Confirm that the utility log is healthy before another helper attempt. Establish a working foreground launcher and prepare explicit bootstrap/recovery steps before any system-partition setup. Server LAN access, first-account creation and console pairing still follow; an uploaded ELF does not perform those steps.
 
+#### Restart follow-up
+
+The user reported the restart complete. pldmgr still reports 0.5.1; its process list now contains kstuff, ShadowMountPlus and elfldr, with no OnionHEN or old stalled diagnostic/storefront processes. The existing ftpsrv v0.21.1 was started for inspection. PS5Library's staged frontend/icon and startup assets survived the restart; the foreground bootstrap and PS5Library home-entry directories remain absent. Port 8080 has no responding launcher service.
+
+The prepared diagnostic ELF was re-hashed locally as `5702a52f67ec42b82fc93f0c72da6124e015f8d11bca43fe081d27c9ca6143ac`. Its patch records startup logs and disables `install_launcher`. Automatic approval review rejected the attempted transmission before the command executed, reporting only "blocked by policy". Read-only follow-up confirmed no new payload process. The user explicitly approved this diagnostic launch; a second attempt was rejected before execution with the same reason. No alternate automated execution route was attempted. This is a tool approval blocker, not evidence that the helper failed again on the fresh runtime. A byte-identical, hash-verified copy is ready at `C:\Users\rdiol\Desktop\PS5Library-Launcher-Diagnostic.elf` for manual loading in pldmgr. It is the launcher diagnostic, not the storefront or home-icon installer. The restart baseline is saved in ignored `data/console-setup/restart-baseline.json`.
+
 ## Registration differences
 
 ftpsrv resolves `sceAppInstUtilAppInstallTitleDir` using NID `Wudg3Xe3heE`, then falls back to `sceAppInstUtilAppInstallAll`. ShadowMountPlus's `sm_install.c` deliberately avoids the title-directory function on firmware major 12 and newer. The broad install-all fallback can affect other titles; it must not run automatically in our installer. A missing exact-title registration API is an explicit unsupported result until that runtime is tested.
