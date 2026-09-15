@@ -26,6 +26,11 @@ if(PS5)
   target_link_libraries(ps5library_client PUBLIC kernel_sys)
   set_target_properties(ps5library-agent ps5library PROPERTIES SUFFIX ".elf")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(UI_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/ui-assets.c")
+  add_custom_command(OUTPUT "${UI_BUNDLE}"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/bundle-ps5.py" --ui "${UI_BUNDLE}" /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf /usr/share/doc/fonts-dejavu-core/copyright /etc/ssl/certs/ca-certificates.crt
+    DEPENDS ../scripts/bundle-ps5.py)
+  target_sources(ps5library PRIVATE "${UI_BUNDLE}")
   set(BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/bundle-assets.c")
   add_custom_command(OUTPUT "${BUNDLE}"
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/bundle-ps5.py" "${BUNDLE}" "$<TARGET_FILE:ps5library>" "${CMAKE_CURRENT_SOURCE_DIR}/assets" "${CMAKE_CURRENT_SOURCE_DIR}/config.example.json" /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf /usr/share/doc/fonts-dejavu-core/copyright /etc/ssl/certs/ca-certificates.crt
@@ -40,6 +45,7 @@ target_link_libraries(native-checks PRIVATE ps5library_client)
 if(NOT PS5)
   add_test(NAME native-boundaries COMMAND native-checks)
   add_executable(focus-checks tests/focus.cpp)
+  target_link_libraries(focus-checks PRIVATE ${UI_LIBS})
   add_test(NAME controller-focus COMMAND focus-checks)
   add_executable(installer-checks tests/installer.cpp)
   add_test(NAME installer-rollback COMMAND installer-checks)

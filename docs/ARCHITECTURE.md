@@ -57,6 +57,8 @@ The actual PS5 UI is C++17 + SDL2/SDL_image/SDL_ttf + libcurl + json-c. `fronten
 
 Production data is authenticated API data. `--preview` explicitly loads local design fixtures and refuses mutations. Network/decoding runs outside the render thread. A missing artwork texture draws a branded fallback. No commercial catalog is hard-coded into the production app.
 
+First launch opens a controller-operated server connection dialog. SDL text input uses the PS5 port's existing native keyboard. The app embeds its initial font/CA assets, validates the server origin and saves the connection through the same process lock as the agent. Switching an already paired server requires a new pairing, cancels network/hash work, drains background workers and restarts the connection without rebuilding the window. The modal uses a state indicator while saving; it does not invent a progress percentage. Server/console-bound receipts prevent the new connection from reporting the previous pairing's library.
+
 The server exposes durable WebSocket job events with a resumable cursor. Current PS5 refresh uses asynchronous REST polling; native WebSocket consumption and push changes for storage/inventory are outstanding. The iPhone closes independently of server jobs.
 
 ### Local rendering measurements

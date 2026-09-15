@@ -23,6 +23,7 @@ First vertical slice: source manifest → visual catalog → one-confirmation du
 - Real .NET package and UFS2 image builders, output inspection, hashes/provenance, safe ZIP extraction and plaintext fake-SELF conversion.
 - Native SDL storefront and agent source: saved credentials, storage, staged transfers, managed receipts and opt-in ShadowMount manual registration.
 - Controller-first SDL storefront rebuilt around the supplied desktop `storefront.png`: top navigation, cinematic hero, cover rails, details, download flow, jobs, library, console status and search. Real API mode and clearly separated local design preview.
+- Added first-run controller server setup and Settings → Server connection. The frontend embeds initial font/CA assets. HTTPS origin validation, explicit LAN HTTP opt-in, confirmed re-pairing, cancellation and process locking protect server changes. Managed receipts and artwork caches are scoped to the paired connection.
 - Weekly server-selected hero with PostgreSQL history; the same normalized image hash cannot be selected again for two calendar months. Empty eligible pools request fresh artwork instead of breaking the repeat rule.
 - Persistent installation coordinator now connects source preparation/download, cache reuse and transfer. A PostgreSQL/Redis integration check confirms it continues after a server restart and prevents duplicate transfer creation.
 - Generated original PS5Library app icon and 512×512 installation artwork. The home-entry installer cross-builds with the actual frontend embedded; ownership and file rollback checks pass on the host.
@@ -33,7 +34,7 @@ First vertical slice: source manifest → visual catalog → one-confirmation du
 
 - Validate the native storefront, input, TLS and pairing on the user's 4.51 console; identify its runtime and launcher before enabling registration.
 - Exercise home-entry install/launch/exit/upgrade/uninstall on hardware, then ShadowMount registration. FPKG installation needs a verified completion/inventory adapter.
-- Finish native WebSocket consumption, controller-based server setup, background-agent lifecycle and broader inventory/storage management.
+- Finish native WebSocket consumption, background-agent lifecycle and broader inventory/storage management.
 - Complete exact-profile backport application and base-plus-compatible-update orchestration; implement live external metadata providers.
 - Compile and run the iPhone project on macOS/Xcode; test account isolation, accessibility and app lifecycle on iOS.
 - Complete parser resource isolation, quota/failed-staging accounting, retention and deployment security review.
@@ -52,6 +53,7 @@ First vertical slice: source manifest → visual catalog → one-confirmation du
 - Worker checks passed with real generated `.pkg` and `.ffpkg` outputs and unchanged original sources.
 - Native Linux desktop and PS5 frontend/agent/installer cross compilation passed using SDK v0.43 and ports v0.40.2. Three host checks pass (boundaries, focus, installer rollback).
 - A real native host agent paired with the API, downloaded the compiled ELF, verified/published it and reported its removal as MISSING. A deliberately corrupted artifact reports ERROR/CORRUPT_INPUT. This exercises the real transfer code without claiming PS5 registration.
+- Extended host checks exercise URL normalization, unbound credentials, locked settings, paired inventory isolation and interrupted hashing. The actual storefront setup/switching check saves a connection through controller/text events (including Enter completion), defaults to keeping the current server and confirms no previous credential reaches a newly selected test server. The final end-to-end run passed in 48 seconds. First-run setup is visually checked at 1080p and 720p; physical PS5 keyboard behavior is still unverified.
 - Rendered and inspected Discover, Game Details, Downloads, My Library, My PS5, Categories, Search and the five-step download confirmation. Controller focus and translucent-surface defects found during these checks were fixed. 720p inspection is included; host software-render timings are not PS5 GPU performance evidence.
 - Local server health check passes at `http://127.0.0.1:3150`. Browser automation is unavailable in this session, so browser visual/interaction QA remains outstanding.
 - Dependency audit: zero known vulnerabilities at the last check.

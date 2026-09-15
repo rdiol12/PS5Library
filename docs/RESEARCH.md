@@ -33,6 +33,12 @@ Inspected on 2026-09-15. Exact checkouts are in [upstream-lock.json](upstream-lo
 | [elfldr](https://github.com/ps5-payload-dev/elfldr/tree/02cfe91eb3f9697787460ad77d73ff951f801f50) | README and payload loader source | ELF payload transport on port 9021. Receiving ELF bytes is not app installation. |
 | [ps5link-sdk](https://github.com/Rufidj/ps5link-sdk/tree/ea771e535378740b6a058b8e5419eb8a0e0e0ec8) | `linker/link_real`, `crt1_ps5.o`, README | Real title-linker research. README reports C success on 9.00; C++, TLS and libc limitations remain. An alternative research path, not proof that our SDL payload is a normal title binary. |
 
+### First-run input and connection handling
+
+**VERIFIED source:** in the pinned SDL `src/video/ps5/SDL_ps5keyboard.c`, `PS5_ShowScreenKeyboard` clears the native input buffer and calls `sceImeDialogInit`. On accepted input, `PS5_ImeDialog_PumpEvents` emits UTF-8 text followed by an auto-release Return key. `PS5_IsScreenKeyboardShown` reports RUNNING. Our frontend replaces the selected server field on new text, consumes Return to advance focus, and ignores storefront navigation while the native keyboard is shown. Keyboard presentation/cancellation on firmware 4.51 remains **UNKNOWN** until a console run.
+
+**VERIFIED documentation/local checks:** libcurl's [URL API](https://curl.se/libcurl/c/libcurl-url.html) parses server origins; [curl_url_get](https://curl.se/libcurl/c/curl_url_get.html) supports `CURLU_NO_DEFAULT_PORT`. [CURLOPT_XFERINFOFUNCTION](https://curl.se/libcurl/c/CURLOPT_XFERINFOFUNCTION.html) with `CURLOPT_NOPROGRESS=0` aborts a request when the callback returns nonzero. The native client uses these existing APIs for origin normalization and cancellation, retaining certificate verification and disabling redirects. Native HTTPS on physical PS5 is still untested.
+
 ## Metadata providers
 
 **VERIFIED documentation:** [IGDB](https://api-docs.igdb.com/) exposes game/artwork data through its v4 API, requires Twitch application credentials, and documents request/concurrency limits. [RAWG](https://rawg.io/apidocs) exposes metadata through a registered API key with usage/attribution terms. Neither inspected interface establishes a universal authoritative PS5 Title-ID → exact release/hash mapping.

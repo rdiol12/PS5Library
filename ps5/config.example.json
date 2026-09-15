@@ -1,5 +1,5 @@
 {
-  "serverUrl": "https://library.example.net",
+  "serverUrl": "",
   "name": "Living Room PS5",
   "allowInsecureLan": false,
   "caBundle": "/data/ps5library/ca-bundle.crt",

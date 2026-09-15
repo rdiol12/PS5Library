@@ -3,9 +3,13 @@ import json
 import pathlib
 import sys
 
-output, frontend, assets, config, font, license_file, certificates = map(pathlib.Path, sys.argv[1:])
-files = dict(frontend=frontend, icon=assets/'icon0.png', param=assets/'param.json', launch=assets/'launch.html',
-             config=config, font=font, font_license=license_file, certificates=certificates)
+if sys.argv[1] == '--ui':
+    output, font, license_file, certificates = map(pathlib.Path, sys.argv[2:])
+    files = dict(ui_font=font, ui_font_license=license_file, ui_certificates=certificates)
+else:
+    output, frontend, assets, config, font, license_file, certificates = map(pathlib.Path, sys.argv[1:])
+    files = dict(frontend=frontend, icon=assets/'icon0.png', param=assets/'param.json', launch=assets/'launch.html',
+                 config=config, font=font, font_license=license_file, certificates=certificates)
 lines = []
 for name, filename in files.items():
     if not filename.is_file():

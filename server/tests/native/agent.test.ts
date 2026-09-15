@@ -5,23 +5,28 @@ import { mkdir,readFile,writeFile,copyFile,rm,stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import { createServer } from 'node:http';
 import { createApp } from '../../src/api/app.js';
 import { configuration } from '../../src/config.js';
 import { database } from '../../src/db.js';
 import { fileHash } from '../../src/downloads/stream.js';
 
-test('actual native agent pairs, verifies an ELF, reconciles deletion and rejects corrupt bytes',{timeout:120000},async()=>{
+test('native setup, pairing, verified transfer and private server switching',{timeout:150000},async()=>{
   const suffix=randomUUID().replaceAll('-',''),workspace=process.cwd(),relative=`data/native-check-${suffix}`,root=path.join(workspace,relative),container=`ps5library-check-${suffix}`;
   const base=configuration(),admin=database(base.DATABASE_URL),schema=`native_${suffix}`;await admin.query(`CREATE SCHEMA ${schema}`);
   const url=new URL(base.DATABASE_URL);url.searchParams.set('options',`-c search_path=${schema}`);
   const config={...base,DATABASE_URL:url.href,DATA_DIR:root,SOURCE_ROOT:path.join(root,'sources'),DISK_MARGIN_BYTES:0};
   await mkdir(path.join(root,'console'),{recursive:true});await mkdir(path.join(root,'storage'));
   let app=await createApp(config);const execute=promisify(execFile);
+  const arrivals:(string|undefined)[]=[];
+  const alternate=createServer((request,response)=>{arrivals.push(request.headers.authorization);request.resume();response.writeHead(503,{'content-type':'application/json'});response.end(JSON.stringify({error:'TEST_SERVER_UNAVAILABLE'}));});
   const call=async(method:string,route:string,payload?:unknown,token?:string)=>{const response=await app.inject({method:method as 'GET',url:'/api/v1'+route,payload,headers:token?{authorization:`Bearer ${token}`}:{}});assert.ok(response.statusCode<400,response.body);return response.json();};
   try{
     const address=await app.listen({host:'0.0.0.0',port:0}),port=new URL(address).port;
     const account=await call('POST','/auth/register',{username:`native-${suffix}`,password:'native-check-password-1234',bootstrapToken:config.BOOTSTRAP_TOKEN}),token=account.token;
-    await writeFile(path.join(root,'console/config.json'),JSON.stringify({serverUrl:`http://host.docker.internal:${port}`,allowInsecureLan:true,name:'Native host simulation',runtime:'host-simulator',firmware:'4.51',storage:[{storageId:'test',displayName:'Host test storage',path:`/workspace/${relative}/storage`}]}));
+    await writeFile(path.join(root,'console/config.json'),JSON.stringify({serverUrl:'',allowInsecureLan:false,name:'Native host simulation',runtime:'host-simulator',firmware:'4.51',storage:[{storageId:'test',displayName:'Host test storage',path:`/workspace/${relative}/storage`}]}));
+    await execute('docker',['run','--rm','--name',container,'-e','SDL_VIDEODRIVER=dummy','-v',`${workspace}:/workspace`,'ps5library-build:0.43','ps5/build/host/ps5library',`${relative}/console/config.json`,'--frames=320',`--script=text:http://host.docker.internal:${port},enter,select,down,select`],{timeout:45000,maxBuffer:1024*1024,windowsHide:true});
+    const connection=JSON.parse(await readFile(path.join(root,'console/config.json'),'utf8'));assert.equal(connection.serverUrl,`http://host.docker.internal:${port}`);assert.equal(connection.allowInsecureLan,true,'HTTP requires an explicit controller selection');assert.equal(connection.name,'Native host simulation');
     const tick=async()=>{await execute('docker',['run','--rm','--name',container,'-v',`${workspace}:/workspace`,'ps5library-build:0.43','ps5/build/host/ps5library-agent',`${relative}/console/config.json`,'--once'],{timeout:45000,maxBuffer:1024*1024,windowsHide:true});};
     await tick();const pending=JSON.parse(await readFile(path.join(root,'console/device-state.json'),'utf8'));
     assert.ok(pending.pairing?.code,'Native agent requested pairing');await call('POST','/pairings/claim',{code:pending.pairing.code},token);
@@ -37,11 +42,22 @@ test('actual native agent pairs, verifies an ELF, reconciles deletion and reject
     let entries=await call('GET',`/consoles/${consoleId}/library`,undefined,token);assert.equal(entries[0].state,'READY_ON_PS5');
     const device=JSON.parse(await readFile(path.join(root,'console/device-state.json'),'utf8'));assert.ok(device.credential);assert.equal(device.serverUrl,`http://host.docker.internal:${port}`);
     const receipt=JSON.parse(await readFile(path.join(root,'storage/.ps5library/receipts',request.transferJobId+'.json'),'utf8'));
+    assert.equal(receipt.serverUrl,device.serverUrl);assert.equal(receipt.consoleId,consoleId);
     const output=path.join(root,'storage',receipt.relativePath);assert.equal(await fileHash(output),digest);assert.equal(receipt.registered,false,'Simulator never claims installed PS5 registration');
     await rm(output);await tick();entries=await call('GET',`/consoles/${consoleId}/library`,undefined,token);assert.equal(entries[0].state,'MISSING');
     const corruptTransfer=await call('POST','/transfers',{artifactId:request.artifactId,consoleId,storageId:'test'},token);
     const sql=database(config.DATABASE_URL);const artifact=(await sql.query('SELECT relative_path FROM artifacts WHERE id=$1',[request.artifactId])).rows[0];await sql.end();
     const cached=path.join(root,artifact.relative_path),changed=await readFile(cached);changed[0]^=1;await writeFile(cached,changed);
     await tick();const failed=await call('GET',`/jobs/${corruptTransfer.id}`,undefined,token);assert.equal(failed.state,'ERROR','A native checksum failure is reported to both clients');assert.equal(failed.error,'CORRUPT_INPUT');
-  }finally{await execute('docker',['rm','-f',container],{windowsHide:true}).catch(()=>{});await app.close();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();if(!root.startsWith(path.join(workspace,'data')+path.sep))throw Error('Unsafe test cleanup');await rm(root,{recursive:true,force:true});}
+    await new Promise<void>((resolve,reject)=>{alternate.once('error',reject);alternate.listen(0,'0.0.0.0',resolve);});
+    const alternateUrl=`http://host.docker.internal:${(alternate.address() as {port:number}).port}`;
+    const switchServer=async(confirm:boolean)=>execute('docker',['run','--rm','--name',container,'-e','SDL_VIDEODRIVER=dummy','-v',`${workspace}:/workspace`,'ps5library-build:0.43','ps5/build/host/ps5library',`${relative}/console/config.json`,'--screen=Settings',`--frames=${confirm?340:210}`,`--script=select,text:${alternateUrl},down,down,select${confirm?',wait,wait,up,select':''}`],{timeout:45000,maxBuffer:1024*1024,windowsHide:true});
+    const unconfirmed=await switchServer(false);assert.equal(JSON.parse(unconfirmed.stdout.trim()).focus,'keep-server','Switching defaults to keeping the current server');
+    assert.equal(JSON.parse(await readFile(path.join(root,'console/config.json'),'utf8')).serverUrl,device.serverUrl);assert.equal(arrivals.length,0,'No connection to a new server before confirmation');
+    await switchServer(true);
+    const switched=JSON.parse(await readFile(path.join(root,'console/device-state.json'),'utf8'));assert.equal(switched.serverUrl,alternateUrl);assert.notEqual(switched.deviceId,device.deviceId);assert.equal(switched.credential,undefined);
+    assert.ok(arrivals.length>0,'The new server was contacted');assert.ok(arrivals.every(header=>header===undefined),'The previous server credential was never forwarded');
+    const backup=JSON.parse(await readFile(path.join(root,'console/previous-server.json'),'utf8'));assert.equal(backup.device.credential,device.credential);
+    assert.deepEqual(JSON.parse(await readFile(path.join(root,'storage/.ps5library/receipts',request.transferJobId+'.json'),'utf8')),receipt,'Switching preserves previous local files');
+  }finally{await execute('docker',['rm','-f',container],{windowsHide:true}).catch(()=>{});if(alternate.listening)await new Promise<void>(resolve=>alternate.close(()=>resolve()));await app.close();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();if(!root.startsWith(path.join(workspace,'data')+path.sep))throw Error('Unsafe test cleanup');await rm(root,{recursive:true,force:true});}
 });

@@ -1,7 +1,9 @@
 #pragma once
 #include <SDL.h>
 #include <cstdlib>
+#include <string>
 namespace storefront {
+inline void eraseLastCharacter(std::string& value){if(value.empty())return;auto start=value.size()-1;while(start>0&&(static_cast<unsigned char>(value[start])&0xc0)==0x80)--start;value.erase(start);}
 enum class Action { None,Up,Down,Left,Right,Select,Back,Search,Context,PreviousTab,NextTab,Settings,Quit };
 class Input {
   Uint32 lastAxis_=0; int axisDirection_=0; SDL_GameController* controller_=nullptr;

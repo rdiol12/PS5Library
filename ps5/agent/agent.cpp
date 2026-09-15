@@ -62,11 +62,13 @@ Json Agent::inventory() {
     if(!fs::exists(receipts)) continue;
     for(const auto& entry:fs::directory_iterator(receipts)) {
       if(entry.is_symlink() || !entry.is_regular_file() || entry.path().extension()!=".json") continue;
-      auto receipt=readJson(entry.path()); auto file=beneath(root,receipt["relativePath"].string());
+      auto receipt=readJson(entry.path());
+      if(receipt["serverUrl"].string()!=state_["serverUrl"].string()||receipt["consoleId"].string().empty()||receipt["consoleId"].string()!=state_["consoleId"].string())continue;
+      auto file=beneath(root,receipt["relativePath"].string());
       bool present=fs::is_regular_file(file) && static_cast<int64_t>(fs::file_size(file))==receipt["size"].number();
       if(present) {
         auto stamp=fs::last_write_time(file); auto found=verified_.find(file.string());
-        if(found==verified_.end() || found->second.first!=stamp) verified_[file.string()]={stamp,fileHash(file)};
+        if(found==verified_.end() || found->second.first!=stamp) verified_[file.string()]={stamp,fileHash(file,client.cancelled)};
         present=verified_[file.string()].second==receipt["sha256"].string();
       }
       receipt.set("available",present); result.add(receipt);
@@ -96,6 +98,7 @@ void Agent::tick() {
   if(!paired()) { pair(); return; }
   heartbeat(); auto tasks=client.request("GET","/api/v1/device/tasks"); auto volumes=storage();
   for(size_t i=0;i<tasks.size();i++) {
+    if(client.cancelled&&client.cancelled())return;
     const auto task=tasks[i]; const auto id=task["id"].string(),method=task["method"].string();
     int64_t observedBytes=task["downloadedBytes"].number();fs::path part;
     try {
@@ -120,7 +123,7 @@ void Agent::tick() {
       client.download(task["artifactUrl"].string(),part,size,hash,[&](int64_t bytes,int64_t speed) { progress("TRANSFERRING",bytes,speed); if(std::chrono::steady_clock::now()-lastHeartbeat>std::chrono::seconds(10)) { heartbeat(); lastHeartbeat=std::chrono::steady_clock::now(); } });
       progress("VERIFYING",size);
       fs::create_directories(published.parent_path());
-      if(fs::exists(published)) { if(fileHash(published)!=hash) throw std::runtime_error("Existing destination differs"); }
+      if(fs::exists(published)) { if(fileHash(published,client.cancelled)!=hash) throw std::runtime_error("Existing destination differs"); }
       else fs::rename(part,published);
       verified_[published.string()]={fs::last_write_time(published),hash};
       if(method=="SHADOWMOUNT") {
@@ -135,6 +138,7 @@ void Agent::tick() {
     bool installed=method=="SHADOWMOUNT" && registered(task["titleId"].string(),published.string());
     if(method=="SHADOWMOUNT" && !installed) continue;
     auto receipt=Json::object({{"releaseId",task["releaseId"]},{"title",task["title"]},{"titleId",task["titleId"]},{"contentId",task["contentId"]},{"version",task["version"]},{"storageId",task["storageId"]},{"relativePath",relative},{"size",size},{"sha256",hash},{"registered",installed},{"available",true},{"backportProfileId",Json()}});
+    receipt.set("serverUrl",state_["serverUrl"]);receipt.set("consoleId",state_["consoleId"]);
     atomicJson(beneath(root,".ps5library/receipts/"+id+".json"),receipt); heartbeat(); progress("READY_ON_PS5",size);
     if(config_["nativeNotifications"].boolean()) notify(task["title"].string()+" is ready in your library");
     }catch(const std::exception& error){

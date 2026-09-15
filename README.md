@@ -79,7 +79,11 @@ Outputs:
 
 The installer requires a running compatible websrv and an already configured Homebrew Launcher bootstrap. It registers only our owned `BREW05001` title folder through an available exact-title API; it does not automatically invoke broad install-all or create system bootstrap files. It cannot currently register the shortcut through the unverified 12+ path. The storefront can still be deployed through a supported homebrew launcher when shortcut registration is unavailable.
 
-Configure `/data/ps5library/config.json` using [config.example.json](ps5/config.example.json): server HTTPS address, display name, runtime and actual storage. Unknown runtime keeps compatibility unknown. Notifications/ShadowMount are explicit settings pending hardware verification. Preserve `device-state.json`; it contains the paired credential and is bound to the selected server. Changing server requires an intentional identity reset/re-pair, not reuse of the old server's credential.
+On first launch, **Connect your library** opens automatically. Enter your server's HTTPS address, choose **Save & connect**, then claim the displayed pairing code from your signed-in account. **Settings → Server connection** reopens this flow. The frontend ELF includes its initial font, font license and trusted CA bundle, extracting missing files beside its configuration. Existing custom certificates/fonts are preserved. First-run rendering and input still need PS5 hardware validation.
+
+HTTPS is the default. Plain HTTP requires explicitly enabling **Unencrypted HTTP** and should only be used on a trusted local network. Enter the server origin without an API path, query or embedded password. Changing to another server requires **Switch & pair again**; it stops the old connection, generates a new device identity and preserves existing local files. The old credential is never sent to the new server. If a separate agent is running, stop it before changing settings. One previous configuration/device backup is kept locally in `previous-server.json`; protect it like a password.
+
+Advanced settings remain in `/data/ps5library/config.json`, using [config.example.json](ps5/config.example.json): display name, runtime and actual storage. Unknown runtime keeps compatibility unknown. Notifications/ShadowMount are explicit settings pending hardware verification. Preserve `device-state.json`; it contains the paired credential and is bound to the selected server. Inventory receipts are bound to both the server and console; older unbound receipts require explicit re-import and are not silently shared after switching.
 
 Selecting the home entry uses the existing loader to start the native app. That loader may close the running game. Reboot requires re-enabling the jailbreak/runtime/loader; a persistent icon does not create persistence for those services. [System integration](docs/PS5_SYSTEM_INTEGRATION.md) records the source evidence, requirements and recovery details. No deployment to a real console has been performed.
 
@@ -99,7 +103,7 @@ npm run test:native
 
 Preview requires the user-supplied desktop `storefront.png`; preview assets stay local/ignored. It renders actual widgets, not a flattened screenshot. `--screen=Downloads`, `--screen=Game`, `--screen=My Library`, `--screen=My PS5`, `--size=1280x720` and `--script=right,down,select,back` support further inspection. Mutation is disabled in preview. Production mode obtains real API data.
 
-Integration checks create/drop isolated PostgreSQL schemas and use generated/project-owned content. Native checks require the Docker build image and both native build outputs; they transfer our actual ELF through the real native agent running as an explicitly labeled host simulator.
+Integration checks create/drop isolated PostgreSQL schemas and use generated/project-owned content. Native checks require the Docker build image and both native build outputs; they exercise controller server setup, pairing, verified ELF transfer, missing/corrupt content and confirmed server switching through the actual native application/agent running as an explicitly labeled host simulator.
 
 ## iPhone and documentation
 
