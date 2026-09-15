@@ -33,7 +33,7 @@ export async function createApp(config: Config) {
     reply.header('x-content-type-options','nosniff').header('referrer-policy','no-referrer').header('x-frame-options','DENY');
     reply.header('content-security-policy', "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     if (req.url.startsWith('/api/')) reply.header('cache-control','no-store');
-    if (!['GET','HEAD','OPTIONS'].includes(req.method) && req.headers.origin && req.headers.origin !== new URL(config.PUBLIC_URL).origin) throw new AppError('ORIGIN_DENIED', 403);
+    if (req.headers.origin && !config.browserOrigins.includes(req.headers.origin)) throw new AppError('ORIGIN_DENIED', 403);
   });
   app.setErrorHandler((error: any, req, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send({ error: 'INVALID_INPUT', issues: error.issues.map(i => ({ path: i.path, message: i.message })) });

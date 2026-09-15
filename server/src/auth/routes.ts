@@ -20,7 +20,7 @@ export function authentication(db: DB) {
 }
 export type Auth = ReturnType<typeof authentication>;
 export async function authRoutes(app: FastifyInstance, db: DB, config: Config, auth: Auth) {
-  const credentials = z.object({ username: z.string().min(3).max(80).regex(/^[A-Za-z0-9_.@-]+$/), password: z.string().min(12).max(200), bootstrapToken: z.string().max(200).optional(), inviteToken: z.string().max(100).optional() });
+  const credentials = z.object({ username: z.string().min(3).max(80).regex(/^[A-Za-z0-9_.@-]+$/), password: z.string().min(5).max(200), bootstrapToken: z.string().max(200).optional(), inviteToken: z.string().max(100).optional() });
   const session = async (id: string) => {
     const token = secret();
     await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '30 days')", [hash(token), id]);

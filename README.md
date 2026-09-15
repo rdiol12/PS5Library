@@ -18,9 +18,11 @@ npm run build
 npm start
 ```
 
-Open **http://127.0.0.1:3150**. Create the first account using `BOOTSTRAP_TOKEN` from the local `.env` file. Do not paste that secret into public messages. Later accounts require a one-use invitation created by an admin in Accounts. Each owner sees only their catalog, consoles, cached packages and jobs. A PS5 pairs once using its displayed code; its random device credential persists across launches.
+Open **http://127.0.0.1:3150**. Create the first account using `BOOTSTRAP_TOKEN` from the local `.env` file and a password of at least 5 characters. Do not paste that secret into public messages. Later accounts require a one-use invitation created by an admin in Accounts. Each owner sees only their catalog, consoles, cached packages and jobs. A PS5 pairs once using its displayed code; its random device credential persists across launches.
 
 The API binds to loopback by default. For friends/remote consoles, put it behind your HTTPS reverse proxy or private VPN, configure `PUBLIC_URL` and the appropriate bind address, and use a trusted certificate. Keep PostgreSQL/Redis and console payload-loader ports private. Native clients do not bypass certificate verification.
+
+`PUBLIC_URL` is also the trusted browser origin. To open the same server at additional addresses, list their exact origins in `BROWSER_ORIGINS` and restart the server. For example, after setting a LAN `PUBLIC_URL`, use `BROWSER_ORIGINS=http://127.0.0.1:3150,http://localhost:3150` to keep PC access working. Include the scheme and port; omit paths and wildcards. An unconfigured browser address returns `ORIGIN_DENIED`.
 
 ## Add your content
 

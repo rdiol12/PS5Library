@@ -12,7 +12,8 @@ import { featuredSelection } from '../../src/catalog/featured.js';
 
 test('real PostgreSQL/Redis: pairing → catalog → verified download → transfer → inventory → restart', { timeout: 90000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ps5library-check-'));
-  const config = { ...configuration(), DATA_DIR: root, SOURCE_ROOT: path.join(root, 'sources'), DISK_MARGIN_BYTES: 0 };
+  const publicOrigin = 'http://store.example:3150', localOrigin = 'http://127.0.0.1:3150';
+  const config = { ...configuration({ ...process.env, PUBLIC_URL: publicOrigin, BROWSER_ORIGINS: `${localOrigin}, http://localhost:3150` }), DATA_DIR: root, SOURCE_ROOT: path.join(root, 'sources'), DISK_MARGIN_BYTES: 0 };
   const adminDb = database(config.DATABASE_URL);
   const schema = `ps5library_test_${randomUUID().replaceAll('-', '')}`;
   await adminDb.query(`CREATE SCHEMA ${schema}`);
@@ -21,16 +22,37 @@ test('real PostgreSQL/Redis: pairing → catalog → verified download → trans
   config.DATABASE_URL = databaseUrl.href;
   await mkdir(config.SOURCE_ROOT);
   let app = await createApp(config);
-  const call = async (method: string, url: string, payload?: unknown, token?: string) => {
-    const response = await app.inject({ method: method as 'GET', url: `/api/v1${url}`, payload, headers: token ? { authorization: `Bearer ${token}` } : {} });
+  const call = async (method: string, url: string, payload?: unknown, token?: string, origin?: string) => {
+    const response = await app.inject({ method: method as 'GET', url: `/api/v1${url}`, payload, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(origin ? { origin } : {}) } });
     return { status: response.statusCode, body: response.json() };
   };
   const name = `check-${randomUUID()}`;
   try {
+  for (const origin of [publicOrigin, localOrigin, 'http://localhost:3150', undefined]) {
+    assert.equal((await call('POST', '/auth/logout', {}, undefined, origin)).status, 200, `Accept configured browser origin or native request: ${origin}`);
+  }
+  for (const origin of ['https://attacker.example', 'null', 'http://127.0.0.1:3151', 'http://127.0.0.1.attacker.example:3150']) {
+    for (const method of ['POST', 'PATCH', 'DELETE']) {
+      const denied = await call(method, '/auth/logout', {}, undefined, origin);
+      assert.equal(denied.status, 403); assert.equal(denied.body.error, 'ORIGIN_DENIED');
+    }
+    const socket = await app.inject({ url: '/api/v1/events/live', headers: { origin, host: new URL(origin === 'null' ? 'http://attacker.example' : origin).host, upgrade: 'websocket', connection: 'upgrade', 'sec-websocket-version': '13', 'sec-websocket-key': Buffer.alloc(16).toString('base64') } });
+    assert.equal(socket.statusCode, 403, 'WebSocket origin must not trust an attacker-controlled Host');
+  }
+  assert.equal((await call('POST', '/auth/register', { username: name, password: 'abcd', bootstrapToken: config.BOOTSTRAP_TOKEN }, undefined, localOrigin)).status, 400);
   // First bootstrap only; subsequent runs create an isolated account with the local bootstrap secret.
-  const user = await call('POST', '/auth/register', { username: name, password: 'integration-password-12345', bootstrapToken: config.BOOTSTRAP_TOKEN });
+  const user = await call('POST', '/auth/register', { username: name, password: 'abcde', bootstrapToken: config.BOOTSTRAP_TOKEN }, undefined, localOrigin);
   assert.equal(user.status, 201, JSON.stringify(user.body));
   const token = user.body.token;
+  assert.equal((await call('POST', '/auth/login', { username: name, password: 'abcde' }, undefined, publicOrigin)).status, 200);
+  assert.equal((await call('POST', '/auth/login', { username: name, password: 'wrong' }, undefined, localOrigin)).status, 401);
+  const cookieLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { origin: localOrigin }, payload: { username: name, password: 'abcde' } });
+  assert.equal(cookieLogin.statusCode, 200);
+  const sessionCookie = cookieLogin.cookies.find(c => c.name === 'session')!;
+  assert.ok(sessionCookie.httpOnly); assert.equal(sessionCookie.sameSite, 'Strict');
+  assert.equal((await app.inject({ url: '/api/v1/me', cookies: { session: sessionCookie.value } })).json().id, user.body.user.id);
+  const live = await app.injectWS('/api/v1/events/live', { headers: { origin: localOrigin, cookie: `session=${sessionCookie.value}` } });
+  live.close();
   const invite = await call('POST', '/admin/invites', {}, token);
   assert.equal(invite.status, 201);
   const friend = await call('POST', '/auth/register', { username: `friend-${randomUUID()}`, password: 'friend-integration-password', inviteToken: invite.body.token });

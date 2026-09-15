@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 import { compatibility, planStorage, presence, resolveMetadata } from '../src/library/policy.js';
 import { safeName, isPublicAddress } from '../src/security/paths.js';
 import { sourceHeaders } from '../src/sources/connectors.js';
+import { configuration } from '../src/config.js';
+
+test('browser aliases require explicit exact HTTP(S) origins', () => {
+  const env = { DATABASE_URL: 'postgres://localhost/test', REDIS_URL: 'redis://localhost', BOOTSTRAP_TOKEN: 'test'.repeat(8), PUBLIC_URL: 'https://store.example' };
+  assert.deepEqual(configuration(env).browserOrigins, ['https://store.example']);
+  assert.deepEqual(configuration({ ...env, BROWSER_ORIGINS: ' http://localhost:3150, http://127.0.0.1:3150, ' }).browserOrigins, ['https://store.example', 'http://localhost:3150', 'http://127.0.0.1:3150']);
+  for (const origin of ['*', 'https://*.example', 'null', 'file:///tmp', 'ftp://store.example', 'http://user:pass@localhost:3150', 'http://localhost:3150/path', 'http://localhost:3150?query=1']) {
+    assert.throws(() => configuration({ ...env, BROWSER_ORIGINS: origin }));
+  }
+});
 
 const release = { titleId: 'PPSA99999', contentId: 'IV0000-PPSA99999_00-PS5LIBRARYDEMO00', version: '01.00', sha256: 'a'.repeat(64), minimumFirmware: '10.01', format: 'ffpkg' };
 const consoleInfo = { firmware: '7.61', runtime: 'kstuff-lite', capabilities: { shadowMount: true, backportOverlay: true }, shadowMountFakelib: true, standaloneBackPork: false };

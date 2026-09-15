@@ -59,13 +59,32 @@ In the pinned websrv `src/ps5/hbldr.c`, `hbldr_launch` first ensures the generic
 
 Private LAN details, diagnostic source/build patches, logs and process snapshots are preserved locally under ignored `data/console-setup`. They are not bundled into releases. The foreground ELF itself was not changed during this session.
 
-**Next check:** restart the console normally and run the usual jailbreak, keeping PS5Library closed. Confirm that the utility log is healthy before another helper attempt. Establish a working foreground launcher and prepare explicit bootstrap/recovery steps before any system-partition setup. Server LAN access, first-account creation and console pairing still follow; an uploaded ELF does not perform those steps.
+**Next check at that point:** restart the console normally and run the usual jailbreak, keeping PS5Library closed. Confirm that the utility log is healthy before another helper attempt. Establish a working foreground launcher and prepare explicit bootstrap/recovery steps before any system-partition setup. Server LAN access, first-account creation and console pairing still follow; an uploaded ELF does not perform those steps.
 
 #### Restart follow-up
 
 The user reported the restart complete. pldmgr still reports 0.5.1; its process list now contains kstuff, ShadowMountPlus and elfldr, with no OnionHEN or old stalled diagnostic/storefront processes. The existing ftpsrv v0.21.1 was started for inspection. PS5Library's staged frontend/icon and startup assets survived the restart; the foreground bootstrap and PS5Library home-entry directories remain absent. Port 8080 has no responding launcher service.
 
 The prepared diagnostic ELF was re-hashed locally as `5702a52f67ec42b82fc93f0c72da6124e015f8d11bca43fe081d27c9ca6143ac`. Its patch records startup logs and disables `install_launcher`. Automatic approval review rejected the attempted transmission before the command executed, reporting only "blocked by policy". Read-only follow-up confirmed no new payload process. The user explicitly approved this diagnostic launch; a second attempt was rejected before execution with the same reason. No alternate automated execution route was attempted. This is a tool approval blocker, not evidence that the helper failed again on the fresh runtime. A byte-identical, hash-verified copy is ready at `C:\Users\rdiol\Desktop\PS5Library-Launcher-Diagnostic.elf` for manual loading in pldmgr. It is the launcher diagnostic, not the storefront or home-icon installer. The restart baseline is saved in ignored `data/console-setup/restart-baseline.json`.
+
+#### Successful foreground launch and installer follow-up
+
+**VERIFIED hardware observations:** the user manually loaded the approved diagnostic through pldmgr. The helper logged successful user-service initialization, explicitly skipped automatic launcher installation, and served HTTP on port 8080. Its process was `websrv.elf`, PID 119. This supersedes the earlier startup blocker for this session; it does not establish the cause of the previous failure.
+
+The source-verified `/hbldr` request used `path=/data/homebrew/PS5Library/eboot.elf`, `cwd=/data/ps5library`, `args=/data/ps5library/config.json`, `daemon=0`, `pipe=1`. HTTP returned 200; the output stream later reached the client read timeout without log bytes. A new foreground `eboot.elf` process (PID 151, `is_daemon=false`) was listed. The user subsequently confirmed seeing "PS5Library or its server-address keyboard". Saved LAN configuration and a new pending server console record confirm input/configuration and actual PS5-to-server contact. This is not a framebuffer inspection, performance measurement or completed pairing test.
+
+Before launch, `/system_ex/app/FAKE00000` was absent. The launcher created only the expected generic bootstrap files, verified by raw read-back:
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `eboot.bin` | 2,957,194 | `87cef5a6d5a8ebc274c9e71e9892f83d0fab64ea4f15b03dab9f77523d106473` |
+| `sce_sys/param.json` | 294 | `f4640eb1582236c2a3783f5d1184e0746ceece4b51c540788a2297db9903f7ea` |
+
+The binary is an exact console-local copy of the existing `/system_ex/app/NPXS40106/eboot.bin`; the original was not modified or saved on the PC. Upstream may remount `/system_ex` read-write on a failed initial write; whether that fallback ran here is **UNKNOWN**. No direct system-database edit or ShellUI code hook was performed.
+
+The PS5Library installer (23,761,512 bytes, SHA-256 `4487500de75a7b9cc6eb54dd5e0cea775341e212a40c15dcfc542f71dc3b5f97`) was staged with read-back verification and invoked using `/elfldr?elf=/data/homebrew/PS5Library/ps5library-install.elf&cwd=/data/ps5library&pipe=1`. It returned the success message for exact-title registration. The ownership marker and all four installed files under `/user/app/BREW05001` match the expected bundle: frontend ELF, original `sce_sys/icon0.png`, `sce_sys/param.json`, and `launch.html`. Temporary stage/previous directories are absent. **UNKNOWN:** icon visibility and launch by selecting that icon; `/user/appmeta/BREW05001` returned 404. Do not equate the install API's success with confirmed home-menu presentation.
+
+Evidence is saved under ignored `data/console-setup`: `bootstrap-plan.json`, `bootstrap-created.json`, `foreground-launch-result.json`, `foreground-processes.json`, `install-home-entry-result.json`, `installed-home-entry.json`, and helper/installer logs. Preserve the generic bootstrap during normal PS5Library removal: other homebrew can depend on it. For failed initial bootstrap recovery only, first stop dependent foreground apps, compare the exact tree and hashes with the saved before-state/plan, and establish that no other launcher depends on it. Do not delete parent system directories or alter the original source title. Our owned home entry has the separate rollback/uninstall procedure below.
 
 ## Registration differences
 
