@@ -4,6 +4,7 @@ dist/
 *.elf.json
 *.log
 *.md
+!/README.md
 .env*
 __pycache__/
 *.pyc

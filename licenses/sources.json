@@ -1,0 +1,140 @@
+[
+  {
+    "name": "SDL2_image",
+    "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-2.8.2/SDL2_image-2.8.2.tar.gz",
+    "sha256": "8f486bbfbcf8464dd58c9e5d93394ab0255ce68b51c5a966a918244820a76ddc",
+    "filename": "SDL2_image.tar.gz"
+  },
+  {
+    "name": "SDL2_ttf",
+    "url": "https://libsdl.org/projects/SDL_ttf/release/SDL2_ttf-2.22.0.tar.gz",
+    "sha256": "d48cbd1ce475b9e178206bf3b72d56b66d84d44f64ac05803328396234d67723",
+    "filename": "SDL2_ttf.tar.gz"
+  },
+  {
+    "name": "curl",
+    "url": "https://curl.haxx.se/download/curl-8.18.0.tar.xz",
+    "sha256": "40df79166e74aa20149365e11ee4c798a46ad57c34e4f68fd13100e2c9a91946",
+    "filename": "curl.tar.xz"
+  },
+  {
+    "name": "json-c",
+    "url": "https://github.com/json-c/json-c/releases/download/json-c-0.19-20260627/json-c-0.19.tar.gz",
+    "sha256": "37ad0249902e301bd9052bf712e511fcc6acff4ecaad4b5900aad9ce564e26de",
+    "filename": "json-c.tar.gz"
+  },
+  {
+    "name": "openssl",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.2/openssl-3.5.2.tar.gz",
+    "sha256": "c53a47e5e441c930c3928cf7bf6fb00e5d129b630e0aa873b08258656e7345ec",
+    "filename": "openssl.tar.gz"
+  },
+  {
+    "name": "libpsl",
+    "url": "https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz",
+    "sha256": "1dcc9ceae8b128f3c0b3f654decd0e1e891afc6ff81098f227ef260449dae208",
+    "filename": "libpsl.tar.gz"
+  },
+  {
+    "name": "zstd",
+    "url": "https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz",
+    "sha256": "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1",
+    "filename": "zstd.tar.gz"
+  },
+  {
+    "name": "zlib",
+    "url": "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz",
+    "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16",
+    "filename": "zlib.tar.gz"
+  },
+  {
+    "name": "libiconv",
+    "url": "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz",
+    "sha256": "8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313",
+    "filename": "libiconv.tar.gz"
+  },
+  {
+    "name": "freetype",
+    "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.2.tar.gz",
+    "sha256": "1ac27e16c134a7f2ccea177faba19801131116fd682efc1f5737037c5db224b5",
+    "filename": "freetype.tar.gz"
+  },
+  {
+    "name": "harfbuzz",
+    "url": "https://github.com/harfbuzz/harfbuzz/releases/download/9.0.0/harfbuzz-9.0.0.tar.xz",
+    "sha256": "a41b272ceeb920c57263ec851604542d9ec85ee3030506d94662067c7b6ab89e",
+    "filename": "harfbuzz.tar.xz"
+  },
+  {
+    "name": "libpng",
+    "url": "https://download.sourceforge.net/libpng/libpng-1.6.43.tar.xz",
+    "sha256": "6a5ca0652392a2d7c9db2ae5b40210843c0bbc081cbd410825ab00cc59f14a6c",
+    "filename": "libpng.tar.xz"
+  },
+  {
+    "name": "libjpeg-turbo",
+    "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.0.2/libjpeg-turbo-3.0.2.tar.gz",
+    "sha256": "c2ce515a78d91b09023773ef2770d6b0df77d674e144de80d63e0389b3a15ca6",
+    "filename": "libjpeg-turbo.tar.gz"
+  },
+  {
+    "name": "libwebp",
+    "url": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.4.0.tar.gz",
+    "sha256": "61f873ec69e3be1b99535634340d5bde750b2e4447caa1db9f61be3fd49ab1e5",
+    "filename": "libwebp.tar.gz"
+  },
+  {
+    "name": "libsamplerate",
+    "url": "https://github.com/libsndfile/libsamplerate/releases/download/0.2.2/libsamplerate-0.2.2.tar.xz",
+    "sha256": "3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893",
+    "filename": "libsamplerate.tar.xz"
+  },
+  {
+    "name": "bzip2",
+    "url": "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
+    "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+    "filename": "bzip2.tar.gz"
+  },
+  {
+    "name": "ffmpeg",
+    "url": "https://ffmpeg.org/releases/ffmpeg-7.0.1.tar.xz",
+    "sha256": "bce9eeb0f17ef8982390b1f37711a61b4290dc8c2a0c1a37b5857e85bfb0e4ff",
+    "filename": "ffmpeg.tar.xz"
+  },
+  {
+    "name": "xz",
+    "url": "https://github.com/tukaani-project/xz/releases/download/v5.4.6/xz-5.4.6.tar.xz",
+    "sha256": "b92d4e3a438affcf13362a1305cd9d94ed47ddda22e456a42791e630a5644f5c",
+    "filename": "xz.tar.xz"
+  },
+  {
+    "name": "sdk",
+    "url": "https://codeload.github.com/ps5-payload-dev/sdk/tar.gz/d9c9519116944a7f1c22d262012c53b80b3520b7",
+    "sha256": "44b541e77eef201afb4fbb6b32af9b97a4cdf893fc2d944d228ff46a8235fd10",
+    "filename": "sdk.tar.gz"
+  },
+  {
+    "name": "port-build-recipes",
+    "url": "https://codeload.github.com/ps5-payload-dev/pacbrew-repo/tar.gz/1687e827675c66e1b040751c7f0811222bd3aea0",
+    "sha256": "0b05d8c04597acf3b8a056b22b83b19e017ceac59f3cb1af0c149229997ecbbe",
+    "filename": "port-build-recipes.tar.gz"
+  },
+  {
+    "name": "SDL2",
+    "url": "https://codeload.github.com/ps5-payload-dev/SDL/tar.gz/a47182a20e741e4735d1fcd41e8656bf338b0c72",
+    "sha256": "6bf2ea6ef41abdd3788aeeb94b9ea47080f9662c0b93730190c89d875db4dec7",
+    "filename": "SDL2.tar.gz"
+  },
+  {
+    "name": "x264",
+    "url": "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+    "sha256": "cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9",
+    "filename": "x264.tar.gz"
+  },
+  {
+    "name": "llvm-license",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-18.1.8/LICENSE.TXT",
+    "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee",
+    "filename": "llvm-license.txt"
+  }
+]

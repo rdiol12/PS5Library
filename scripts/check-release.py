@@ -14,11 +14,12 @@ def check_source():
     if not files:
         raise ValueError('No tracked frontend files')
     roots = {'ps5', 'scripts', 'docker', '.github', 'licenses'}
-    standalone = {'.gitignore', '.gitattributes', '.dockerignore', 'LICENSE', 'NOTICE.txt'}
+    standalone = {'.gitignore', '.gitattributes', '.dockerignore', 'LICENSE', 'NOTICE.txt', 'README.md'}
     for name in files:
         path = Path(name)
         if (path.parts[0] not in roots and name not in standalone or
-                path.suffix.lower() in {'.md', '.log', '.elf', '.key'} or
+                path.suffix.lower() in {'.log', '.elf', '.key'} or
+                (path.suffix.lower() == '.md' and name != 'README.md') or
                 'build' in path.parts or path.name.startswith('.env') or path.is_symlink()):
             raise ValueError('Excluded file in export: ' + name)
         if path.suffix.lower() in {'.png', '.dds', '.gz', '.xz', '.zip'}:
