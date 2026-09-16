@@ -1,0 +1,63 @@
+name: Build and publish PS5 ELF
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check frontend-only repository
+        run: |
+          python3 scripts/check-release.py --source
+          python3 scripts/test-release.py
+      - name: Build pinned PS5 toolchain
+        run: docker build -t ps5library-build -f docker/ps5-build.Dockerfile .
+      - name: Test and build the ELF files
+        run: docker run --rm --network none -e GITHUB_REF -v "$PWD:/workspace" ps5library-build bash scripts/build.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ps5library-elf
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ps5library-elf
+          path: dist
+      - name: Publish verified ELF release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.txt" <<'EOF'
+          PS5Library console frontend engineering preview.
+
+          Send ps5library-install.elf through a compatible homebrew payload loader to install/update. ps5library.elf is the application binary. Enter your own PS5Library server address on first launch.
+
+          Built from this tag after native host tests and ELF/hash verification. This release has not been tested on a physical PS5. HDMI audio and PS-button Home/background behavior remain unresolved. Native FPKG installation is not yet implemented.
+
+          This repository contains console code and build assets only. The application still requires a separately hosted PS5Library server. No server address or private update-signing key is bundled.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GH_REPO" --verify-tag \
+            --title "PS5Library $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.txt" --prerelease

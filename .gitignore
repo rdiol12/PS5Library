@@ -1,0 +1,11 @@
+**/build/
+dist/
+*.elf
+*.elf.json
+*.log
+*.md
+.env*
+__pycache__/
+*.pyc
+*.key
+*-private-key.pem

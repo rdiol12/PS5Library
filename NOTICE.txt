@@ -1,0 +1,29 @@
+PS5Library console frontend — engineering preview
+
+PS5Library's original console source is licensed under GNU GPL version 3 or later.
+See LICENSE. Upstream libraries retain their own copyrights and licenses.
+
+This frontend links FFmpeg with its GPL features and x264. The release includes
+the corresponding dependency source archives and build recipes, including their
+original license files. The application source is the source archive of this tag.
+Keep these sources and notices alongside any redistribution of the ELF files.
+
+Public PS5 payload SDK v0.43:
+https://github.com/ps5-payload-dev/sdk/tree/d9c9519116944a7f1c22d262012c53b80b3520b7
+Port build recipes v0.40.2:
+https://github.com/ps5-payload-dev/pacbrew-repo/tree/1687e827675c66e1b040751c7f0811222bd3aea0
+FFmpeg 7.0.1: https://ffmpeg.org/ (GPL-3.0-or-later in this configuration)
+x264 r3222 b35605a: https://code.videolan.org/videolan/x264 (GPL-2.0-or-later)
+The remaining linked libraries and their original source/license archives are
+listed in licenses/sources.json. DejaVu font copyright/license and the CA bundle
+are embedded by scripts/bundle-ps5.py from the build image.
+
+The public Ed25519 update verification key is intentional. Its private signing
+key is not included. Release hashes are integrity checks, not signed update
+envelopes. The app obtains updates through its configured PS5Library server.
+
+Local build:
+  docker build -t ps5library-build -f docker/ps5-build.Dockerfile .
+  docker run --rm --network none -v "${PWD}:/workspace" ps5library-build bash scripts/build.sh
+Push a matching version tag (for example v0.2.6) to build and publish a prerelease.
+Main-branch pushes and pull requests build/test and retain ELF artifacts.

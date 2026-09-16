@@ -1,0 +1,17 @@
+{
+  "serverUrl": "",
+  "launcherUrl": "",
+  "interfaceSounds": true,
+  "gameMusic": true,
+  "name": "Living Room PS5",
+  "allowInsecureLan": false,
+  "caBundle": "/data/ps5library/ca-bundle.crt",
+  "runtime": "unknown",
+  "firmware": null,
+  "nativeNotifications": false,
+  "font": "/data/ps5library/DejaVuSans.ttf",
+  "storage": [
+    { "storageId": "internal", "displayName": "Internal Storage", "path": "/data" },
+    { "storageId": "usb0", "displayName": "USB SSD", "path": "/mnt/usb0" }
+  ]
+}

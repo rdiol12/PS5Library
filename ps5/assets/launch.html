@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" href="data:,"><title>PS5Library</title>
+<style>body{background:#080f1b;color:#eef5ff;font:28px system-ui;text-align:center;margin:12vh auto;max-width:900px}img{width:180px;border-radius:24px}p{color:#aabbd3}button{background:#cde2ff;border:0;border-radius:32px;padding:16px 40px;font:inherit;color:#101c2c}button:focus{outline:3px solid white;outline-offset:7px}</style>
+<img src="sce_sys/icon0.png" alt=""><h1>PS5Library</h1><p id="status">Opening your library…</p><button id="retry" hidden>Retry</button>
+<script>
+const status=document.getElementById('status'),retry=document.getElementById('retry');
+async function boot(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),2000);try{const response=await fetch('/fs/data/ps5library/update-boot.json',{cache:'no-store',signal:controller.signal});return response.ok?await response.json():response.status===404?{}:null;}catch{return null;}finally{clearTimeout(timer);}}
+async function launch(){
+  retry.hidden=true;status.textContent='Opening your library…';const previous=await boot();
+  try{const params=new URLSearchParams({path:'/user/app/BREW05001/eboot.elf',cwd:'/data/ps5library',args:'ps5library /data/ps5library/config.json',daemon:'0',pipe:'0'});const response=await fetch('/hbldr?'+params,{cache:'no-store'});if(!response.ok)throw Error('The homebrew loader could not launch PS5Library.');}
+  catch(error){status.textContent=error.message+' Check that your jailbreak and compatible Homebrew Launcher are running.';retry.hidden=false;retry.focus();return;}
+  for(let attempt=0;attempt<60;attempt++){
+    const current=await boot();if(current&&previous!==null&&typeof current.launchId==='string'&&current.launchId.length===32&&current.launchId!==previous.launchId&&current.frames>=60){
+      status.textContent='PS5Library is ready. If this launch window remains visible, close it to return to the store.';
+      // Standard browser dismissal; whether the PS5 native webview honors it needs a hardware check.
+      try{window.close();}catch{}return;
+    }
+    await new Promise(resolve=>setTimeout(resolve,250));
+  }
+  status.textContent='The store has not confirmed startup. Close this window to check PS5Library.';
+}
+retry.onclick=launch;launch();
+</script></html>
