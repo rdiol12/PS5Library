@@ -25,7 +25,7 @@ jobs:
       - name: Build pinned PS5 toolchain
         run: docker build -t ps5library-build -f docker/ps5-build.Dockerfile .
       - name: Test and build the ELF files
-        run: docker run --rm --network none -e GITHUB_REF -v "$PWD:/workspace" ps5library-build bash scripts/build.sh
+        run: docker run --rm --network none --user "$(id -u):$(id -g)" -e GITHUB_REF -v "$PWD:/workspace" ps5library-build bash scripts/build.sh
       - name: Package corresponding dependency source and notices
         run: python3 scripts/package-sources.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
