@@ -17,12 +17,12 @@ if sys.argv[1] == '--metadata':
     sys.exit(0)
 
 if sys.argv[1] == '--ui':
-    output, font, license_file, certificates = map(pathlib.Path, sys.argv[2:])
-    files = dict(ui_font=font, ui_font_license=license_file, ui_certificates=certificates)
+    output, font, heading_font, license_file, certificates = map(pathlib.Path, sys.argv[2:])
+    files = dict(ui_font=font, ui_heading_font=heading_font, ui_font_license=license_file, ui_certificates=certificates)
 else:
-    output, frontend, assets, config, font, license_file, certificates = map(pathlib.Path, sys.argv[1:])
+    output, frontend, assets, config, font, heading_font, license_file, certificates = map(pathlib.Path, sys.argv[1:])
     files = dict(frontend=frontend, icon=assets/'icon0.png', icon_dds=assets/'icon0.dds', home=assets/'pic0.png', home_dds=assets/'pic0.dds', param=assets/'param.json', launch=assets/'launch.html',
-                 config=config, font=font, font_license=license_file, certificates=certificates)
+                 config=config, font=font, heading_font=heading_font, font_license=license_file, certificates=certificates)
 lines = []
 for name, filename in files.items():
     if not filename.is_file():

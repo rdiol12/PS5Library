@@ -34,8 +34,8 @@ static std::string list(const Json& array){std::string text;for(size_t i=0;i<arr
 static SDL_Rect crop(const Json& value){return {static_cast<int>(value["x"].number()),static_cast<int>(value["y"].number()),static_cast<int>(value["w"].number()),static_cast<int>(value["h"].number())};}
 struct Options {fs::path config="/data/ps5library/config.json";bool preview=false;int width=1920,height=1080,frames=0;std::string screen="Discover",capture,script;};
 #ifdef PS5
-extern "C" {extern const unsigned char ui_font[],ui_font_license[],ui_certificates[];extern const size_t ui_font_size,ui_font_license_size,ui_certificates_size;}
-static void localAssets(const fs::path& root){for(const auto& item:std::vector<std::pair<std::string,std::string_view>>{{"DejaVuSans.ttf",{reinterpret_cast<const char*>(ui_font),ui_font_size}},{"FONT-LICENSE.txt",{reinterpret_cast<const char*>(ui_font_license),ui_font_license_size}},{"ca-bundle.crt",{reinterpret_cast<const char*>(ui_certificates),ui_certificates_size}}})if(!fs::exists(root/item.first))atomicBytes(root/item.first,item.second);}
+extern "C" {extern const unsigned char ui_font[],ui_heading_font[],ui_font_license[],ui_certificates[];extern const size_t ui_font_size,ui_heading_font_size,ui_font_license_size,ui_certificates_size;}
+static void localAssets(const fs::path& root){for(const auto& item:std::vector<std::pair<std::string,std::string_view>>{{"Inter-Regular.otf",{reinterpret_cast<const char*>(ui_font),ui_font_size}},{"Inter-SemiBold.otf",{reinterpret_cast<const char*>(ui_heading_font),ui_heading_font_size}},{"OFL-Inter.txt",{reinterpret_cast<const char*>(ui_font_license),ui_font_license_size}},{"ca-bundle.crt",{reinterpret_cast<const char*>(ui_certificates),ui_certificates_size}}})if(!fs::exists(root/item.first))atomicBytes(root/item.first,item.second);}
 #endif
 
 class Storefront {
@@ -48,6 +48,7 @@ class Storefront {
   Json removal_,removalConsole_;
   SDL_Texture* backdropCache_=nullptr;std::string backdropKey_,launchTitle_;
   Focus focus_;std::unordered_map<std::string,std::function<void()>> actions_;std::unordered_map<std::string,Rect> rects_;
+  std::set<std::string> collection_;
   std::unordered_map<std::string,float> animation_,scroll_;std::unordered_map<std::string,std::string> screenFocus_;
   std::vector<std::string> desiredImages_,tabs_={"Discover","New Releases","Categories","My Library","Downloads","My PS5"};
   std::string page_="Discover",returnPage_,gameId_,consoleId_,storageId_,method_,modal_,message_,heroUrl_,oldHero_,taskError_,launchId_=randomHex(16);size_t featured_=0,release_=0;
@@ -86,17 +87,19 @@ class Storefront {
   bool ready(const Json& g)const{auto releases=g["releases"],library=model_["library"];for(size_t i=0;i<releases.size();i++)for(size_t j=0;j<library.size();j++)if(releases[i]["kind"].string()!="DLC"&&library[j]["releaseId"].string()==releases[i]["id"].string()&&library[j]["state"].string()=="READY_ON_PS5")return true;return false;}
   std::string playable(const Json& g)const{return offline_||consoleId_!=device_["consoleId"].string()||config_["launcherUrl"].string().empty()?"":launchableTitle(g,model_["library"]);}
   void toast(std::string text){message_=std::move(text);toastUntil_=SDL_GetTicks()+6500;}
-  void navigate(std::string page){screenFocus_[page_]=focus_.id();page_=std::move(page);focus_.select(screenFocus_.count(page_)?screenFocus_[page_]:"first-card");category_.clear();modal_.clear();SDL_StopTextInput();}
+  void navigate(std::string page){screenFocus_[page_]=focus_.id();page_=std::move(page);focus_.select(screenFocus_.count(page_)?screenFocus_[page_]:"first-card");category_.clear();collection_.clear();modal_.clear();SDL_StopTextInput();}
   void openGame(const std::string& id){screenFocus_[page_]=focus_.id();returnPage_=page_;gameId_=id;release_=0;page_="Game";focus_.select("download");plan_=Json();}
   void closeModal(){modal_.clear();focus_.select(screenFocus_["before-modal"]);SDL_StopTextInput();}
   void search(){screenFocus_["before-modal"]=focus_.id();modal_="Search";focus_.select("search-input");SDL_StartTextInput();}
   void profile(){
     const auto data=model_["profile"];auto profileConsoles=data["consoles"];Json selected;
     for(size_t i=0;i<profileConsoles.size();i++)if(profileConsoles[i]["id"].string()==consoleId_)selected=profileConsoles[i];
-    avatar({Tokens::safe,165,136,136});
-    draw().label(data["username"].string("Your profile"),Tokens::safe+172,165,Tokens::title,Tokens::white,1100);
-    draw().label(selected["name"].string("Select your PS5"),Tokens::safe+175,241,Tokens::body,Tokens::muted);
-    button("profile-picture","Change picture",{Tokens::width-Tokens::safe-290,185,290,62},1,[this]{screenFocus_["before-modal"]=focus_.id();modal_="Avatar";focus_.select("avatar-default");});
+    draw().rounded({Tokens::safe,145,Tokens::width-Tokens::safe*2,162},{26,37,52,155},22);
+    avatar({Tokens::safe+26,165,122,122});
+    draw().label(data["username"].string("Your profile"),Tokens::safe+182,165,Tokens::title,Tokens::white,1050);
+    auto online=selected["presence"].string()=="ONLINE";draw().rounded({Tokens::safe+184,254,9,9},online?SDL_Color{137,217,186,255}:Tokens::muted,5);
+    draw().label(selected["name"].string("Select your PS5"),Tokens::safe+207,241,Tokens::body,Tokens::muted);
+    button("profile-picture","Change picture",{Tokens::width-Tokens::safe-310,194,284,62},1,[this]{screenFocus_["before-modal"]=focus_.id();modal_="Avatar";focus_.select("avatar-default");});
     float x=Tokens::safe;for(size_t i=0;i<profileConsoles.size();i++){auto c=profileConsoles[i];button("profile-console:"+c["id"].string(),c["name"].string(),{x,335,290,54},2,[this,c]{consoleId_=c["id"].string();lastRefresh_=0;},false,true,c["id"].string()==consoleId_);x+=310;if(x>Tokens::width-350)break;}
     button("profile-games","Available games",{Tokens::safe,415,270,54},3,[this]{profileTrophies_=false;},false,true,!profileTrophies_);
     button("profile-trophies","Trophies by game",{Tokens::safe+290,415,290,54},3,[this]{profileTrophies_=true;},false,true,profileTrophies_);
@@ -165,35 +168,37 @@ class Storefront {
     request_=std::async(std::launch::async,[this,config,file,console]{try{auto configuration=Json::parse(config);auto device=loadDeviceState(file,configuration);auto value=Json::object({{"device",device}});auto token=device["credential"].string();if(!token.empty()){Client client(configuration);client.cancelled=[this]{return !running_||networkPaused_;};client.credential=token;auto own=client.request("GET","/api/v1/device/status");value.set("catalog",client.request("GET","/api/v1/device/catalog"));value.set("featured",client.request("GET","/api/v1/device/featured"));value.set("jobs",client.request("GET","/api/v1/device/jobs"));value.set("consoles",client.request("GET","/api/v1/device/consoles"));value.set("status",own);try{value.set("profile",client.request("GET","/api/v1/device/profile"));}catch(const RequestError& e){if(e.status!=404)throw;}value.set("library",console.empty()||console==own["id"].string()?own["library"]:client.request("GET","/api/v1/device/consoles/"+console+"/library"));}return Json::object({{"result",value}}).dump();}catch(const RequestError&e){return Json::object({{"error",e.what()},{"serverReachable",true}}).dump();}catch(const std::exception&e){return Json::object({{"error",e.what()}}).dump();}});
   }
   void pump(){if(request_.valid()&&request_.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto result=Json::parse(request_.get());auto done=std::move(complete_);complete_={};if(!result["error"].null()){if(setupInFlight_){setupInFlight_=false;networkPaused_=false;resetArtwork();startAgent();if(result["pairingResetRequired"].boolean()){modal_="SwitchServer";focus_.select("keep-server");}else toast(result["error"].string());}else if(!networkPaused_){offline_=!result["serverReachable"].boolean();loading_=false;toast(friendly(result["error"].string()));}}else{offline_=false;if(done)done(result["result"]);}}if(pending_&&!request_.valid()){auto next=std::move(pending_);pending_={};next();}if(!options_.preview&&SDL_GetTicks()-lastRefresh_>5000)refresh();}
-  void button(std::string id,std::string title,Rect rect,int row,std::function<void()> callback,bool primary=false,bool enabled=true,bool selected=false,bool plain=false){
+  void button(std::string id,std::string title,Rect rect,int row,std::function<void()> callback,bool primary=false,bool enabled=true,bool selected=false,bool plain=false,const std::string& icon=""){
     if(enabled){focus_.add(id,row,{rect.x,rect.y,rect.w,rect.h});actions_[id]=std::move(callback);rects_[id]=rect;}
     auto& a=animation_[id];a+=(focus_.id()==id?1.f-a:-a)*std::min(1.f,delta_/Tokens::focusSeconds);
-    if(a>.02f||selected||primary)draw().outline(rect,std::max(a,primary?.5f:selected?.42f:0.f),rect.h/2);
-    if(!plain||selected||a>.05f)draw().rounded(rect,primary?SDL_Color{224,233,244,255}:selected?SDL_Color{37,52,73,185}:Tokens::surface,rect.h/2);
+    if(a>.02f||selected||primary)draw().outline(rect,std::max(a,primary?.24f:selected?.35f:0.f),rect.h/2);
+    if(!plain||selected||a>.05f)draw().rounded(rect,primary?SDL_Color{231,235,242,245}:selected?SDL_Color{29,43,62,164}:Tokens::surface,rect.h/2);
     if(!plain||selected||a>.05f)draw().edge(rect,primary?SDL_Color{248,251,255,240}:selected?SDL_Color{123,182,241,210}:SDL_Color{126,148,174,65},rect.h/2);
-    draw().label(title,rect.x+(rect.w-draw().measure(title))/2,rect.y+(rect.h-Tokens::body)/2-3,Tokens::body,!enabled?Tokens::muted:primary?Tokens::background:Tokens::white,static_cast<int>(rect.w-20));
+    const float content=draw().measure(title,Tokens::control)+(icon.empty()?0:48),left=rect.x+(rect.w-content)/2;
+    if(!icon.empty()){if(primary)draw().rounded({left-2,rect.cy()-16,32,32},Tokens::background,16);draw().icon(icon,left+14,rect.cy(),Tokens::white);}
+    draw().label(title,left+(icon.empty()?0:48),rect.y+(rect.h-draw().textHeight(title,Tokens::control,static_cast<int>(rect.w-20)))/2,Tokens::control,!enabled?Tokens::muted:primary?Tokens::background:Tokens::white,static_cast<int>(rect.w-20));
   }
   void title(const std::string& text,const std::string& subtitle=""){draw().label(text,Tokens::safe,Tokens::header+Tokens::gap*2,Tokens::title);draw().label(subtitle,Tokens::safe,Tokens::header+Tokens::gap*2+Tokens::title+Tokens::gap,Tokens::body,Tokens::muted);}
-  void badge(const std::string& text,Rect rect){draw().rounded(rect,{22,36,53,235},rect.h/2);draw().label(text,rect.x+Tokens::gap/2,rect.y+3,Tokens::caption,Tokens::accent,static_cast<int>(rect.w-12));}
-  void gameImage(const Json& g,Rect rect,bool hero=false,Uint8 opacity=255){auto url=g[hero?"heroUrl":"coverUrl"].string();desiredImages_.push_back(url);auto c=crop(g[hero?"heroCrop":"coverCrop"]);draw().cover(art_->get(url),rect,c.w>0?&c:nullptr,opacity,hero?0:Tokens::radius);}
+  void badge(const std::string& text,Rect rect){draw().rounded(rect,{29,37,46,182},rect.h/2);draw().label(text,rect.x+Tokens::gap/2,rect.y+(rect.h-draw().textHeight(text,Tokens::caption,static_cast<int>(rect.w-12)))/2,Tokens::caption,Tokens::muted,static_cast<int>(rect.w-12));}
+  void gameImage(const Json& g,Rect rect,bool hero=false,Uint8 opacity=255){auto url=g[hero?"heroUrl":"coverUrl"].string();desiredImages_.push_back(url);auto c=crop(g[hero?"heroCrop":"coverCrop"]);auto* image=art_->get(url);draw().cover(image,rect,c.w>0?&c:nullptr,opacity,hero?0:Tokens::radius);if(!image&&!hero&&!g["title"].string().empty()){draw().rounded({rect.x+4,rect.y+rect.h*.66f,rect.w-8,rect.h*.32f},{24,34,47,255},4);draw().label(g["title"].string(),rect.x+14,rect.y+rect.h*.7f,Tokens::caption,Tokens::white,static_cast<int>(rect.w-28),2);}}
   void background(const Json& featured){auto url=featured["heroUrl"].string();desiredImages_.push_back(url);auto* image=art_->get(url);if(image&&heroUrl_!=url){oldHero_=heroUrl_;heroUrl_=url;heroMix_=0;}heroMix_=std::min(1.f,heroMix_+delta_/Tokens::fadeSeconds);
-    Rect rect{Tokens::width*.25f,0,Tokens::width*.75f,std::ceil(Tokens::heroBottom+Tokens::cardHeight*.8f)};auto* video=video_->frame(renderer_);
+    Rect rect{Tokens::width*.25f,0,Tokens::width*.75f,std::ceil(Tokens::heroBottom+Tokens::cardHeight*.35f)};auto* video=video_->frame(renderer_);
     auto paint=[&]{draw().fill({0,0,Tokens::width,Tokens::height},Tokens::background);if(!oldHero_.empty()&&heroMix_<1){desiredImages_.push_back(oldHero_);draw().cover(art_->get(oldHero_),rect);}if(image){auto source=crop(featured["heroCrop"]);draw().cover(image,rect,source.w>0?&source:nullptr,static_cast<Uint8>(255*heroMix_));}if(video)draw().cover(video,rect);
-      if(image||video||heroMix_<1){const float fadeTop=std::floor(Tokens::heroBottom*.35f);draw().fade({rect.x,0,rect.w*.56f,rect.h},true,true,255);draw().fade({0,fadeTop,Tokens::width,rect.h-fadeTop},false);draw().fade({0,0,Tokens::width,Tokens::header*1.2f},false,true,175);}};
+      if(image||video||heroMix_<1){const float fadeTop=std::floor(Tokens::heroBottom*.68f);draw().fade({rect.x,0,rect.w*.52f,rect.h},true,true,255);draw().fade({0,fadeTop,Tokens::width,rect.h-fadeTop},false);draw().fade({0,0,Tokens::width,Tokens::header*1.2f},false,true,150);}if(page_!="Discover")draw().fill({0,0,Tokens::width,Tokens::height},{7,11,17,static_cast<Uint8>(page_=="Game"?85:180)});};
     // Compose the static hero once. SDL's PS5 software renderer otherwise blends millions of unchanged pixels every frame.
     if(!video&&heroMix_>=1&&SDL_RenderTargetSupported(renderer_)){
       if(!backdropCache_)backdropCache_=SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_ARGB8888,SDL_TEXTUREACCESS_TARGET,static_cast<int>(Tokens::width),static_cast<int>(Tokens::height));
-      const auto key=url+featured["heroCrop"].dump()+(image?":loaded":":empty");
+      const auto key=page_+url+featured["heroCrop"].dump()+(image?":loaded":":empty");
       if(backdropCache_){if(key!=backdropKey_){if(SDL_SetRenderTarget(renderer_,backdropCache_)!=0){paint();return;}paint();SDL_SetRenderTarget(renderer_,nullptr);backdropKey_=key;backdropCompositions_++;}
         SDL_SetTextureBlendMode(backdropCache_,SDL_BLENDMODE_NONE);SDL_RenderCopy(renderer_,backdropCache_,nullptr,nullptr);return;}
     }
     paint();
   }
   void navigation(){const float y=Tokens::safe*.65f;float x=Tokens::safe;
-    draw().rounded({x,y+4,49,34},{217,232,255,255},12);draw().fill({x+9,y+18,13,4},Tokens::background);draw().fill({x+13,y+14,4,12},Tokens::background);draw().rounded({x+32,y+12,5,5},Tokens::accent,3);draw().rounded({x+38,y+19,5,5},Tokens::accent,3);
+    draw().icon("controller",x+25,y+22,{232,238,254,255});
     x+=76;draw().label("PS5",x,y-7,Tokens::brand,{114,167,228,255});draw().label("Library",x+draw().measure("PS5",Tokens::brand),y-7,Tokens::brand);draw().label("Games without limits",x,y+34,Tokens::caption,Tokens::muted);
-    x=Tokens::width*.215f;const float right=Tokens::width*.745f,tabGap=Tokens::gap;float total=0;for(const auto& tab:tabs_)total+=draw().measure(tab,Tokens::body)+Tokens::gap*2;float scale=std::min(1.f,(right-x-tabGap*5)/total);
-    for(size_t i=0;i<tabs_.size();i++){float width=(draw().measure(tabs_[i])+Tokens::gap*2)*scale;button("nav:"+tabs_[i],tabs_[i],{x,y-3,width,58},0,[this,i]{navigate(tabs_[i]);},false,true,page_==tabs_[i],true);x+=width+tabGap;}
+    x=Tokens::width*.208f;const float right=Tokens::width*.74f,tabGap=Tokens::gap*1.5f;float total=0;for(const auto& tab:tabs_)total+=draw().measure(tab,Tokens::control)+Tokens::gap*3;float scale=std::min(1.f,(right-x-tabGap*5)/total);
+    for(size_t i=0;i<tabs_.size();i++){float width=(draw().measure(tabs_[i],Tokens::control)+Tokens::gap*3)*scale;button("nav:"+tabs_[i],tabs_[i],{x,y-3,width,58},0,[this,i]{navigate(tabs_[i]);},false,true,page_==tabs_[i],true);x+=width+tabGap;}
     x=Tokens::width*.798f;button("search","",{x,y,50,52},0,[this]{search();},false,true,false,true);draw().icon("search",x+25,y+25);button("settings","",{x+82,y,50,52},0,[this]{navigate("Settings");},false,true,false,true);draw().icon("settings",x+107,y+25);button("profile","",{x+164,y,50,52},0,[this]{navigate("Profile");},false,true,false,true);avatar({x+169,y+5,40,40});
     std::time_t now=std::time(nullptr);char clock[12];std::strftime(clock,sizeof(clock),"%H:%M",std::localtime(&now));draw().label(clock,Tokens::width-Tokens::safe-78,y+10,Tokens::body,Tokens::muted);
   }
@@ -204,7 +209,7 @@ class Storefront {
     if(a>.8f&&!g["title"].string().empty()&&!options_.preview){draw().fade({rect.x,rect.y+rect.h*.65f,rect.w,rect.h*.35f},false);draw().label(g["title"].string(),rect.x+10,rect.y+rect.h-32,Tokens::caption,Tokens::white,static_cast<int>(rect.w-20));}
   }
   void rail(const std::string& name,const std::vector<Json>& games,float y,int row){const auto key=std::to_string(row);draw().label(name,Tokens::safe,y,Tokens::heading);
-    if(!games.empty())button("all:"+key,"View All  >",{Tokens::width-Tokens::safe-165,y-6,165,44},row,[this,name]{navigate(name);},false,true,false,true);
+    if(!games.empty()){button("all:"+key,"View All",{Tokens::width-Tokens::safe-155,y-6,127,44},row,[this,name,games]{navigate(name);for(const auto& g:games)collection_.insert(g["id"].string());},false,true,false,true);draw().icon("chevron",Tokens::width-Tokens::safe-5,y+16);}
     const float top=y+Tokens::railTitle+Tokens::gap;float target=0;for(size_t i=0;i<games.size();i++)if(focus_.id()=="rail"+key+":"+games[i]["id"].string()){float cardLeft=static_cast<float>(i)*(Tokens::cardWidth+Tokens::gap);target=std::max(0.f,cardLeft-(Tokens::width-Tokens::safe*2-Tokens::cardWidth)/2);}
     target=std::min(target,std::max(0.f,games.size()*(Tokens::cardWidth+Tokens::gap)-Tokens::gap-(Tokens::width-Tokens::safe*2)));
     if(focus_.id().rfind("rail"+key+":",0)==0)scroll_[key]+=(target-scroll_[key])*std::min(1.f,delta_*14);
@@ -213,11 +218,12 @@ class Storefront {
     SDL_RenderSetClipRect(renderer_,nullptr);if(games.empty()){if(loading_)for(int i=0;i<8;i++)draw().cover(nullptr,{Tokens::safe+i*(Tokens::cardWidth+Tokens::gap),top,Tokens::cardWidth,Tokens::cardHeight});else draw().label("No games in this collection yet.",Tokens::safe,top+Tokens::gap,Tokens::body,Tokens::muted);}
   }
   std::vector<Json> games(const std::function<bool(const Json&)>& filter={})const{std::vector<Json> out;auto all=catalog();for(size_t i=0;i<all.size();i++)if(!filter||filter(all[i]))out.push_back(all[i]);return out;}
-  void hero(const Json& g){const float x=Tokens::safe,y=Tokens::header+Tokens::gap*2;draw().label("F E A T U R E D",x,y,Tokens::caption,Tokens::accent);draw().label(g["title"].string("Your next adventure starts here"),x,y+Tokens::gap*2,Tokens::title,Tokens::white,900,2);
-    draw().label(g["description"].string("Connect your collection and discover your games in one place."),x,y+Tokens::title+Tokens::gap*3,Tokens::body,Tokens::muted,770,2);
+  void hero(const Json& g){const float x=Tokens::safe,y=Tokens::header+Tokens::gap*2;draw().label("F E A T U R E D",x,y,Tokens::caption,Tokens::accent);auto name=g["title"].string("Your next adventure starts here");int size=draw().measure(name,Tokens::title)>900?Tokens::compactTitle:Tokens::title;float titleY=y+Tokens::gap*2;
+    draw().label(name,x,titleY,size,Tokens::white,900,2);float descriptionY=titleY+draw().textHeight(name,size,900,2)+13;
+    draw().label(g["description"].string("Connect your collection and discover your games in one place."),x,descriptionY,Tokens::body,{218,225,235,255},760,descriptionY>280?1:2);
     float chipX=x,chipY=Tokens::heroBottom-171;auto genres=g["genres"];for(size_t i=0;i<std::min(size_t(3),genres.size());i++){auto label=genres[i].string();float w=draw().measure(label,Tokens::caption)+27;badge(label,{chipX,chipY,w,29});chipX+=w+Tokens::gap/2;}badge(g["platform"].string("PS5"),{chipX,chipY,61,29});
-    button("view-game","View Game",{x,Tokens::heroBottom-114,290,66},1,[this,g]{openGame(g["id"].string());},true,!g.null());
-    button("save-game",g["saved"].boolean()?"In Your Library":"+  Add to Library",{x+310,Tokens::heroBottom-114,270,66},1,[this,g]{request("POST","/api/v1/device/games/"+g["id"].string()+"/save",Json::object({{"saved",true}}),[this](const Json&){toast("Saved to your collection");lastRefresh_=0;});},false,!g.null());
+    button("view-game","View Game",{x,Tokens::heroBottom-114,290,66},1,[this,g]{openGame(g["id"].string());},true,!g.null(),false,false,"cross");
+    button("save-game",g["saved"].boolean()?"In Your Library":"Add to Library",{x+310,Tokens::heroBottom-114,270,66},1,[this,g]{request("POST","/api/v1/device/games/"+g["id"].string()+"/save",Json::object({{"saved",true}}),[this](const Json&){toast("Saved to your collection");lastRefresh_=0;});},false,!g.null(),false,false,"heart");
     if(!options_.preview)return;auto all=catalog();float indicators=Tokens::width/2-static_cast<float>(std::min(size_t(5),all.size()))*15;for(size_t i=0;i<std::min(size_t(5),all.size());i++){Rect rect{indicators+static_cast<float>(i)*30,Tokens::heroBottom-24,20,4};draw().rounded(rect,i==featured_%5?Tokens::white:SDL_Color{143,161,184,110},2);}
     button("hero-previous","<",{Tokens::width-Tokens::safe-115,Tokens::heroBottom-84,48,48},1,[this,all]{if(all.size())featured_=(featured_+all.size()-1)%all.size();});button("hero-next",">",{Tokens::width-Tokens::safe-55,Tokens::heroBottom-84,48,48},1,[this,all]{if(all.size())featured_=(featured_+1)%all.size();});
   }
@@ -231,7 +237,7 @@ class Storefront {
     rail(popular||options_.preview?"Popular This Week":"Recently Added",first,Tokens::heroBottom,3);
     rail("Recently Updated",updated,Tokens::heroBottom+Tokens::railTitle+Tokens::gap+Tokens::cardHeight+Tokens::railGap,5);
   }
-  void gridPage(){std::string subtitle;auto all=games();float y=Tokens::header+Tokens::title+Tokens::gap*6;
+  void gridPage(){std::string subtitle;auto all=games([this](const Json& g){return collection_.empty()||collection_.count(g["id"].string());});float y=Tokens::header+Tokens::title+Tokens::gap*6;
     if(page_=="Categories"&&category_.empty()){title("Categories","Find your next adventure.");std::set<std::string> categories;for(const auto& g:all){auto tags=g["genres"];for(size_t i=0;i<tags.size();i++)categories.insert(tags[i].string());}if(categories.empty())categories={"Action","Adventure","RPG","Racing","Sports","Horror","Indie","Homebrew"};size_t n=0;for(const auto& tag:categories){float w=(Tokens::width-Tokens::safe*2-Tokens::gap*3)/4;Rect rect{Tokens::safe+(n%4)*(w+Tokens::gap),y+(n/4)*235,w,200};auto candidates=games([&](const Json&g){return list(g["genres"]).find(tag)!=std::string::npos;});if(!candidates.empty())gameImage(candidates[0],rect);draw().fade(rect,false);button("category:"+tag,tag,{rect.x+20,rect.y+130,rect.w-40,52},2+static_cast<int>(n/4),[this,tag]{category_=tag;focus_.select("first-card");});n++;if(n==12)break;}return;}
     if(page_=="My Library"){
       subtitle=serverLibrary_?"Verified packages stored on your server":offline_?"Previously reported by your PS5 ? server offline":"Confirmed by your selected PS5";
@@ -241,7 +247,7 @@ class Storefront {
       else{all=games([this](const Json&g){if(!ready(g))return false;if(libraryFilter_=="All")return true;auto library=model_["library"],releases=g["releases"];for(size_t i=0;i<library.size();i++)for(size_t r=0;r<releases.size();r++)if(library[i]["releaseId"].string()==releases[r]["id"].string()&&library[i]["state"].string()=="READY_ON_PS5"){auto storage=lower(library[i]["storageId"].string());if(libraryFilter_=="USB"&&storage.find("usb")!=std::string::npos)return true;if(libraryFilter_=="Internal"&&storage.find("internal")!=std::string::npos)return true;if(libraryFilter_=="ShadowMount"&&library[i]["registered"].boolean())return true;if(libraryFilter_=="Updates"&&releases.size()>1)return true;}return false;});float x=Tokens::safe;for(const std::string filter:{"All","Internal","USB","ShadowMount","Updates"}){float w=draw().measure(filter)+40;button("filter:"+filter,filter,{x,y,w,50},2,[this,filter]{libraryFilter_=filter;},false,true,libraryFilter_==filter);x+=w+15;}y+=72;}
     }
     if(page_=="Recently Added")all=recentlyAdded(all,all.size());
-    if(page_=="Recently Updated")all=games([](const Json&g){return g["recentlyUpdated"].boolean();});
+    if(page_=="Recently Updated"&&collection_.empty())all=games([](const Json&g){return g["recentlyUpdated"].boolean();});
     if(page_=="New Releases")std::stable_sort(all.begin(),all.end(),[](const Json&a,const Json&b){return a["releaseDate"].string()>b["releaseDate"].string();});
     if(!category_.empty())all=games([this](const Json&g){return list(g["genres"]).find(category_)!=std::string::npos;});
     title(category_.empty()?page_:category_,subtitle);if(all.empty()){draw().label("Your collection is ready for its first game.",Tokens::safe,y+60,Tokens::heading,Tokens::muted);return;}
@@ -350,7 +356,7 @@ class Storefront {
       if(!plan_["allowed"].boolean())draw().label(friendly(plan_["reason"].string()),x+40,y+h-205,Tokens::caption,Tokens::muted);}
     button("modal-back",modalStep_?"Back":"Cancel",{x+40,y+h-80,180,50},9,[this]{if(modalStep_)modalStep_--;else closeModal();focus_.select("");});
   }
-  void searchModal(){draw().fill({0,0,Tokens::width,Tokens::height},{4,10,18,247});draw().label("Search your library",Tokens::safe,Tokens::safe*1.5f,Tokens::title);button("search-input",query_.empty()?"Search games, publishers and genres…":query_,{Tokens::safe,Tokens::safe*3,Tokens::width-Tokens::safe*2,78},0,[]{SDL_StartTextInput();});auto results=games([this](const Json&g){return lower(g["title"].string()+" "+g["publisher"].string()+" "+list(g["genres"])+(advanced_?g["titleId"].string():"")).find(lower(query_))!=std::string::npos;});rail("Results",results,Tokens::safe*5.5f,2);button("search-back","Close search",{Tokens::safe,Tokens::height-Tokens::safe-70,260,58},4,[this]{closeModal();});}
+  void searchModal(){draw().fill({0,0,Tokens::width,Tokens::height},Tokens::background);draw().label("Search your library",Tokens::safe,Tokens::safe*1.5f,Tokens::title);button("search-input",query_.empty()?"Search games, publishers and genres…":query_,{Tokens::safe,Tokens::safe*3,Tokens::width-Tokens::safe*2,78},0,[]{SDL_StartTextInput();});auto results=games([this](const Json&g){return lower(g["title"].string()+" "+g["publisher"].string()+" "+list(g["genres"])+(advanced_?g["titleId"].string():"")).find(lower(query_))!=std::string::npos;});rail("Results",results,Tokens::safe*5.5f,2);button("search-back","Close search",{Tokens::safe,Tokens::height-Tokens::safe-70,260,58},4,[this]{closeModal();});}
   void removalModal(){const float w=Tokens::width*.6f,h=460,x=(Tokens::width-w)/2,y=(Tokens::height-h)/2;
     draw().fill({0,0,Tokens::width,Tokens::height},{2,6,12,215});draw().rounded({x,y,w,h},{22,32,47,250},28);
     draw().label("Delete from PS5?",x+40,y+35,Tokens::title);draw().label(removal_["title"].string(),x+40,y+120,Tokens::heading,Tokens::white,static_cast<int>(w-80),2);
@@ -366,7 +372,11 @@ class Storefront {
     button("exit-confirm","Exit PS5Library",{x+40,y+h-95,330,60},1,[this]{running_=false;SDL_StopTextInput();},true);
     button("exit-cancel","Stay in PS5Library",{x+w-390,y+h-95,350,60},1,[this]{closeModal();});
   }
-  void footer(){draw().fade({0,Tokens::height-68,Tokens::width,68},false);draw().label(options_.preview?"DESIGN PREVIEW":offline_?"SERVER OFFLINE  ·  Cached collection":loading_?"Connecting to your library…":"PS5Library",Tokens::safe,Tokens::height-39,Tokens::caption,Tokens::muted);draw().label("△  Utilities     L1 / R1  Switch Tab     ✕  Select     ○  Back",Tokens::width-730,Tokens::height-39,Tokens::caption,Tokens::white,700);}
+  void footer(){draw().fade({0,Tokens::height-68,Tokens::width,68},false);draw().label(options_.preview?"DESIGN PREVIEW":offline_?"SERVER OFFLINE  ·  Cached collection":loading_?"Connecting to your library…":"PS5Library",Tokens::safe,Tokens::height-39,Tokens::caption,Tokens::muted);
+    const std::vector<std::pair<std::string,std::string>> hints={{"triangle","Utilities"},{"shoulders","Switch Tab"},{"cross","Select"},{"circle","Back"}};
+    float total=0;for(const auto& hint:hints)total+=draw().measure(hint.second,Tokens::caption)+(hint.first=="shoulders"?94:36)+26;float x=Tokens::width-Tokens::safe-total+26,cy=Tokens::height-28;
+    for(const auto& [kind,label]:hints){if(kind=="shoulders"){for(int i=0;i<2;i++){draw().rounded({x+i*39,cy-11,31,22},{225,232,241,255},4);draw().label(i?"R1":"L1",x+i*39+4,cy-10,Tokens::caption,Tokens::background);}x+=94;}else{if(kind=="cross"){draw().rounded({x,cy-12,24,24},Tokens::white,12);draw().icon(kind,x+12,cy,Tokens::background);}else draw().icon(kind,x+12,cy);x+=36;}draw().label(label,x,cy-11,Tokens::caption);x+=draw().measure(label,Tokens::caption)+26;}
+  }
   void action(Action a){if(a==Action::None)return;if(a==Action::Quit){running_=false;return;}if(networkPaused_||SDL_IsScreenKeyboardShown(window_))return;const auto before=focus_.id();if(a==Action::Up)focus_.move(Direction::Up);if(a==Action::Down)focus_.move(Direction::Down);if(a==Action::Left)focus_.move(Direction::Left);if(a==Action::Right)focus_.move(Direction::Right);if(before!=focus_.id())audio_->play(Cue::Move);if(a==Action::Select){auto i=actions_.find(focus_.id());if(i!=actions_.end()){auto callback=i->second;callback();audio_->play(Cue::Select);}}
     if(a==Action::Search)search();if(a==Action::Settings)navigate("Settings");if(a==Action::Context){if(page_=="Game")advanced_=!advanced_;else search();}
     if(a==Action::Back){audio_->play(Cue::Back);if(!modal_.empty()){if(modal_=="Download"&&modalStep_>0){modalStep_--;focus_.select("");}else if(modal_=="SwitchServer"){modal_="Network";focus_.select("server-input");}else closeModal();}else if(page_=="Game"){page_=returnPage_;focus_.select(screenFocus_[page_]);}else if(!category_.empty())category_.clear();else if(page_=="Discover")exitPrompt();else navigate("Discover");}
@@ -385,7 +395,12 @@ public:
     flags|=SDL_WINDOW_FULLSCREEN_DESKTOP;
 #endif
     window_=SDL_CreateWindow("PS5Library",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,options_.width,options_.height,flags);renderer_=SDL_CreateRenderer(window_,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);if(!renderer_)renderer_=SDL_CreateRenderer(window_,-1,SDL_RENDERER_SOFTWARE);if(!renderer_)throw std::runtime_error(SDL_GetError());SDL_RenderSetLogicalSize(renderer_,static_cast<int>(Tokens::width),static_cast<int>(Tokens::height));
-    canvas_=std::make_unique<Canvas>(renderer_,config_["font"].string("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"));art_=std::make_unique<Artwork>(config_,options_.config.parent_path()/"artwork-cache",options_.preview);input_=std::make_unique<Input>();
+    fs::path font=config_["font"].string("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+#ifdef PS5
+    if(config_["font"].string().empty()||font=="/data/ps5library/DejaVuSans.ttf")font=options_.config.parent_path()/"Inter-Regular.otf";
+#endif
+    auto headingFont=font.parent_path()/"Inter-SemiBold.otf";const bool inter=font.filename()=="Inter-Regular.otf"&&fs::exists(headingFont);
+    canvas_=std::make_unique<Canvas>(renderer_,font.string(),inter?headingFont.string():"");art_=std::make_unique<Artwork>(config_,options_.config.parent_path()/"artwork-cache",options_.preview);input_=std::make_unique<Input>();
     audio_=std::make_unique<UiAudio>(config_["interfaceSounds"].null()||config_["interfaceSounds"].boolean());video_=std::make_unique<VideoPreview>(options_.config.parent_path()/"trailer-cache",*audio_);
     if(options_.preview){model_=readJson(options_.config.parent_path()/"preview.json");device_=model_["device"];credential_="preview";consoleId_=consoles()[size_t(0)]["id"].string();loading_=false;auto all=catalog();if(all.size())gameId_=all[size_t(0)]["id"].string();}
     else if(!config_["serverUrl"].string().empty()){auto cache=options_.config.parent_path()/"catalog-cache.json";try{device_=loadDeviceState(options_.config,config_);credential_=device_["credential"].string();art_->credentials(credential_);consoleId_=device_["consoleId"].string();if(fs::exists(cache)){auto saved=readJson(cache);if(saved["serverUrl"].string()==config_["serverUrl"].string()&&saved["device"]["consoleId"].string()==consoleId_&&!consoleId_.empty()){model_=saved;offline_=true;}}}catch(const std::exception&e){toast(e.what());}startAgent();refresh();}

@@ -49,15 +49,18 @@ if(PS5)
   target_link_libraries(ps5library_client PUBLIC kernel_sys SceUserService SceAppInstUtil)
   set_target_properties(ps5library-agent ps5library PROPERTIES SUFFIX ".elf")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(UI_FONT "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Inter-Regular.otf")
+  set(UI_HEADING_FONT "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Inter-SemiBold.otf")
+  set(UI_FONT_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/OFL.txt")
   set(UI_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/ui-assets.c")
   add_custom_command(OUTPUT "${UI_BUNDLE}"
-    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/bundle-ps5.py" --ui "${UI_BUNDLE}" /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf /usr/share/doc/fonts-dejavu-core/copyright /etc/ssl/certs/ca-certificates.crt
-    DEPENDS ../scripts/bundle-ps5.py)
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/bundle-ps5.py" --ui "${UI_BUNDLE}" "${UI_FONT}" "${UI_HEADING_FONT}" "${UI_FONT_LICENSE}" /etc/ssl/certs/ca-certificates.crt
+    DEPENDS ../scripts/bundle-ps5.py "${UI_FONT}" "${UI_HEADING_FONT}" "${UI_FONT_LICENSE}")
   target_sources(ps5library PRIVATE "${UI_BUNDLE}")
   set(BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/bundle-assets.c")
   add_custom_command(OUTPUT "${BUNDLE}"
-    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/bundle-ps5.py" "${BUNDLE}" "$<TARGET_FILE:ps5library>" "${CMAKE_CURRENT_SOURCE_DIR}/assets" "${CMAKE_CURRENT_SOURCE_DIR}/config.example.json" /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf /usr/share/doc/fonts-dejavu-core/copyright /etc/ssl/certs/ca-certificates.crt
-    DEPENDS ps5library assets/icon0.png assets/icon0.dds assets/pic0.png assets/pic0.dds assets/param.json assets/launch.html config.example.json ../scripts/bundle-ps5.py)
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/bundle-ps5.py" "${BUNDLE}" "$<TARGET_FILE:ps5library>" "${CMAKE_CURRENT_SOURCE_DIR}/assets" "${CMAKE_CURRENT_SOURCE_DIR}/config.example.json" "${UI_FONT}" "${UI_HEADING_FONT}" "${UI_FONT_LICENSE}" /etc/ssl/certs/ca-certificates.crt
+    DEPENDS ps5library assets/icon0.png assets/icon0.dds assets/pic0.png assets/pic0.dds assets/param.json assets/launch.html config.example.json ../scripts/bundle-ps5.py "${UI_FONT}" "${UI_HEADING_FONT}" "${UI_FONT_LICENSE}")
   add_executable(ps5library-install installer/main.cpp "${BUNDLE}")
   target_link_libraries(ps5library-install PRIVATE ps5library_client c++ SceIpmi SceAppInstUtil SceNotification kernel_sys)
   set_target_properties(ps5library-install PROPERTIES SUFFIX ".elf")
@@ -75,6 +78,8 @@ endif()
 add_executable(native-checks tests/checks.cpp)
 target_link_libraries(native-checks PRIVATE ps5library_client)
 if(NOT PS5)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME storefront-navigation COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/storefront.py" "$<TARGET_FILE:ps5library>")
   add_executable(native-download-checks tests/native_download.cpp agent/native.cpp)
   target_compile_definitions(native-download-checks PRIVATE PS5)
   target_compile_options(native-download-checks PRIVATE -UNDEBUG)

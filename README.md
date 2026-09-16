@@ -26,7 +26,12 @@ server is required; the server and its data are not included here.
 - Firmware saved at registration, with an explicit refresh in My PS5.
 - Exact backport profile selection, missing-file warnings and verified placement.
 
-Version 0.2.7 needs the matching private server update (firmware, backport and
+Version 0.2.8 updates the storefront to follow the approved dark cinematic
+reference: Inter typography, translucent controls, a larger hero composition,
+clean controller icons and a consistent profile page. Search's View All retains
+the selected results. Fonts and their license are bundled for offline startup.
+
+Version 0.2.8 needs the matching private server update (firmware, backport and
 native-download APIs). A 4.51 system can carry a libc SDK baseline labelled 4.50;
 the registration measurement now uses the system software API and rejects
 conflicting version reports. Host checks cover that distinction; hardware

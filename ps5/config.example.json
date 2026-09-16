@@ -10,7 +10,7 @@
   "firmware": null,
   "nativeNotifications": false,
   "nativePackageDownloads": true,
-  "font": "/data/ps5library/DejaVuSans.ttf",
+  "font": "/data/ps5library/Inter-Regular.otf",
   "storage": [
     { "storageId": "internal", "displayName": "Internal Storage", "path": "/data" },
     { "storageId": "usb0", "displayName": "USB SSD", "path": "/mnt/usb0" }

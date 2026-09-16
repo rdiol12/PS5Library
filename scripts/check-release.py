@@ -24,6 +24,11 @@ def check_source():
             raise ValueError('Excluded file in export: ' + name)
         if path.suffix.lower() in {'.png', '.dds', '.gz', '.xz', '.zip'}:
             continue
+        if path.suffix.lower() == '.otf':
+            data = path.read_bytes()
+            if data[:4] != b'OTTO' or not 64 <= len(data) <= 2 * 1024 * 1024:
+                raise ValueError('Invalid bundled OpenType font: ' + name)
+            continue
         text = path.read_text(encoding='utf-8')
         if re.search(r'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]+|192\.168\.50\.', text):
             raise ValueError('Private material in export: ' + name)

@@ -15,8 +15,10 @@ https://github.com/ps5-payload-dev/pacbrew-repo/tree/1687e827675c66e1b040751c7f0
 FFmpeg 7.0.1: https://ffmpeg.org/ (GPL-3.0-or-later in this configuration)
 x264 r3222 b35605a: https://code.videolan.org/videolan/x264 (GPL-2.0-or-later)
 The remaining linked libraries and their original source/license archives are
-listed in licenses/sources.json. DejaVu font copyright/license and the CA bundle
-are embedded by scripts/bundle-ps5.py from the build image.
+listed in licenses/sources.json. Inter 4.1 regular/semibold fonts and their SIL
+Open Font License are in ps5/assets/fonts and embedded by scripts/bundle-ps5.py.
+Font provenance and SHA-256 digests are recorded in ps5/assets/fonts/NOTICE.txt.
+The CA bundle is embedded from the build image.
 
 The public Ed25519 update verification key is intentional. Its private signing
 key is not included. Release hashes are integrity checks, not signed update
