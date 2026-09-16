@@ -27,3 +27,9 @@ Local build:
   docker run --rm --network none -v "${PWD}:/workspace" ps5library-build bash scripts/build.sh
 Push a matching version tag (for example v0.2.6) to build and publish a prerelease.
 Main-branch pushes and pull requests build/test and retain ELF artifacts.
+
+Native installer ABI references (interfaces, not a bundled Sony implementation):
+- etaHEN package writeup, dafa13b562ddb137a4b4a97b9aaa287c0c57cc9c
+- https://github.com/cy33hc/ps5-ezremote-dpi/tree/cff181ca7ecc117b2056781b9a9485ae0445a512
+ShadowMountPlus 1.7 scan-root/protocol reference:
+- https://github.com/drakmor/ShadowMountPlus/tree/072c17b050a32e5ade04a38b1d16a2c2947f650a

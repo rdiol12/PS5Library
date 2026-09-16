@@ -9,6 +9,7 @@
   "runtime": "unknown",
   "firmware": null,
   "nativeNotifications": false,
+  "nativePackageDownloads": true,
   "font": "/data/ps5library/DejaVuSans.ttf",
   "storage": [
     { "storageId": "internal", "displayName": "Internal Storage", "path": "/data" },

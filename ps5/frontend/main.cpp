@@ -286,13 +286,14 @@ class Storefront {
     if(!list.size())draw().label("You're all caught up. Your next adventure is in Discover.",Tokens::safe,y+70,Tokens::heading,Tokens::muted);
   }
   void myPS5(){auto c=selectedConsole();title(c["name"].string("My PS5"),c["presence"].string("OFFLINE")+"    Firmware "+c["firmware"].string("unknown"));float y=Tokens::header+Tokens::title+Tokens::gap*7,x=Tokens::safe;
+    button("refresh-console","Refresh console information",{Tokens::width-Tokens::safe-470,Tokens::header+Tokens::gap*2,470,58},0,[this]{request("POST","/api/v1/device/consoles/"+consoleId_+"/refresh",Json::object(),[this](const Json&){toast("Firmware refresh requested. Your PS5 will measure it when connected.");lastRefresh_=0;});},false,!c.null()&&!options_.preview);
     auto all=consoles();for(size_t i=0;i<all.size()&&i<4;i++){button("console:"+all[i]["id"].string(),all[i]["name"].string(),{x,y,330,57},1,[this,id=all[i]["id"].string()]{consoleId_=id;lastRefresh_=0;},false,true,all[i]["id"].string()==consoleId_);x+=350;}y+=98;
     const auto observed=c["runtimeStatus"];bool online=c["presence"].string()=="ONLINE";
     const auto shadow=!online?"Last seen: "+friendly(observed["shadowMount"].string("UNKNOWN")):friendly(observed["shadowMount"].string("UNKNOWN"));
     const auto backport=observed["backportConflict"].boolean()?"Runtime conflict":observed["fakelibEnabled"].null()?"Unknown":observed["fakelibEnabled"].boolean()?"Runtime enabled":"Runtime disabled";
     const std::vector<std::pair<std::string,std::string>> facts={{"PS5Library Agent",online?"Connected":"Offline"},{"ShadowMountPlus",shadow},{"Backport runtime",backport},{"Games",std::to_string(c["games"].number())}};
     x=Tokens::safe;for(const auto& [name,value]:facts){draw().label(name,x,y,Tokens::caption,Tokens::muted);draw().label(value,x,y+37,Tokens::heading,Tokens::white,static_cast<int>(Tokens::width*.225f),2);x+=Tokens::width*.235f;}y+=130;
-    draw().label(c["capabilities"]["persistentAgent"].boolean()?"Background downloads available":"Console transfers run while PS5Library is open.",Tokens::safe,y-33,Tokens::caption,Tokens::muted);
+    draw().label(c["capabilities"]["nativeDownloads"].boolean()?"FPKG downloads use PS5 Downloads. ShadowMount transfers run while the store is open.":"Console transfers run while PS5Library is open.",Tokens::safe,y-33,Tokens::caption,Tokens::muted);
     auto storage=Json::array();for(size_t i=0;i<c["storage"].size();i++)if(c["storage"][i]["installMethodsSupported"].size())storage.add(c["storage"][i]);for(size_t i=0;i<storage.size()&&i<4;i++){auto s=storage[i];float w=(Tokens::width-Tokens::safe*2-Tokens::gap)/2;Rect rect{Tokens::safe+(i%2)*(w+Tokens::gap),y+(i/2)*210,w,180};draw().rounded(rect,Tokens::surface,20);draw().label(s["displayName"].string(),rect.x+30,rect.y+25,Tokens::heading);draw().bar({rect.x+30,rect.y+90,rect.w-60,9},s["totalBytes"].number()-s["freeBytes"].number(),s["totalBytes"].number());draw().label(amount(s["freeBytes"].number())+" available",rect.x+30,rect.y+120,Tokens::body,Tokens::muted);}
   }
   void settings(){title("Settings","PS5Library is your independent, self-hosted library.");float y=Tokens::header+Tokens::title+Tokens::gap*7;
@@ -319,7 +320,7 @@ class Storefront {
   void plan(const std::string& method=""){
     if(options_.preview){method_=method.empty()?"SHADOWMOUNT":method;auto stores=Json::array();auto source=selectedConsole()["storage"];for(size_t i=0;i<source.size();i++){auto s=Json::parse(source[i].dump());s.set("allowed",true);stores.add(s);}auto methods=Json::array();methods.add("SHADOWMOUNT");methods.add("FPKG");plan_=Json::object({{"method",method_},{"methods",methods},{"allowed",true},{"storage",stores},{"compatibility",Json::object({{"status","NATIVE_COMPATIBLE"}})}});return;}
     auto revision=++planRevision_;auto r=selectedRelease();if(!r["sources"].size()){toast("No source is available for this release.");return;}auto body=Json::object({{"sourceReleaseId",r["sources"][size_t(0)]["id"]},{"consoleId",consoleId_}});if(!method.empty())body.set("method",method);plan_=Json();request("POST","/api/v1/device/installations/plan",body,[this,revision](const Json& result){
-      if(revision!=planRevision_)return;plan_=result;method_=result["method"].string();if(modal_!="Download")return;
+        if(revision!=planRevision_)return;plan_=result;method_=result["method"].string();if(!result["message"].string().empty())toast(result["message"].string());if(modal_!="Download")return;
       auto stores=result["storage"];bool available=false;std::string first="modal-back";
       for(size_t i=0;i<stores.size();i++)if(stores[i]["allowed"].boolean()){if(first=="modal-back")first="destination:"+std::to_string(i);if(stores[i]["storageId"].string()==storageId_)available=true;}
       if(modalStep_==4&&!available)modalStep_=2;

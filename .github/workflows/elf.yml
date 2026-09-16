@@ -58,7 +58,9 @@ jobs:
 
           Send ps5library-install.elf through a compatible homebrew payload loader to install/update. ps5library.elf is the application binary. Enter your own PS5Library server address on first launch.
 
-          Built from this tag after native host tests and ELF/hash verification. This release has not been tested on a physical PS5. HDMI audio and PS-button Home/background behavior remain unresolved. Native FPKG installation is not yet implemented.
+          Firmware is measured at registration and saved, with an explicit refresh action after a firmware upgrade. Matching backport delivery and missing-file warnings require the updated private server. Native base-FPKG download submission now uses AppInstUtil; completion requires verified package bytes, metadata and console inventory.
+
+          Built from this tag after native host tests and ELF/hash verification. Native Downloads submission, backport placement and installation have not been tested on a physical PS5. Native update/DLC installation and external destinations remain unsupported. ShadowMount images use their separate transfer/mount route. HDMI audio and PS-button Home/background behavior remain unresolved.
 
           This repository contains console code and build assets only. The application still requires a separately hosted PS5Library server. No server address or private update-signing key is bundled.
           EOF

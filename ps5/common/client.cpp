@@ -109,6 +109,10 @@ CURL* Client::handle(const std::string& relative) const {
   curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,+[](void* data,curl_off_t,curl_off_t,curl_off_t,curl_off_t)->int{auto* client=static_cast<const Client*>(data);return client->cancelled&&client->cancelled()?1:0;});
   if(!ca_.empty()) curl_easy_setopt(curl,CURLOPT_CAINFO,ca_.c_str()); return curl;
 }
+std::string Client::nativeDownloadUrl(const std::string& relative) const {
+  if(relative.rfind("/api/v1/native-downloads/",0)!=0||relative.find("..")!=std::string::npos||relative.find_first_of("?#\\\r\n")!=std::string::npos)throw std::runtime_error("Invalid native download path");
+  return base_+relative;
+}
 static size_t collect(char* ptr,size_t size,size_t count,void* userdata) {
   auto& out=*static_cast<std::string*>(userdata); if(size*count>12*1024*1024-out.size()) return 0; out.append(ptr,size*count); return size*count;
 }

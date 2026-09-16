@@ -29,7 +29,7 @@ bool shadowMountSupported(const Json& version){
   bool add=false,scan=false;auto caps=version["capabilities"];for(size_t i=0;i<caps.size();i++){add|=caps[i].string()=="add_manual_source";scan|=caps[i].string()=="rescan";}return add&&scan;
 }
 Json shadowMountRequest(unsigned port,const std::string& route,const Json& body,const std::function<bool()>& cancelled){
-  static const std::set<std::string> routes={"/api/v1/version","/api/v1/manual/add","/api/v1/scan","/api/v1/games","/api/v1/games/uninstall","/api/v1/games/delete","/api/v1/games/storage/status"};
+  static const std::set<std::string> routes={"/api/v1/version","/api/v1/settings","/api/v1/manual/add","/api/v1/scan","/api/v1/games","/api/v1/games/uninstall","/api/v1/games/delete","/api/v1/games/storage/status"};
   if(!port||port>65535||!routes.count(route))throw std::runtime_error("Unsupported local ShadowMount request");
   Client local(Json::object({{"serverUrl","http://127.0.0.1:"+std::to_string(port)},{"allowInsecureLan",true}}));local.cancelled=cancelled;
   auto payload=body.dump();if(payload.size()>4096)throw std::runtime_error("ShadowMount request too large");

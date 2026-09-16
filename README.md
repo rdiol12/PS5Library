@@ -23,6 +23,14 @@ server is required; the server and its data are not included here.
 - Storage selection, supported title launching, and real job/transfer progress.
 - Cached artwork, supplied game music, and trailers after five seconds of focus.
 - Capability negotiation and signed updates from your configured server.
+- Firmware saved at registration, with an explicit refresh in My PS5.
+- Exact backport profile selection, missing-file warnings and verified placement.
+
+Version 0.2.7 needs the matching private server update (firmware, backport and
+native-download APIs). A 4.51 system can carry a libc SDK baseline labelled 4.50;
+the registration measurement now uses the system software API and rejects
+conflicting version reports. Host checks cover that distinction; hardware
+confirmation remains required.
 
 Availability depends on the connected server and the console's actual runtime.
 PS5Library is independent of Sony infrastructure and does not request PSN credentials.
@@ -83,8 +91,8 @@ Push a version tag matching `ps5/common/version.hpp` to publish the verified ELF
 files as a prerelease:
 
 ```sh
-git tag v0.2.6
-git push origin v0.2.6
+git tag v0.2.7
+git push origin v0.2.7
 ```
 
 For subsequent releases, update the application version and increase its build
@@ -99,8 +107,16 @@ downloads are pinned by hash in `licenses/sources.json`.
 - Host tests and cross-compilation do not prove physical-console behavior.
 - HDMI audio remains inaudible on the tested console despite successful audio calls.
 - PS-button **Home/background** behavior remains unresolved.
-- Native FPKG installation is not implemented. A capability or compatibility
-  requirement that is missing is not treated as supported.
+- Native PS5 base-package downloads use the AppInstUtil URL installer when it
+  initializes successfully. Native queue appearance and acceptance on physical
+  hardware remain unverified. The first adapter confirms internal installs;
+  external targets, native update/DLC installation and automatic native error
+  polling are not implemented. Use PS5 Downloads for its queue controls/errors.
+- ShadowMount 1.7 overlays use verified staging and separate title directories;
+  FPKG backport variants contain their selected libraries inside the package.
+  These runtime paths require matching server profiles and physical launch tests.
+- The app does not claim completion from an accepted install request: installed
+  package bytes, exact title metadata and server inventory must agree.
 - Standalone persistent-agent/background support and direct native title startup
   are not established. Existing launcher integration remains required.
 

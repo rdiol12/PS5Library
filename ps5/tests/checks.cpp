@@ -43,6 +43,16 @@ int main() {
   assert(firmwareVersion(0x04510000)=="4.51");
   assert(firmwareVersion(0x12000000)=="12.00");
   assert(firmwareVersion(0).empty());
+  assert(registrationFirmware(0x04510000,0x04500000)=="4.51");
+  assert(registrationFirmware(0x12600000,0x12600000)=="12.60");
+  assert(registrationFirmware(0x99990000,0x04500000).empty());
+  assert(registrationFirmware(0,0x04500000).empty());
+  auto libraries=root/"backport";fs::create_directories(libraries/"fakelib");atomicBytes(libraries/"fakelib/example.sprx","abc");
+  auto backport=Json::parse(R"({"files":[{"path":"fakelib/example.sprx","size":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]})");
+  assert(verifyBackport(libraries,backport));atomicBytes(libraries/"fakelib/extra.sprx","abc");assert(!verifyBackport(libraries,backport));fs::remove(libraries/"fakelib/extra.sprx");
+  assert(!verifyBackport(libraries,Json::parse(R"({"files":[{"path":"../data","size":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]})")));
+  assert(shadowMountScanRoots(Json::parse(R"({"scan_paths":[]})"),Json::parse(R"({"shadowmount_version":"1.7alpha13"})")).size()>20);
+  assert(shadowMountScanRoots(Json::parse(R"({"scan_paths":[]})"),Json::parse(R"({"shadowmount_version":"2.0"})")).size()==0);
   rejected=false;try{Client invalid(Json::object({{"serverUrl","https://example.net/not-a-server-root"}}));}catch(...){rejected=true;}assert(rejected);
   auto config=Json::object({{"serverUrl","https://one.example"},{"name","Keep my name"}});atomicJson(root/"config.json",config);Agent initial(root/"config.json");auto state=readJson(root/"device-state.json");assert(state["serverUrl"].string()=="https://one.example");config.set("serverUrl","https://two.example");atomicJson(root/"config.json",config);rejected=false;try{Agent wrong(root/"config.json");}catch(...){rejected=true;}assert(rejected);
   assert(normalizeServerUrl(" HTTPS://ONE.EXAMPLE:443/ ")=="https://one.example");
