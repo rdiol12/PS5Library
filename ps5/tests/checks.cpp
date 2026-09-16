@@ -6,6 +6,13 @@
 #include <sys/file.h>
 #include <unistd.h>
 int main() {
+  // Complete top-level values need an end-of-input marker for json-c.
+  assert(Json::parse("null").null());
+  assert(Json::parse("true").boolean());
+  assert(Json::parse("42").number()==42);
+  for(const auto& input:std::vector<std::string>{"", "nul", "{\"v\":", "null false", std::string("null\0false",10)}){
+    bool invalid=false;try{(void)Json::parse(input);}catch(const std::exception&){invalid=true;}assert(invalid);
+  }
   assert(ps5library::shadowMountPort("# api_port=9\n")==10101);
   assert(ps5library::shadowMountPort("api_port=12345\n")==12345);
   assert(ps5library::shadowMountPort("api_enabled = false\n")==0);

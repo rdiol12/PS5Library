@@ -23,7 +23,7 @@ public:
   static Json array() { return Json(json_object_new_array()); }
   static Json parse(const std::string& text) {
     json_tokener* parser = json_tokener_new_ex(32);
-    auto* value = json_tokener_parse_ex(parser,text.data(),static_cast<int>(text.size()));
+    auto* value = json_tokener_parse_ex(parser,text.c_str(),static_cast<int>(text.size()+1));
     auto error = json_tokener_get_error(parser); auto used = json_tokener_get_parse_end(parser); json_tokener_free(parser);
     if (error != json_tokener_success || text.find_first_not_of(" \r\n\t",used) != std::string::npos) { json_object_put(value); throw std::runtime_error("Invalid JSON"); }
     return Json(value);

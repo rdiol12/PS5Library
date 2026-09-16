@@ -26,12 +26,17 @@ server is required; the server and its data are not included here.
 - Firmware saved at registration, with an explicit refresh in My PS5.
 - Exact backport profile selection, missing-file warnings and verified placement.
 
-Version 0.2.8 updates the storefront to follow the approved dark cinematic
+Version 0.2.9 fixes a startup failure by loading the native installer's required
+IPMI library first. The corrected app reached the storefront on the development
+console. Built ELF dependencies are now checked before packaging. It also fixes
+parsing of the server's `null` response when no update is published.
+
+The storefront follows the approved dark cinematic
 reference: Inter typography, translucent controls, a larger hero composition,
 clean controller icons and a consistent profile page. Search's View All retains
 the selected results. Fonts and their license are bundled for offline startup.
 
-Version 0.2.8 needs the matching private server update (firmware, backport and
+Version 0.2.9 needs the matching private server update (firmware, backport and
 native-download APIs). A 4.51 system can carry a libc SDK baseline labelled 4.50;
 the registration measurement now uses the system software API and rejects
 conflicting version reports. Host checks cover that distinction; hardware
@@ -96,8 +101,8 @@ Push a version tag matching `ps5/common/version.hpp` to publish the verified ELF
 files as a prerelease:
 
 ```sh
-git tag v0.2.7
-git push origin v0.2.7
+git tag v0.2.9
+git push origin v0.2.9
 ```
 
 For subsequent releases, update the application version and increase its build

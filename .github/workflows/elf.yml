@@ -58,7 +58,7 @@ jobs:
 
           Send ps5library-install.elf through a compatible homebrew payload loader to install/update. ps5library.elf is the application binary. Enter your own PS5Library server address on first launch.
 
-          Version 0.2.8 refines the approved cinematic storefront layout, bundled Inter typography, translucent focus treatment, controller icons and profile page. Search View All preserves its results. Host checks exercise controller access to Search, Settings and Profile, plus focus restoration and rendering. Runtime data still comes from the configured server.
+          Version 0.2.9 fixes the startup failure caused by missing IPMI linkage before the native installer library. The corrected app reached the storefront on the development PS5. Build checks now enforce actual ELF dependency order. The JSON parser also accepts complete scalar responses, fixing Invalid JSON when no app update is published. The cinematic layout from 0.2.8 is retained.
 
           Built from this tag after native host tests and ELF/hash verification. Native Downloads submission, backport placement and installation have not been tested on a physical PS5. Native update/DLC installation and external destinations remain unsupported. ShadowMount images use their separate transfer/mount route. HDMI audio and PS-button Home/background behavior remain unresolved.
 
