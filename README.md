@@ -26,17 +26,21 @@ server is required; the server and its data are not included here.
 - Firmware saved at registration, with an explicit refresh in My PS5.
 - Exact backport profile selection, missing-file warnings and verified placement.
 
-Version 0.2.9 fixes a startup failure by loading the native installer's required
-IPMI library first. The corrected app reached the storefront on the development
-console. Built ELF dependencies are now checked before packaging. It also fixes
-parsing of the server's `null` response when no update is published.
+Version 0.2.10 lets you choose the installation method before selecting storage.
+This fixes a dead end when the default FPKG route cannot use the selected drive:
+ShadowMount remains reachable for supported USB/M.2 destinations. Compatibility
+profiles and free-space checks still apply. Native package installation currently
+supports PS5 base games on internal storage; native update/DLC installation is pending.
+
+The previous startup and updater corrections are retained: IPMI loads before
+AppInstUtil, built ELF dependencies are checked, and an empty update feed parses correctly.
 
 The storefront follows the approved dark cinematic
 reference: Inter typography, translucent controls, a larger hero composition,
 clean controller icons and a consistent profile page. Search's View All retains
 the selected results. Fonts and their license are bundled for offline startup.
 
-Version 0.2.9 needs the matching private server update (firmware, backport and
+The app needs the matching private server APIs (firmware, backport and
 native-download APIs). A 4.51 system can carry a libc SDK baseline labelled 4.50;
 the registration measurement now uses the system software API and rejects
 conflicting version reports. Host checks cover that distinction; hardware
@@ -44,6 +48,24 @@ confirmation remains required.
 
 Availability depends on the connected server and the console's actual runtime.
 PS5Library is independent of Sony infrastructure and does not request PSN credentials.
+
+## Screenshots
+
+Captured from version 0.2.10 running on the development PS5 at 1920×1080,
+using its paired server and actual library data. Downloads shows completed source
+jobs and a failed preparation from that library.
+
+### Discover
+
+![Discover on PS5](ps5/screenshots/discover.png)
+
+### Downloads
+
+![Downloads on PS5](ps5/screenshots/downloads.png)
+
+### Profile
+
+![Profile and console library on PS5](ps5/screenshots/profile.png)
 
 ## Install
 
@@ -101,8 +123,8 @@ Push a version tag matching `ps5/common/version.hpp` to publish the verified ELF
 files as a prerelease:
 
 ```sh
-git tag v0.2.9
-git push origin v0.2.9
+git tag v0.2.10
+git push origin v0.2.10
 ```
 
 For subsequent releases, update the application version and increase its build
