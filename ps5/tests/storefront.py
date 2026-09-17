@@ -11,16 +11,17 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
     font = Path(__file__).resolve().parents[1] / 'assets/fonts/Inter-Regular.otf'
     (root / 'config.json').write_text(json.dumps({'font': str(font)}))
     games = [{'id': name.lower(), 'title': name, 'genres': ['Action'], 'rail': 'popular',
-              'releases': [{'id': name.lower() + '-base', 'kind': 'BASE', 'version': '1.00'}]}
+              'releases': [{'id': name.lower() + '-base', 'kind': 'BASE', 'version': '1.00',
+                            'sources': [{'id': name.lower() + '-source'}]}]}
              for name in ('Alpha', 'Beta', 'Gamma')]
     (root / 'preview.json').write_text(json.dumps({
         'catalog': games, 'consoles': [{'id': 'test-console', 'name': 'Test PS5'}],
         'device': {'consoleId': 'test-console'}, 'profile': {'username': 'Tester'},
     }))
 
-    def check(script, page, focus, size='1920x1080'):
+    def check(script, page, focus, size='1920x1080', start='Discover'):
         result = subprocess.run([sys.argv[1], str(root / 'config.json'), '--preview',
-                                 '--script=' + script, '--size=' + size,
+                                 '--script=' + script, '--size=' + size, '--screen=' + start,
                                  '--frames=' + str(25 * len(script.split(',')) + 40)],
                                 env=dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy'),
                                 capture_output=True, text=True, timeout=40, check=True)
@@ -33,4 +34,11 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
     check('up,up,' + 'right,' * 6 + 'select', 'Discover', 'search-input', '1280x720')
     check('up,up,' + 'right,' * 7 + 'select', 'Settings', 'network')
     check('up,up,' + 'right,' * 8 + 'select', 'Profile', 'profile-picture')
-    print('PASS: filtered collections, return focus, search, settings and profile at console resolutions')
+    # Even when the default method has no destination, its alternative must be reachable.
+    check('select,down,select,select', 'Game', 'method', start='Game')
+    check('select,down,select,select,down', 'Game', 'method:FPKG', start='Game')
+    fixture = json.loads((root / 'preview.json').read_text())
+    fixture['consoles'][0]['storage'] = [{'storageId': 'usb', 'displayName': 'USB SSD'}]
+    (root / 'preview.json').write_text(json.dumps(fixture))
+    check('select,down,select,select,down,select,select', 'Game', 'confirm-download', start='Game')
+    print('PASS: collections, return focus, search, settings, profile and method-before-storage downloads')

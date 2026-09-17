@@ -12,8 +12,8 @@ namespace fs=std::filesystem;
 constexpr auto marker="PS5Library home entry v1\n";
 struct File {std::string name;const unsigned char* data;size_t size;};
 inline bool owned(const fs::path& dir){if(fs::is_symlink(dir)||fs::is_symlink(dir/".ps5library-owner"))return false;std::ifstream input(dir/".ps5library-owner");std::string text((std::istreambuf_iterator<char>(input)),{});return text==marker;}
-inline void write(const fs::path& file,const unsigned char* data,size_t size){int fd=open(file.c_str(),O_WRONLY|O_CREAT|O_EXCL,0644);if(fd<0)throw std::runtime_error("Cannot create installation file");size_t offset=0;while(offset<size){auto n=::write(fd,data+offset,size-offset);if(n<=0){close(fd);throw std::runtime_error("Incomplete installation write");}offset+=static_cast<size_t>(n);}int result=fsync(fd);close(fd);if(result)throw std::runtime_error("Cannot flush installation file");}
-inline bool bundlePath(const std::string& name){return name=="eboot.elf"||name=="launch.html"||name=="sce_sys/icon0.png"||name=="sce_sys/icon0.dds"||name=="sce_sys/pic0.png"||name=="sce_sys/pic0.dds"||name=="sce_sys/pic1.png"||name=="sce_sys/pic1.dds"||name=="sce_sys/param.json";}
+inline void write(const fs::path& file,const unsigned char* data,size_t size,mode_t mode=0644){int fd=open(file.c_str(),O_WRONLY|O_CREAT|O_EXCL,mode);if(fd<0)throw std::runtime_error("Cannot create installation file");size_t offset=0;while(offset<size){auto n=::write(fd,data+offset,size-offset);if(n<=0){close(fd);throw std::runtime_error("Incomplete installation write");}offset+=static_cast<size_t>(n);}int result=fsync(fd);close(fd);if(result)throw std::runtime_error("Cannot flush installation file");}
+inline bool bundlePath(const std::string& name){return name=="eboot.elf"||name=="eboot.bin"||name=="sce_module/libc.prx"||name=="assets/banner.txt"||name=="launch.html"||name=="sce_sys/icon0.png"||name=="sce_sys/icon0.dds"||name=="sce_sys/pic0.png"||name=="sce_sys/pic0.dds"||name=="sce_sys/pic1.png"||name=="sce_sys/pic1.dds"||name=="sce_sys/param.json";}
 inline void removeOwned(const fs::path& dir){
   if(fs::is_symlink(dir))throw std::runtime_error("Symlink installation target");
   if(!fs::exists(dir))return;
@@ -24,15 +24,15 @@ inline void removeOwned(const fs::path& dir){
     files.push_back(entry.path());
   };
   // PS5 libc++ remove_all silently leaves the directory intact. Validate the finite bundle before POSIX deletion.
-  bool system=false;
+  std::vector<fs::path> directories;
   for(const auto& entry:fs::directory_iterator(dir)){
     auto name=entry.path().filename().string();if(name==".ps5library-owner")continue;
-    if(name=="sce_sys"&&!entry.is_symlink()&&entry.is_directory()){
-      system=true;for(const auto& child:fs::directory_iterator(entry.path()))check(child,"sce_sys/"+child.path().filename().string());
+    if((name=="sce_sys"||name=="sce_module"||name=="assets")&&!entry.is_symlink()&&entry.is_directory()){
+      directories.push_back(entry.path());for(const auto& child:fs::directory_iterator(entry.path()))check(child,name+"/"+child.path().filename().string());
     }else check(entry,name);
   }
   for(const auto& file:files)if(unlink(file.c_str()))throw std::runtime_error("Cannot remove installation file; ownership marker retained");
-  if(system&&rmdir((dir/"sce_sys").c_str()))throw std::runtime_error("Cannot remove installation metadata folder");
+  for(const auto& directory:directories)if(rmdir(directory.c_str()))throw std::runtime_error("Cannot remove installation bundle folder");
   if(unlink((dir/".ps5library-owner").c_str()))throw std::runtime_error("Cannot remove installation marker");
   if(rmdir(dir.c_str())){
     write(dir/".ps5library-owner",reinterpret_cast<const unsigned char*>(marker),std::string(marker).size());
@@ -49,7 +49,7 @@ inline void publish(const fs::path& target,const std::vector<File>& files,const 
   if(fs::space(target.parent_path()).available<bytes+64*1024*1024)throw std::runtime_error("Insufficient installation space");
   removeOwned(stage);fs::create_directory(stage);
   write(stage/".ps5library-owner",reinterpret_cast<const unsigned char*>(marker),std::string(marker).size());
-  try{for(const auto& file:files){auto destination=stage/file.name;fs::create_directories(destination.parent_path());write(destination,file.data,file.size);}if(fs::exists(target))fs::rename(target,previous);fs::rename(stage,target);
+  try{for(const auto& file:files){auto destination=stage/file.name;fs::create_directories(destination.parent_path());const bool executable=file.name=="eboot.bin"||file.name=="sce_module/libc.prx";write(destination,file.data,file.size,executable?0755:0644);}if(fs::exists(target))fs::rename(target,previous);fs::rename(stage,target);
     try{registerTitle();}catch(...){removeOwned(target);if(fs::exists(previous))fs::rename(previous,target);throw;}
     if(!keepPrevious)removeOwned(previous);
   }catch(...){removeOwned(stage);throw;}
