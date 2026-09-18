@@ -9,7 +9,12 @@ enum class Cue {Move,Select,Back};
 class UiAudio {
   SDL_AudioDeviceID device_=0;bool initialized_=false,enabled_,preview_=false;unsigned played_=0;
   std::array<std::vector<Sint16>,3> cues_;
-  bool music_=false;const std::vector<Sint16>* overlay_=nullptr;size_t overlayOffset_=0,fadeSamples_=0;
+  bool music_=false,ambient_=false;const std::vector<Sint16>* overlay_=nullptr;size_t overlayOffset_=0,fadeSamples_=0;uint64_t ambientFrame_=0;std::vector<Sint16> ambientChunk_;
+  void queueAmbient(){constexpr double tau=6.283185307179586;constexpr double chords[4][3]={{130.81,196.00,246.94},{110.00,164.81,196.00},{87.31,130.81,164.81},{98.00,146.83,196.00}},sparkles[]={523.25,659.25,783.99,659.25,587.33,698.46,880.00,698.46};ambientChunk_.resize(4096);
+    for(size_t frame=0;frame<2048;frame++,ambientFrame_++){double t=ambientFrame_/48000.,within=std::fmod(t,4.),padEnvelope=std::min(1.,std::min(within,4.-within)*2.),sample=0;int chord=static_cast<int>(t/4.)%4;for(double frequency:chords[chord])sample+=std::sin(tau*frequency*t)*170*padEnvelope;double pulse=std::fmod(t,1.5),sparkle=std::sin(tau*sparkles[static_cast<int>(t/1.5)%8]*pulse)*std::exp(-pulse*4.2)*620;sample+=sparkle+std::sin(tau*65.4*t)*85;
+      for(int channel=0;channel<2;channel++){int mixed=static_cast<int>(sample*(.92+(channel?1:-1)*.08*std::sin(tau*t/9.)));if(overlay_&&enabled_){mixed+=(*overlay_)[overlayOffset_++];if(overlayOffset_==overlay_->size())overlay_=nullptr;}ambientChunk_[frame*2+channel]=static_cast<Sint16>(std::clamp(mixed,-32768,32767));}}
+    SDL_QueueAudio(device_,ambientChunk_.data(),static_cast<Uint32>(ambientChunk_.size()*sizeof(Sint16)));
+  }
 public:
   explicit UiAudio(bool enabled):enabled_(enabled){
     if(SDL_InitSubSystem(SDL_INIT_AUDIO)!=0)return;initialized_=true;
@@ -33,6 +38,7 @@ public:
   unsigned played()const{return played_;}
   void setEnabled(bool value){enabled_=value;if(!value&&!preview_&&device_)SDL_ClearQueuedAudio(device_);}
   void preview(bool active,bool music=false){if(preview_!=active||music_!=music){clear();preview_=active;music_=music;overlay_=nullptr;fadeSamples_=0;}}
+  void ambient(bool active){if(ambient_!=active){ambient_=active;if(!active&&!preview_)clear();}if(!device_||!ambient_||preview_)return;for(int i=0;i<3&&queued()<16384;i++)queueAmbient();}
   void clear(){if(device_)SDL_ClearQueuedAudio(device_);}
   void suspend(bool paused){if(device_){if(paused)clear();SDL_PauseAudioDevice(device_,paused?1:0);}}
   Uint32 queued()const{return device_?SDL_GetQueuedAudioSize(device_):0;}
@@ -50,7 +56,7 @@ public:
   bool play(Cue cue){
     if(!device_||!enabled_||(preview_&&!music_)||SDL_GetQueuedAudioSize(device_)>24000)return false;
     const auto& samples=cues_.at(static_cast<size_t>(cue));
-    if(preview_&&music_){overlay_=&samples;overlayOffset_=0;played_++;return true;}
+    if((preview_&&music_)||ambient_){overlay_=&samples;overlayOffset_=0;played_++;return true;}
     if(SDL_QueueAudio(device_,samples.data(),static_cast<Uint32>(samples.size()*sizeof(Sint16))))return false;
     played_++;return true;
   }

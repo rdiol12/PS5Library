@@ -24,6 +24,12 @@ public:
   ~Canvas(){for(auto& [k,t]:labels_)SDL_DestroyTexture(t.texture);for(auto [s,f]:fonts_)TTF_CloseFont(f);SDL_DestroyTexture(horizontal_);SDL_DestroyTexture(vertical_);}
   void fill(Rect rect,SDL_Color color){SDL_SetRenderDrawColor(renderer,color.r,color.g,color.b,color.a);auto dst=rect.sdl();SDL_RenderFillRectF(renderer,&dst);}
   void ring(float x,float y,float radius,SDL_Color color){SDL_Vertex vertices[80];int indices[240];for(int i=0;i<40;i++){float a=i*6.2831853f/40;for(int edge=0;edge<2;edge++){float r=radius-edge*1.8f;vertices[i*2+edge]={{x+std::cos(a)*r,y+std::sin(a)*r},color,{0,0}};}int next=(i+1)%40*2;int* triangle=indices+i*6;triangle[0]=i*2;triangle[1]=next;triangle[2]=i*2+1;triangle[3]=i*2+1;triangle[4]=next;triangle[5]=next+1;}SDL_RenderGeometry(renderer,nullptr,vertices,80,indices,240);}
+  void vibrantRing(float x,float y,float radius,float phase){
+    constexpr SDL_Color colors[]={{95,219,255,245},{112,120,255,245},{218,93,255,245},{255,103,158,245}};SDL_Vertex vertices[96];int indices[288];
+    for(int i=0;i<48;i++){float angle=i*6.2831853f/48,t=std::fmod(i/48.f+phase,1.f)*4;int first=static_cast<int>(t)%4,nextColor=(first+1)%4;float mix=t-std::floor(t);SDL_Color color{static_cast<Uint8>(colors[first].r+(colors[nextColor].r-colors[first].r)*mix),static_cast<Uint8>(colors[first].g+(colors[nextColor].g-colors[first].g)*mix),static_cast<Uint8>(colors[first].b+(colors[nextColor].b-colors[first].b)*mix),245};
+      for(int edge=0;edge<2;edge++){float r=radius-edge*2.2f;vertices[i*2+edge]={{x+std::cos(angle)*r,y+std::sin(angle)*r},color,{0,0}};}int next=(i+1)%48*2,*triangle=indices+i*6;triangle[0]=i*2;triangle[1]=next;triangle[2]=i*2+1;triangle[3]=i*2+1;triangle[4]=next;triangle[5]=next+1;
+    }SDL_RenderGeometry(renderer,nullptr,vertices,96,indices,288);
+  }
   void stroke(float x1,float y1,float x2,float y2,SDL_Color color,float width=2){float length=std::hypot(x2-x1,y2-y1);if(length<=0)return;float dx=(y2-y1)/length*width/2,dy=(x1-x2)/length*width/2;SDL_Vertex v[]={{{x1+dx,y1+dy},color,{}},{{x2+dx,y2+dy},color,{}},{{x2-dx,y2-dy},color,{}},{{x1-dx,y1-dy},color,{}}};int indices[]={0,1,2,0,2,3};SDL_RenderGeometry(renderer,nullptr,v,4,indices,6);}
   void icon(const std::string& kind,float x,float y,SDL_Color color=Tokens::white){
     if(kind=="search"){ring(x-3,y-3,11,color);stroke(x+5,y+5,x+16,y+16,color,2.4f);}
