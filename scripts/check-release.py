@@ -13,7 +13,7 @@ def check_source():
     files = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')[:-1]
     if not files:
         raise ValueError('No tracked frontend files')
-    roots = {'ps5', 'scripts', 'docker', '.github', 'licenses'}
+    roots = {'ps5', 'ios', 'scripts', 'docker', '.github', 'licenses'}
     standalone = {'.gitignore', '.gitattributes', '.dockerignore', 'LICENSE', 'NOTICE.txt', 'README.md'}
     for name in files:
         path = Path(name)

@@ -1,0 +1,38 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: sh ios/check.sh
+      - name: Build unsigned iPhone app
+        run: >-
+          xcodebuild -project ios/PS5LibraryCompanion.xcodeproj
+          -scheme PS5LibraryCompanion -configuration Release
+          -sdk iphoneos -destination 'generic/platform=iOS'
+          CONFIGURATION_BUILD_DIR="$RUNNER_TEMP/device"
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Package and verify IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/Payload" dist
+          cp -R "$RUNNER_TEMP/device/PS5LibraryCompanion.app" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/dist/PS5LibraryCompanion-unsigned.ipa" Payload)
+          unzip -t dist/PS5LibraryCompanion-unsigned.ipa
+          unzip -l dist/PS5LibraryCompanion-unsigned.ipa | grep -q 'Payload/PS5LibraryCompanion.app/Info.plist'
+          shasum -a 256 dist/PS5LibraryCompanion-unsigned.ipa > dist/PS5LibraryCompanion-unsigned.ipa.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ps5library-ios-unsigned
+          path: dist/PS5LibraryCompanion-unsigned.ipa*
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+checks=$(mktemp -d)
+trap 'rm -rf "$checks"' EXIT
+swiftc PS5LibraryCompanion/Models.swift Checks/main.swift -o "$checks/models"
+"$checks/models"
+swiftc -frontend -parse PS5LibraryCompanion/*.swift
