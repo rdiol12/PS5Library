@@ -1,3 +1,5 @@
+server files will be release after i ironed out some bugs  
+
 <p align="center"><img src="ps5/assets/icon0.png" width="140" alt="PS5Library icon"></p>
 
 # PS5Library
