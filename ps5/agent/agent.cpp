@@ -148,7 +148,7 @@ void Agent::tick() {
   if(!paired()) { pair(); return; }
   heartbeat();removals(); auto tasks=client.request("GET","/api/v1/device/tasks"); auto volumes=storage();
   if(config_["nativeNotifications"].boolean()){
-    auto notices=client.request("GET","/api/v1/device/notifications");for(size_t i=0;i<notices.size();i++){notify(notices[i]["message"].string());client.request("POST","/api/v1/device/notifications/"+notices[i]["id"].string()+"/ack",Json::object());}
+    auto notices=client.request("GET","/api/v1/device/notifications");for(size_t i=0;i<notices.size();i++)if(notify(notices[i]["message"].string()))client.request("POST","/api/v1/device/notifications/"+notices[i]["id"].string()+"/ack",Json::object());
   }
   for(size_t i=0;i<tasks.size();i++) {
     if(client.cancelled&&client.cancelled())return;

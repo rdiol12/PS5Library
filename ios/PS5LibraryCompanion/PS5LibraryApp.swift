@@ -10,8 +10,8 @@ private let appBackground=Color(red:0.025,green:0.047,blue:0.08)
 }
 struct ArtworkView:View {
     @EnvironmentObject var store:Store;let path:String;@State private var image:UIImage?
-    var body:some View{ZStack{appBackground;Image(systemName:"gamecontroller.fill").font(.largeTitle).foregroundStyle(accent.opacity(0.4));if let image=image{Image(uiImage:image).resizable().scaledToFill()}}
-        .clipped().task(id:(store.account?.id ?? "")+path){image=nil;guard let api=store.api else{return};do{let data=try await api.artwork(path);let decoded=await Task.detached(priority:.utility){UIImage(data:data)?.preparingForDisplay()}.value;if !Task.isCancelled{image=decoded}}catch{}}
+    var body:some View{ZStack{appBackground;Image(systemName:"gamecontroller.fill").font(.largeTitle).foregroundStyle(accent.opacity(0.4));if let image=image{Image(uiImage:image).resizable().scaledToFill().frame(maxWidth:.infinity,maxHeight:.infinity)}}
+        .clipped().allowsHitTesting(false).task(id:(store.account?.id ?? "")+path){image=nil;guard let api=store.api else{return};do{let data=try await api.artwork(path);let decoded=await Task.detached(priority:.utility){UIImage(data:data)?.preparingForDisplay()}.value;if !Task.isCancelled{image=decoded}}catch{}}
     }
 }
 struct RootView:View {
@@ -34,7 +34,9 @@ struct RootView:View {
             NavigationStack{DownloadsView()}.tabItem{Label("Downloads",systemImage:"arrow.down.circle")}
             NavigationStack{ConsolesView().navigationTitle("My PS5s")}.tabItem{Label("My PS5",systemImage:"gamecontroller")}
             settings.tabItem{Label("Settings",systemImage:"gearshape")}
-        }
+        }.background(appBackground.ignoresSafeArea())
+            .toolbarBackground(appBackground.opacity(0.96),for:.tabBar)
+            .toolbarBackground(.visible,for:.tabBar)
     }
     private var discover:some View {
         NavigationStack {
@@ -42,16 +44,34 @@ struct RootView:View {
                 VStack(alignment:.leading,spacing:26) {
                     if store.offline{Label("Server offline · showing last synced data",systemImage:"wifi.slash").font(.caption).foregroundStyle(.orange)}
                     if query.isEmpty,let hero=store.data.featured,let game=store.data.games.first(where:{$0.id==hero.gameId}) {
-                        NavigationLink(value:game){ZStack(alignment:.bottomLeading){ArtworkView(path:hero.heroUrl ?? game.heroUrl).frame(height:350);LinearGradient(colors:[.clear,appBackground],startPoint:.top,endPoint:.bottom);VStack(alignment:.leading,spacing:9){Text("FEATURED").font(.caption).tracking(3).foregroundStyle(accent);Text(game.title).font(.largeTitle.bold());Text(game.description ?? "").lineLimit(2).font(.subheadline).foregroundStyle(.secondary);Text("View Game  ›").font(.headline)}.padding(22)}}.buttonStyle(.plain).clipShape(RoundedRectangle(cornerRadius:20))
+                        NavigationLink(value:game) {
+                            Color.clear.aspectRatio(16/10,contentMode:.fit)
+                                .overlay {ZStack(alignment:.bottomLeading){ArtworkView(path:hero.heroUrl ?? game.heroUrl);LinearGradient(colors:[.clear,appBackground.opacity(0.95)],startPoint:.center,endPoint:.bottom);VStack(alignment:.leading,spacing:8){Text("FEATURED").font(.caption.weight(.bold)).tracking(2.5).foregroundStyle(accent);Text(game.title).font(.title.bold()).lineLimit(2);Text(game.description ?? "").lineLimit(2).font(.footnote).foregroundStyle(.secondary);Label("View Game",systemImage:"chevron.right").font(.subheadline.weight(.semibold))}.padding(18)}}
+                                .clipShape(RoundedRectangle(cornerRadius:20,style:.continuous))
+                                .contentShape(RoundedRectangle(cornerRadius:20,style:.continuous))
+                        }.buttonStyle(.plain)
                     }
-                    Picker("Collection",selection:$collection){ForEach(GameCollection.allCases){Text($0.rawValue).tag($0)}}
-                    Picker("Category",selection:$genre){Text("All Categories").tag("");ForEach(genres,id:\.self){Text($0).tag($0)}}
+                    ScrollView(.horizontal,showsIndicators:false) {
+                        HStack(spacing:10) {
+                            ForEach(GameCollection.allCases) { item in
+                                Button(item.rawValue){collection=item}
+                                    .font(.subheadline.weight(.semibold)).padding(.horizontal,14).frame(height:38)
+                                    .background(collection==item ? accent:.white.opacity(0.08),in:Capsule())
+                                    .foregroundStyle(collection==item ? appBackground:Color.primary)
+                            }
+                            Menu(genre.isEmpty ? "All Categories":genre) {
+                                Button("All Categories"){genre=""}
+                                ForEach(genres,id:\.self){value in Button(value){genre=value}}
+                            }.font(.subheadline.weight(.semibold)).padding(.horizontal,14).frame(height:38)
+                                .background(.white.opacity(0.08),in:Capsule())
+                        }
+                    }.scrollClipDisabled().buttonStyle(.plain)
                     Text(query.isEmpty ? collection.rawValue:"Search Results").font(.title2.bold())
                     GameGrid(games:visibleGames)
                     if store.loading{ProgressView("Loading your library…").frame(maxWidth:.infinity)}
-                }.padding()
+                }.padding(.horizontal,18).padding(.bottom,28)
             }
-            .background(appBackground).navigationTitle("PS5Library")
+            .background(appBackground.ignoresSafeArea()).navigationTitle("PS5Library").navigationBarTitleDisplayMode(.inline)
             .searchable(text:$query,prompt:"Games, publishers, genres")
             .navigationDestination(for:Game.self){GameDetails(game:$0)}
             .refreshable{await store.refresh()}
@@ -77,12 +97,60 @@ struct RootView:View {
         }
     }
 }
-struct GameGrid:View{let games:[Game];var body:some View{LazyVGrid(columns:[GridItem(.adaptive(minimum:145),spacing:15)],spacing:22){ForEach(games){game in NavigationLink(value:game){VStack(alignment:.leading,spacing:8){ArtworkView(path:game.coverUrl).aspectRatio(3/4,contentMode:.fit).clipShape(RoundedRectangle(cornerRadius:13));Text(game.title).font(.headline).lineLimit(2)}}.buttonStyle(.plain)}}}}
+struct GameGrid:View {
+    let games:[Game]
+    private let columns=[GridItem(.adaptive(minimum:140,maximum:220),spacing:14)]
+    var body:some View {
+        LazyVGrid(columns:columns,alignment:.leading,spacing:22) {
+            ForEach(games) { game in
+                NavigationLink(value:game) {
+                    VStack(alignment:.leading,spacing:9) {
+                        Color.clear.aspectRatio(3/4,contentMode:.fit)
+                            .overlay{ArtworkView(path:game.coverUrl)}
+                            .clipShape(RoundedRectangle(cornerRadius:14,style:.continuous))
+                            .overlay{RoundedRectangle(cornerRadius:14,style:.continuous).stroke(.white.opacity(0.08))}
+                            .shadow(color:.black.opacity(0.3),radius:12,y:7)
+                        Text(game.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                            .frame(maxWidth:.infinity,minHeight:40,alignment:.topLeading)
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }
+        }
+    }
+}
 struct GameDetails:View {
     @EnvironmentObject var store:Store;let game:Game;@State private var download=false
     @State private var saving=false
     var saved:Bool{store.data.games.first(where:{$0.id==game.id})?.saved ?? false}
-    var body:some View{ScrollView{VStack(alignment:.leading,spacing:22){ArtworkView(path:game.heroUrl).frame(height:260).overlay(alignment:.bottom){LinearGradient(colors:[.clear,appBackground],startPoint:.top,endPoint:.bottom).frame(height:120)};VStack(alignment:.leading,spacing:18){Text(game.title).font(.largeTitle.bold());Text((game.genres ?? []).joined(separator:" · ")).foregroundStyle(accent);if store.ready(game){Label("Available on your PS5",systemImage:"checkmark.circle.fill").foregroundStyle(accent)};Button(saved ? "Remove from Saved Games":"Save Game",systemImage:saved ? "heart.fill":"heart"){saveGame()}.disabled(saving||store.offline);Button("Download & Prepare"){download=true}.buttonStyle(.borderedProminent).controlSize(.large).disabled(game.releases.allSatisfy{$0.sources.isEmpty});Text(game.description ?? "Description unavailable.");Text(game.publisher ?? "").font(.caption).foregroundStyle(.secondary);GameMediaView(game:store.data.games.first(where:{$0.id==game.id}) ?? game).id((store.account?.id ?? "")+game.id);Text("Available releases").font(.title2.bold());ForEach(game.releases){release in HStack{Text(release.label);Spacer();Text(bytes(release.size ?? 0)).foregroundStyle(.secondary)}.font(.subheadline)}}.padding(.horizontal);ScrollView(.horizontal){HStack{ForEach(game.screenshotUrls ?? [],id:\.self){ArtworkView(path:$0).frame(width:290,height:164).clipShape(RoundedRectangle(cornerRadius:12))}}.padding()}}}.background(appBackground).navigationBarTitleDisplayMode(.inline).sheet(isPresented:$download){InstallationView(game:game)}}
+    var body:some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:24) {
+                Color.clear.aspectRatio(16/9,contentMode:.fit)
+                    .overlay {ArtworkView(path:game.heroUrl)}
+                    .overlay(alignment:.bottom){LinearGradient(colors:[.clear,appBackground],startPoint:.top,endPoint:.bottom).frame(height:130)}
+                VStack(alignment:.leading,spacing:18) {
+                    Text(game.title).font(.largeTitle.bold()).lineLimit(3)
+                    if let genres=game.genres,!genres.isEmpty {Text(genres.joined(separator:" · ")).font(.subheadline.weight(.semibold)).foregroundStyle(accent)}
+                    if store.ready(game){Label("Available on your PS5",systemImage:"checkmark.circle.fill").foregroundStyle(accent)}
+                    Button("Download & Prepare"){download=true}
+                        .buttonStyle(.borderedProminent).controlSize(.large).frame(maxWidth:.infinity)
+                        .disabled(game.releases.allSatisfy{$0.sources.isEmpty})
+                    Button(saved ? "Remove from Saved Games":"Save Game",systemImage:saved ? "heart.fill":"heart"){saveGame()}
+                        .buttonStyle(.bordered).controlSize(.large).frame(maxWidth:.infinity).disabled(saving||store.offline)
+                    Text(game.description ?? "Description unavailable.").font(.body).lineSpacing(4)
+                    if let publisher=game.publisher,!publisher.isEmpty {Text(publisher).font(.caption).foregroundStyle(.secondary)}
+                    GameMediaView(game:store.data.games.first(where:{$0.id==game.id}) ?? game).id((store.account?.id ?? "")+game.id)
+                    Text("Available releases").font(.title2.bold())
+                    ForEach(game.releases){release in HStack(spacing:12){Text(release.label).lineLimit(2);Spacer();Text(bytes(release.size ?? 0)).foregroundStyle(.secondary)}.font(.subheadline).padding(14).background(.white.opacity(0.06),in:RoundedRectangle(cornerRadius:14,style:.continuous))}
+                    if let screenshots=game.screenshotUrls,!screenshots.isEmpty {
+                        Text("Screenshots").font(.title2.bold())
+                        ScrollView(.horizontal,showsIndicators:false){LazyHStack(spacing:14){ForEach(screenshots,id:\.self){path in Color.clear.frame(width:280).aspectRatio(16/9,contentMode:.fit).overlay{ArtworkView(path:path)}.clipShape(RoundedRectangle(cornerRadius:14,style:.continuous))}}}.scrollClipDisabled()
+                    }
+                }.padding(.horizontal,18).padding(.bottom,28)
+            }
+        }.background(appBackground.ignoresSafeArea()).navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented:$download){InstallationView(game:game)}
+    }
 }
 extension GameDetails {
     func saveGame() {

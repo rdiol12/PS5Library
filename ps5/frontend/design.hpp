@@ -1,6 +1,9 @@
 #pragma once
 #include <SDL.h>
+#include <string_view>
 namespace storefront {
+inline bool heroCrossfade(Uint32 rendererFlags){return (rendererFlags&SDL_RENDERER_ACCELERATED)!=0;}
+inline char backdropMode(std::string_view page){return page=="Discover"?'D':page=="Game"?'G':'L';}
 // Measured from the user's Desktop/storefront.png (1672 x 941), normalized to 1080p.
 struct Tokens {
   static constexpr float width=1920,height=1080,safe=56,gap=18,header=112;

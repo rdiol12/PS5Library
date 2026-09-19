@@ -11,7 +11,7 @@ int main(){
     std::array<Sint16,2048> music{};music.fill(1000);assert(audio.pcm(music.data(),music.size()));
     audio.preview(true,false);assert(!audio.play(storefront::Cue::Move));
     audio.preview(false);assert(audio.play(storefront::Cue::Move));
-    audio.ambient(true);assert(audio.queued()>0);assert(audio.play(storefront::Cue::Select));
+    audio.ambient(true);assert(audio.queued()>0);auto queued=audio.queued();assert(audio.play(storefront::Cue::Select));assert(audio.queued()>queued);
     audio.ambient(false);
   }
   SDL_Quit();SDL_setenv("SDL_AUDIODRIVER","unavailable-test-driver",1);

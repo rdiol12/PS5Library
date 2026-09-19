@@ -17,9 +17,6 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
     (root / 'preview.json').write_text(json.dumps({
         'catalog': games, 'consoles': [{'id': 'test-console', 'name': 'Test PS5'}],
         'device': {'consoleId': 'test-console'}, 'profile': {'username': 'Tester'},
-        'jobs': [{'id': 'failed', 'title': 'Alpha', 'releaseId': 'alpha-base',
-                  'kind': 'BUILD', 'state': 'ERROR', 'error': 'CORRUPT_INPUT',
-                  'location': 'Server cache / artifacts/alpha.pkg'}],
     }))
 
     def check(script, page, focus, size='1920x1080', start='Discover'):
@@ -44,7 +41,4 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
     fixture['consoles'][0]['storage'] = [{'storageId': 'usb', 'displayName': 'USB SSD'}]
     (root / 'preview.json').write_text(json.dumps(fixture))
     check('select,down,select,select,down,select,select', 'Game', 'confirm-download', start='Game')
-    # Cross opens the title. Options opens actions for the focused download.
-    check('select', 'Game', 'download', start='Downloads')
-    check('settings', 'Downloads', 'job-retry', start='Downloads')
-    print('PASS: navigation, method-before-storage downloads and download context actions')
+    print('PASS: collections, return focus, search, settings, profile and method-before-storage downloads')

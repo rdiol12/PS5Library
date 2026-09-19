@@ -1,4 +1,5 @@
 #include "../common/client.hpp"
+#include "config.hpp"
 #include <chrono>
 #include <thread>
 #include <cstdio>
@@ -10,6 +11,8 @@ static volatile std::sig_atomic_t running=1;
 int main(int argc,char** argv) {
   try {
     auto config=std::filesystem::absolute(argc>1?argv[1]:"/data/ps5library/config.json");
+    std::filesystem::create_directories(config.parent_path());
+    if(argc==1)ps5library::bootstrapAgentConfig(config,"/mnt/sandbox/PPSA99051_000/download0/ps5library/config.json");
     int lock=open((config.parent_path()/"agent.lock").c_str(),O_CREAT|O_RDWR|O_NOFOLLOW,0600);
     if(lock<0 || flock(lock,LOCK_EX|LOCK_NB)!=0) throw std::runtime_error("An agent is already running or its configuration directory is unavailable");
     ps5library::Agent agent(config); std::signal(SIGINT,[](int){running=0;}); std::signal(SIGTERM,[](int){running=0;});

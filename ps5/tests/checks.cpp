@@ -1,10 +1,20 @@
 #include "../common/client.hpp"
+#include "../agent/config.hpp"
 #include "../frontend/collections.hpp"
 #include <cassert>
+#include <atomic>
+#include <thread>
 #include <fstream>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
+#ifndef PS5
+static std::atomic<int> curlInitializations{0};
+static std::atomic<int> activeTransfers{0},maximumTransfers{0};
+extern "C" CURLcode __real_curl_global_init(long);
+extern "C" CURLcode __wrap_curl_global_init(long flags){curlInitializations++;return __real_curl_global_init(flags);}
+extern "C" CURLcode __wrap_curl_easy_perform(CURL*){auto active=++activeTransfers;auto maximum=maximumTransfers.load();while(active>maximum&&!maximumTransfers.compare_exchange_weak(maximum,active)){}std::this_thread::sleep_for(std::chrono::milliseconds(30));--activeTransfers;return CURLE_COULDNT_CONNECT;}
+#endif
 int main() {
   // Complete top-level values need an end-of-input marker for json-c.
   assert(Json::parse("null").null());
@@ -65,6 +75,12 @@ int main() {
   assert(normalizeServerUrl(" HTTPS://ONE.EXAMPLE:443/ ")=="https://one.example");
   for(const auto* bad:{"", "http://one.example", "https://name:password@one.example", "https://one.example/path", "https://one.example?token=x", "https://one.example#fragment", "https://one.example:99999"}){rejected=false;try{normalizeServerUrl(bad);}catch(...){rejected=true;}assert(rejected);}
   assert(normalizeServerUrl("http://127.0.0.1:3150/",true)=="http://127.0.0.1:3150");
+  auto nativeConfig=root/"native/config.json",agentConfig=root/"agent/config.json";fs::create_directories(nativeConfig.parent_path());
+  atomicJson(nativeConfig,Json::object({{"serverUrl","https://one.example"},{"allowInsecureLan",false}}));
+  auto bootstrapped=bootstrapAgentConfig(agentConfig,nativeConfig);assert(bootstrapped["serverUrl"].string()=="https://one.example");
+  assert(bootstrapped["caBundle"].string()==(nativeConfig.parent_path()/"ca-bundle.crt").string());assert(fs::is_regular_file(agentConfig));
+  atomicJson(nativeConfig,Json::object({{"serverUrl","https://two.example"},{"allowInsecureLan",false}}));
+  assert(bootstrapAgentConfig(agentConfig,nativeConfig)["serverUrl"].string()=="https://one.example");
   config.set("serverUrl","https://one.example");atomicJson(root/"config.json",config);state.set("credential","old-secret");atomicJson(root/"device-state.json",state);
   saveServerSettings(root/"config.json","https://ONE.example:443/",false);assert(readJson(root/"device-state.json")["credential"].string()=="old-secret");
   rejected=false;try{saveServerSettings(root/"config.json","https://two.example",false);}catch(...){rejected=true;}assert(rejected);assert(readJson(root/"config.json")["serverUrl"].string()=="https://one.example");
@@ -89,5 +105,10 @@ int main() {
   fs::remove(dump/"eboot.bin");assert(inventory.inventory().size()==1);
   Client stopped(Json::object({{"serverUrl","http://127.0.0.1:9"},{"allowInsecureLan",true}}));stopped.cancelled=[]{return true;};rejected=false;try{stopped.request("GET","/api/v1/device/status");}catch(const std::exception& e){rejected=std::string(e.what()).find("abort")!=std::string::npos;}assert(rejected);
   rejected=false;try{fileHash(root/"data",[]{return true;});}catch(...){rejected=true;}assert(rejected);
+#ifndef PS5
+  assert(curlInitializations==1);
+  Client first(Json::object({{"serverUrl","http://127.0.0.1:9"},{"allowInsecureLan",true}})),second(Json::object({{"serverUrl","http://127.0.0.1:9"},{"allowInsecureLan",true}}));
+  auto transfer=[](Client& client){try{client.bytes("/api/v1/test");}catch(...){}};std::thread a(transfer,std::ref(first)),b(transfer,std::ref(second));a.join();b.join();assert(maximumTransfers==1);
+#endif
   fs::remove_all(root);return 0;
 }

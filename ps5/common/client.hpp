@@ -16,6 +16,7 @@ Json readConfig(const fs::path& filename);
 std::string normalizeServerUrl(const std::string& value,bool allowHttp=false);
 Json saveServerSettings(const fs::path& configPath,const std::string& url,bool allowHttp,bool resetPairing=false);
 Json loadDeviceState(const fs::path& configPath,const Json& config);
+Json pairFrontend(const fs::path& configPath,const Json& config,const std::function<bool()>& cancelled={});
 void atomicBytes(const fs::path& filename,std::string_view value);
 void atomicJson(const fs::path& filename,const Json& value);
 std::string randomHex(size_t bytes);
@@ -35,7 +36,7 @@ void startNativeDownload(const std::string& url,const std::string& contentId,con
 fs::path installedNativePackage(const std::string& titleId);
 bool nativePackageRegistered(const Json& task);
 fs::path beneath(const fs::path& root,const std::string& relative);
-void notify(const std::string& message);
+bool notify(const std::string& message);
 Json readTrophySummary(const fs::path& userRoot,const std::string& localUserId);
 Json inspectPs4Package(const fs::path& file);
 class Client {
