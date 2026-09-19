@@ -141,26 +141,6 @@ number first. Tagged releases also include the dependency sources, upstream
 patches/build recipes, and license notices needed for redistribution. Source
 downloads are pinned by hash in `licenses/sources.json`.
 
-## Current limitations
-
-- Development targets a user-reported **4.51** console. Support for every
-  jailbreakable firmware has not been verified; features are negotiated at runtime.
-- Host tests and cross-compilation do not prove physical-console behavior.
-- Interface sounds use the native PS5 SDL audio device and were verified on the
-  development console. Per-game music/trailers still depend on media supplied by
-  the configured server.
-- PS-button **Home/background** behavior remains unresolved.
-- Native PS5 base-package downloads use the AppInstUtil URL installer when it
-  initializes successfully. The first adapter confirms internal installs;
-  external targets, native update/DLC installation and automatic native error
-  polling are not implemented. Use PS5 Downloads for its queue controls/errors.
-- ShadowMount 1.7 overlays use verified staging and separate title directories;
-  FPKG backport variants contain their selected libraries inside the package.
-  These runtime paths require matching server profiles and physical launch tests.
-- The app does not claim completion from an accepted install request: installed
-  package bytes, exact title metadata and server inventory must agree.
-- The native title and separate agent were tested on firmware 4.51. The agent is
-  not cold-boot persistent and must be loaded again after the jailbreak.
 
 ## Source layout
 
