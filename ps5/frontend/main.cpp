@@ -7,6 +7,7 @@
 #include "lifecycle.hpp"
 #include "artwork.hpp"
 #include "audio.hpp"
+#include "async.hpp"
 #ifdef PS5
 #include "ps5_audio.hpp"
 #endif
@@ -15,6 +16,7 @@
 #include <SDL_image.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <future>
 #include <functional>
@@ -26,13 +28,33 @@
 #include <unistd.h>
 using namespace ps5library;
 using namespace storefront;
+#ifdef PS5LIBRARY_NATIVE
+static constexpr bool nativeFrontend=true;
+#else
+static constexpr bool nativeFrontend=false;
+#endif
+#if defined(PS5LIBRARY_NATIVE) && defined(PS5)
+extern "C" void native_error(const char*);
+extern "C" void native_stage(int);
+extern "C" int ps5library_native_launch(const char*);
+extern "C" int ps5library_native_exit();
+#else
+static void native_stage(int){}
+#endif
 
 static std::string amount(int64_t n){char s[80];std::snprintf(s,sizeof(s),n>=1000000000?"%.1f GB":"%.1f MB",n/(n>=1000000000?1000000000.0:1000000.0));return s;}
 static std::string friendly(std::string text){std::replace(text.begin(),text.end(),'_',' ');for(auto& c:text)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));if(!text.empty())text.front()=static_cast<char>(std::toupper(static_cast<unsigned char>(text.front())));return text;}
 static std::string lower(std::string text){for(auto& c:text)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));return text;}
 static std::string list(const Json& array){std::string text;for(size_t i=0;i<array.size();i++){if(i)text+=" / ";text+=array[i].string();}return text;}
 static SDL_Rect crop(const Json& value){return {static_cast<int>(value["x"].number()),static_cast<int>(value["y"].number()),static_cast<int>(value["w"].number()),static_cast<int>(value["h"].number())};}
-struct Options {fs::path config="/data/ps5library/config.json";bool preview=false;int width=1920,height=1080,frames=0;std::string screen="Discover",capture,script;};
+struct Options {
+#ifdef PS5LIBRARY_NATIVE
+  fs::path config="/download0/ps5library/config.json";
+#else
+  fs::path config="/data/ps5library/config.json";
+#endif
+  bool preview=false;int width=1920,height=1080,frames=0;std::string screen="Discover",capture,script;
+};
 #ifdef PS5
 extern "C" {extern const unsigned char ui_font[],ui_heading_font[],ui_font_license[],ui_certificates[];extern const size_t ui_font_size,ui_heading_font_size,ui_font_license_size,ui_certificates_size;}
 static void localAssets(const fs::path& root){for(const auto& item:std::vector<std::pair<std::string,std::string_view>>{{"Inter-Regular.otf",{reinterpret_cast<const char*>(ui_font),ui_font_size}},{"Inter-SemiBold.otf",{reinterpret_cast<const char*>(ui_heading_font),ui_heading_font_size}},{"OFL-Inter.txt",{reinterpret_cast<const char*>(ui_font_license),ui_font_license_size}},{"ca-bundle.crt",{reinterpret_cast<const char*>(ui_certificates),ui_certificates_size}}})if(!fs::exists(root/item.first))atomicBytes(root/item.first,item.second);}
@@ -51,13 +73,14 @@ class Storefront {
   std::set<std::string> collection_;
   std::unordered_map<std::string,float> animation_,scroll_;std::unordered_map<std::string,std::string> screenFocus_;
   std::vector<std::string> desiredImages_,tabs_={"Discover","New Releases","Categories","My Library","Downloads","My PS5"};
-  std::string page_="Discover",returnPage_,gameId_,consoleId_,storageId_,method_,modal_,message_,heroUrl_,oldHero_,taskError_,launchId_=randomHex(16);size_t featured_=0,release_=0;
-  bool offline_=false,loading_=true,advanced_=false;float delta_=1.f/60.f,heroMix_=1;Uint32 toastUntil_=0,lastRefresh_=0;int modalStep_=0;
-  std::atomic<bool> running_{true};std::thread agent_;std::future<std::string> request_;std::function<void(const Json&)> complete_;
+  std::string page_="Discover",returnPage_,gameId_,consoleId_,storageId_,method_,modal_,message_,heroUrl_,oldHero_,taskError_,networkError_,launchId_=randomHex(16);size_t featured_=0,release_=0;
+  bool offline_=false,loading_=true,serverConnected_=false,advanced_=false,backdropCacheEnabled_=false,heroCrossfadeEnabled_=false;float delta_=1.f/60.f,heroMix_=1;Uint32 toastUntil_=0,lastRefresh_=0;int modalStep_=0;
+  std::atomic<bool> running_{true};std::thread agent_;AsyncWorker network_;std::future<std::string> request_;std::function<void(const Json&)> complete_;
+  std::atomic<bool> connected_{false};std::atomic<int> refreshStage_{0};
   std::atomic<bool> networkPaused_{false};bool setupInFlight_=false,draftHttp_=false,replaceDraft_=false;std::string draftServer_;
   std::function<void()> pending_;uint64_t planRevision_=0;
   std::vector<double> frameTimes_,drawTimes_,presentTimes_,intervalTimes_;int backdropCompositions_=0;std::vector<std::string> script_;size_t scriptIndex_=0;int frameCount_=0;
-  std::future<std::string> updateRequest_;Json updateEnvelope_,updateManifest_;std::string updateStatus_="Updates are checked automatically.";Uint32 lastUpdateCheck_=0;
+  std::future<std::string> updateRequest_;Json updateEnvelope_,updateManifest_;std::string updateStatus_=nativeFrontend?"Native app updates are not available in this test build.":"Updates are checked automatically.";Uint32 lastUpdateCheck_=0;
   std::atomic<int64_t> updateBytes_{0},updateTotal_{0};bool updating_=false;int frontendLock_=-1;
   Canvas& draw(){return *canvas_;}
   Json catalog()const{return model_["catalog"];} Json consoles()const{return model_["consoles"];} Json jobs()const{return model_["jobs"];}
@@ -65,9 +88,9 @@ class Storefront {
   Json gameForRelease(const std::string& id)const{for(const auto& item:games()){auto releases=item["releases"];for(size_t n=0;n<releases.size();n++)if(releases[n]["id"].string()==id)return item;}return Json();}
   Json selectedRelease()const{return game(gameId_)["releases"][release_];}
   Json selectedConsole()const{auto all=consoles();for(size_t i=0;i<all.size();i++)if(all[i]["id"].string()==consoleId_)return all[i];return Json();}
-  Json featuredGame()const{auto all=catalog();if(options_.preview)return all.size()?all[featured_%all.size()]:Json();auto selected=model_["featured"];auto g=game(selected["gameId"].string());if(g.null())return Json();auto result=Json::parse(g.dump());result.set("heroUrl",selected["heroUrl"]);return result;}
+  Json featuredGame()const{auto all=catalog();if(options_.preview)return all.size()?all[featured_%all.size()]:Json();return game(model_["featured"]["gameId"].string());}
   Json highlighted()const{if(!modal_.empty())return Json();if(page_=="Game")return game(gameId_);const auto id=focus_.id();if(id.rfind("rail",0)==0||id.rfind("grid:",0)==0)return game(id.substr(id.find(':')+1));return Json();}
-  Json heroGame()const{const auto selected=highlighted();return !options_.preview&&page_=="Discover"&&!selected.null()?selected:page_=="Game"?game(gameId_):featuredGame();}
+  Json heroGame()const{const auto selected=highlighted();if(!selected.null())return selected;if(page_=="Game")return game(gameId_);if(page_=="Discover")return featuredGame();return Json();}
   void preview(){
     auto g=highlighted(),trailer=g["trailer"],music=g["music"];std::string key,musicKey;
     if(!options_.preview&&!offline_&&!networkPaused_&&windowActive_&&!credential_.empty()){
@@ -80,7 +103,7 @@ class Storefront {
     else if(startMusic&&!video_->active()){audio_->ambient(false);video_->start(musicKey,config_,credential_,music,true,true);}
     audio_->ambient(windowActive_&&(config_["gameMusic"].null()||config_["gameMusic"].boolean())&&!video_->active());
   }
-  void ambientBackdrop(){const float time=SDL_GetTicks64()/1000.f;constexpr SDL_Color colors[]={{74,169,255,24},{155,93,255,20},{255,92,174,16}};for(int band=0;band<3;band++)for(int part=0;part<36;part++){float x1=part*Tokens::width/35,x2=(part+1)*Tokens::width/35,base=260+band*210,y1=base+std::sin(part*.31f+time*(.16f+band*.035f)+band)*48,y2=base+std::sin((part+1)*.31f+time*(.16f+band*.035f)+band)*48;draw().stroke(x1,y1,x2,y2,colors[band],2.2f);}}
+  void ambientBackdrop(){const float time=SDL_GetTicks64()/1000.f;constexpr SDL_Color colors[]={{74,169,255,24},{155,93,255,20},{255,92,174,16}};for(int band=0;band<3;band++){SDL_FPoint points[36];for(int part=0;part<36;part++)points[part]={part*Tokens::width/35,260+band*210+std::sin(part*.31f+time*(.16f+band*.035f)+band)*48};draw().lineStrip(points,36,colors[band]);}}
   void togglePreference(const std::string& key){auto next=Json::parse(config_.dump());next.set(key.c_str(),!(next[key.c_str()].null()||next[key.c_str()].boolean()));try{if(!options_.preview)atomicJson(options_.config,next);config_=next;}catch(...){toast("Could not save the setting.");}}
   void avatar(Rect rect){auto data=model_["profile"];auto url=data["avatarUrl"].string();desiredImages_.push_back(url);auto* texture=art_->get(url);
     if(texture){auto source=crop(data["avatarCrop"]);draw().cover(texture,rect,source.w>0?&source:nullptr,255,rect.w/2);}
@@ -88,8 +111,15 @@ class Storefront {
     draw().edge(rect,{66,161,231,235},rect.w/2,1.7f);
   }
   bool ready(const Json& g)const{auto releases=g["releases"],library=model_["library"];for(size_t i=0;i<releases.size();i++)for(size_t j=0;j<library.size();j++)if(releases[i]["kind"].string()!="DLC"&&library[j]["releaseId"].string()==releases[i]["id"].string()&&library[j]["state"].string()=="READY_ON_PS5")return true;return false;}
-  std::string playable(const Json& g)const{return offline_||consoleId_!=device_["consoleId"].string()||config_["launcherUrl"].string().empty()?"":launchableTitle(g,model_["library"]);}
+  std::string playable(const Json& g)const{return offline_||consoleId_!=device_["consoleId"].string()||(!nativeFrontend&&config_["launcherUrl"].string().empty())?"":launchableTitle(g,model_["library"]);}
   void toast(std::string text){message_=std::move(text);toastUntil_=SDL_GetTicks()+6500;}
+  void recordNetworkError(const Json& error){
+#if defined(PS5LIBRARY_NATIVE) && defined(PS5)
+    auto text=error.string();if(text!=networkError_){networkError_=text;native_error(text.c_str());}
+#else
+    (void)error;
+#endif
+  }
   void navigate(std::string page){screenFocus_[page_]=focus_.id();page_=std::move(page);focus_.select(screenFocus_.count(page_)?screenFocus_[page_]:"first-card");category_.clear();collection_.clear();modal_.clear();SDL_StopTextInput();}
   void openGame(const std::string& id){screenFocus_[page_]=focus_.id();returnPage_=page_;gameId_=id;release_=0;page_="Game";focus_.select("download");plan_=Json();}
   void closeModal(){modal_.clear();focus_.select(screenFocus_["before-modal"]);SDL_StopTextInput();}
@@ -123,10 +153,13 @@ class Storefront {
   void exitPrompt(){screenFocus_["before-modal"]=focus_.id();modal_="Exit";focus_.select("exit-cancel");SDL_StopTextInput();}
   void networkSettings(){if(updateRequest_.valid()){toast("Finish the app update request before changing servers.");return;}screenFocus_["before-modal"]=focus_.id();draftServer_=config_["serverUrl"].string();draftHttp_=config_["allowInsecureLan"].boolean();replaceDraft_=true;modal_="Network";focus_.select("server-input");SDL_StartTextInput();}
   void appUpdate(bool install=false){
+#ifdef PS5LIBRARY_NATIVE
+    (void)install;updateStatus_="Native app updates are not available in this test build.";lastUpdateCheck_=SDL_GetTicks();
+#else
     if(options_.preview||credential_.empty()||networkPaused_||updateRequest_.valid())return;
     lastUpdateCheck_=SDL_GetTicks();updating_=install;updateStatus_=install?"Downloading verified app update…":"Checking for updates…";updateBytes_=0;updateTotal_=install?updateManifest_["size"].number():0;
     auto configuration=config_.dump(),token=credential_,envelope=updateEnvelope_.dump();auto root=options_.config.parent_path()/"updates";
-    updateRequest_=std::async(std::launch::async,[this,configuration,token,envelope,root,install]{try{
+    updateRequest_=network_.submit([this,configuration,token,envelope,root,install]{try{
       Client client(Json::parse(configuration));client.credential=token;client.cancelled=[this]{return !running_;};
       if(!install){auto release=client.request("GET","/api/v1/device/updates");if(release.null())return Json::object({{"status","No update published by your server."}}).dump();auto manifest=verifyUpdate(release,updatePublicKey(),0);if(manifest["build"].number()<=appBuild)return Json::object({{"status","PS5Library is up to date."}}).dump();return Json::object({{"envelope",release},{"manifest",manifest},{"status","Version "+manifest["version"].string()+" is available."}}).dump();}
       auto manifest=verifyUpdate(Json::parse(envelope),updatePublicKey(),appBuild);
@@ -139,19 +172,26 @@ class Storefront {
       return Json::object({{"status","Update verified. Installation requires a PS5."}}).dump();
 #endif
     }catch(const std::exception& e){return Json::object({{"error",e.what()}}).dump();}});
+#endif
   }
   void pumpUpdate(){
     if(updateRequest_.valid()&&updateRequest_.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto result=Json::parse(updateRequest_.get());const bool checked=!updating_;updating_=false;if(result["restart"].boolean()){running_=false;return;}if(!result["error"].null())updateStatus_=result["error"].string();else{updateStatus_=result["status"].string();if(!result["manifest"].null()){updateManifest_=result["manifest"];updateEnvelope_=result["envelope"];toast(updateStatus_+" Open Settings to update.");}else if(checked){updateManifest_=Json();updateEnvelope_=Json();}}}
-    if(!options_.preview&&!networkPaused_&&!credential_.empty()&&(!lastUpdateCheck_||SDL_GetTicks()-lastUpdateCheck_>6*60*60*1000))appUpdate();
+    if(!nativeFrontend&&!options_.preview&&!networkPaused_&&!credential_.empty()&&(!lastUpdateCheck_||SDL_GetTicks()-lastUpdateCheck_>6*60*60*1000))appUpdate();
   }
-  void startAgent(){if(options_.preview||config_["serverUrl"].string().empty()||agent_.joinable())return;agent_=std::thread([this]{int lock=open((options_.config.parent_path()/"agent.lock").c_str(),O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)!=0){if(lock>=0)close(lock);return;}try{Agent agent(options_.config);agent.client.cancelled=[this]{return !running_||networkPaused_;};while(running_&&!networkPaused_){try{agent.tick();}catch(const std::exception&e){if(!networkPaused_&&running_)std::fprintf(stderr,"Agent: %s\n",e.what());}for(int i=0;i<50&&running_&&!networkPaused_;i++)std::this_thread::sleep_for(std::chrono::milliseconds(100));}}catch(const std::exception&e){std::fprintf(stderr,"Agent setup: %s\n",e.what());}close(lock);});}
+  void startAgent(){
+#ifndef PS5LIBRARY_NATIVE
+    if(options_.preview||config_["serverUrl"].string().empty()||agent_.joinable())return;agent_=std::thread([this]{int lock=open((options_.config.parent_path()/"agent.lock").c_str(),O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB)!=0){if(lock>=0)close(lock);return;}try{Agent agent(options_.config);agent.client.cancelled=[this]{return !running_||networkPaused_;};while(running_&&!networkPaused_){try{agent.tick();}catch(const std::exception&e){if(!networkPaused_&&running_)std::fprintf(stderr,"Agent: %s\n",e.what());}for(int i=0;i<50&&running_&&!networkPaused_;i++)std::this_thread::sleep_for(std::chrono::milliseconds(100));}}catch(const std::exception&e){std::fprintf(stderr,"Agent setup: %s\n",e.what());}close(lock);});
+#endif
+    // A native title's sandbox cannot authoritatively scan the console. Inventory
+    // and transfers belong to the separately running, paired payload agent.
+  }
   void resetArtwork(){art_=std::make_unique<Artwork>(config_,options_.config.parent_path()/"artwork-cache",options_.preview);art_->credentials(credential_);}
   void saveNetwork(bool reset=false){
     if(options_.preview){toast("Design preview — connection settings are not saved.");return;}
     std::string url;try{url=normalizeServerUrl(draftServer_,draftHttp_);}catch(const std::exception&e){toast(e.what());return;}
     networkPaused_=true;SDL_StopTextInput();complete_={};auto file=options_.config;bool http=draftHttp_;
-    pending_=[this,file,url,http,reset]{setupInFlight_=true;complete_=[this](const Json& value){config_=value["config"];device_=value["device"];credential_=device_["credential"].string();consoleId_=device_["consoleId"].string();model_=Json::object();plan_=Json();gameId_.clear();heroUrl_.clear();oldHero_.clear();scroll_.clear();updateManifest_=Json();updateEnvelope_=Json();lastUpdateCheck_=0;resetArtwork();setupInFlight_=false;networkPaused_=false;loading_=true;offline_=false;closeModal();navigate("Discover");startAgent();lastRefresh_=0;};
-      request_=std::async(std::launch::async,[this,file,url,http,reset]{if(agent_.joinable())agent_.join();art_->stop();try{auto config=saveServerSettings(file,url,http,reset);return Json::object({{"result",Json::object({{"config",config},{"device",loadDeviceState(file,config)}})}}).dump();}catch(const PairingResetRequired&e){return Json::object({{"error",e.what()},{"pairingResetRequired",true}}).dump();}catch(const std::exception&e){return Json::object({{"error",e.what()}}).dump();}});
+    pending_=[this,file,url,http,reset]{setupInFlight_=true;complete_=[this](const Json& value){config_=value["config"];device_=value["device"];credential_=device_["credential"].string();consoleId_=device_["consoleId"].string();model_=Json::object();plan_=Json();gameId_.clear();heroUrl_.clear();oldHero_.clear();scroll_.clear();updateManifest_=Json();updateEnvelope_=Json();lastUpdateCheck_=0;resetArtwork();setupInFlight_=false;networkPaused_=false;loading_=true;offline_=false;serverConnected_=false;closeModal();navigate("Discover");startAgent();lastRefresh_=0;};
+      request_=network_.submit([this,file,url,http,reset]{if(agent_.joinable())agent_.join();art_->stop();try{auto config=saveServerSettings(file,url,http,reset);return Json::object({{"result",Json::object({{"config",config},{"device",loadDeviceState(file,config)}})}}).dump();}catch(const PairingResetRequired&e){return Json::object({{"error",e.what()},{"pairingResetRequired",true}}).dump();}catch(const std::exception&e){return Json::object({{"error",e.what()}}).dump();}});
     };
   }
   bool textEvent(const SDL_Event& event){
@@ -165,13 +205,19 @@ class Storefront {
     if(options_.preview){toast("Design preview — connect to your server to perform this action.");return;}
     if(request_.valid()){if(!pending_)pending_=[this,method,url,body,complete=std::move(complete)]()mutable{request(method,url,body,std::move(complete));};else toast("Finishing the current request…");return;}
     auto configuration=config_.dump(),payload=body.dump(),token=credential_;complete_=std::move(complete);
-    request_=std::async(std::launch::async,[this,configuration,payload,token,method,url]{try{Client client(Json::parse(configuration));client.cancelled=[this]{return !running_||networkPaused_;};client.credential=token;return Json::object({{"result",client.request(method,url,Json::parse(payload))}}).dump();}catch(const RequestError& e){return Json::object({{"error",e.what()},{"serverReachable",true}}).dump();}catch(const std::exception& e){return Json::object({{"error",e.what()}}).dump();}});
+    request_=network_.submit([this,configuration,payload,token,method,url]{try{Client client(Json::parse(configuration));client.cancelled=[this]{return !running_||networkPaused_;};client.credential=token;return Json::object({{"result",client.request(method,url,Json::parse(payload))}}).dump();}catch(const RequestError& e){return Json::object({{"error",e.what()},{"serverReachable",true}}).dump();}catch(const std::exception& e){return Json::object({{"error",e.what()}}).dump();}});
   }
   void refresh(){if(options_.preview||request_.valid()||networkPaused_||config_["serverUrl"].string().empty())return;lastRefresh_=SDL_GetTicks();auto config=config_.dump();auto file=options_.config;auto console=consoleId_;
     complete_=[this](const Json& value){device_=value["device"];credential_=device_["credential"].string();art_->credentials(credential_);if(!value["catalog"].null()){model_=value;offline_=false;loading_=false;auto all=consoles();if(consoleId_.empty()&&all.size())consoleId_=device_["consoleId"].string(all[size_t(0)]["id"].string());try{auto cached=Json::parse(value.dump());cached.set("device",Json::object({{"consoleId",device_["consoleId"]}}));cached.set("serverUrl",config_["serverUrl"]);atomicJson(options_.config.parent_path()/"catalog-cache.json",cached);}catch(...){}}};
-    request_=std::async(std::launch::async,[this,config,file,console]{try{auto configuration=Json::parse(config);auto device=loadDeviceState(file,configuration);auto value=Json::object({{"device",device}});auto token=device["credential"].string();if(!token.empty()){Client client(configuration);client.cancelled=[this]{return !running_||networkPaused_;};client.credential=token;auto own=client.request("GET","/api/v1/device/status");value.set("catalog",client.request("GET","/api/v1/device/catalog"));value.set("featured",client.request("GET","/api/v1/device/featured"));value.set("jobs",client.request("GET","/api/v1/device/jobs"));value.set("consoles",client.request("GET","/api/v1/device/consoles"));value.set("status",own);try{value.set("profile",client.request("GET","/api/v1/device/profile"));}catch(const RequestError& e){if(e.status!=404)throw;}value.set("library",console.empty()||console==own["id"].string()?own["library"]:client.request("GET","/api/v1/device/consoles/"+console+"/library"));}return Json::object({{"result",value}}).dump();}catch(const RequestError&e){return Json::object({{"error",e.what()},{"serverReachable",true}}).dump();}catch(const std::exception&e){return Json::object({{"error",e.what()}}).dump();}});
+    request_=network_.submit([this,config,file,console]{try{refreshStage_=1;auto configuration=Json::parse(config);
+#ifdef PS5LIBRARY_NATIVE
+      auto device=pairFrontend(file,configuration,[this]{return !running_||networkPaused_;});
+#else
+      auto device=loadDeviceState(file,configuration);
+#endif
+      auto value=Json::object({{"device",device}});auto token=device["credential"].string();if(!token.empty()){Client client(configuration);client.cancelled=[this]{return !running_||networkPaused_;};client.credential=token;refreshStage_=2;auto own=client.request("GET","/api/v1/device/status");connected_=true;refreshStage_=3;value.set("catalog",client.request("GET","/api/v1/device/catalog"));refreshStage_=4;value.set("featured",client.request("GET","/api/v1/device/featured"));refreshStage_=5;value.set("jobs",client.request("GET","/api/v1/device/jobs"));refreshStage_=6;value.set("consoles",client.request("GET","/api/v1/device/consoles"));value.set("status",own);refreshStage_=7;try{value.set("profile",client.request("GET","/api/v1/device/profile"));}catch(const RequestError& e){if(e.status!=404)throw;}refreshStage_=8;value.set("library",console.empty()||console==own["id"].string()?own["library"]:client.request("GET","/api/v1/device/consoles/"+console+"/library"));}refreshStage_=0;return Json::object({{"result",value}}).dump();}catch(const RequestError&e){refreshStage_=-1;return Json::object({{"error",e.what()},{"serverReachable",true}}).dump();}catch(const std::exception&e){refreshStage_=-1;return Json::object({{"error",e.what()}}).dump();}});
   }
-  void pump(){if(request_.valid()&&request_.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto result=Json::parse(request_.get());auto done=std::move(complete_);complete_={};if(!result["error"].null()){if(setupInFlight_){setupInFlight_=false;networkPaused_=false;resetArtwork();startAgent();if(result["pairingResetRequired"].boolean()){modal_="SwitchServer";focus_.select("keep-server");}else toast(result["error"].string());}else if(!networkPaused_){offline_=!result["serverReachable"].boolean();loading_=false;toast(friendly(result["error"].string()));}}else{offline_=false;if(done)done(result["result"]);}}if(pending_&&!request_.valid()){auto next=std::move(pending_);pending_={};next();}if(!options_.preview&&SDL_GetTicks()-lastRefresh_>5000)refresh();}
+  void pump(){if(connected_.exchange(false)){offline_=false;serverConnected_=true;recordNetworkError(Json(""));}if(request_.valid()&&request_.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto result=Json::parse(request_.get());auto done=std::move(complete_);complete_={};if(!result["error"].null()){recordNetworkError(result["error"]);if(setupInFlight_){setupInFlight_=false;networkPaused_=false;resetArtwork();startAgent();if(result["pairingResetRequired"].boolean()){modal_="SwitchServer";focus_.select("keep-server");}else toast(result["error"].string());}else if(!networkPaused_){offline_=!result["serverReachable"].boolean();if(offline_)serverConnected_=false;loading_=false;toast(friendly(result["error"].string()));}}else{recordNetworkError(Json(""));offline_=false;if(done)done(result["result"]);}}if(pending_&&!request_.valid()){auto next=std::move(pending_);pending_={};next();}if(!options_.preview&&SDL_GetTicks()-lastRefresh_>5000)refresh();}
   void button(std::string id,std::string title,Rect rect,int row,std::function<void()> callback,bool primary=false,bool enabled=true,bool selected=false,bool plain=false,const std::string& icon=""){
     if(enabled){focus_.add(id,row,{rect.x,rect.y,rect.w,rect.h});actions_[id]=std::move(callback);rects_[id]=rect;}
     auto& a=animation_[id];a+=(focus_.id()==id?1.f-a:-a)*std::min(1.f,delta_/Tokens::focusSeconds);
@@ -185,14 +231,14 @@ class Storefront {
   void title(const std::string& text,const std::string& subtitle=""){draw().label(text,Tokens::safe,Tokens::header+Tokens::gap*2,Tokens::title);draw().label(subtitle,Tokens::safe,Tokens::header+Tokens::gap*2+Tokens::title+Tokens::gap,Tokens::body,Tokens::muted);}
   void badge(const std::string& text,Rect rect){draw().rounded(rect,{29,37,46,182},rect.h/2);draw().label(text,rect.x+Tokens::gap/2,rect.y+(rect.h-draw().textHeight(text,Tokens::caption,static_cast<int>(rect.w-12)))/2,Tokens::caption,Tokens::muted,static_cast<int>(rect.w-12));}
   void gameImage(const Json& g,Rect rect,bool hero=false,Uint8 opacity=255){auto url=g[hero?"heroUrl":"coverUrl"].string();desiredImages_.push_back(url);auto c=crop(g[hero?"heroCrop":"coverCrop"]);auto* image=art_->get(url);draw().cover(image,rect,c.w>0?&c:nullptr,opacity,hero?0:Tokens::radius);if(!image&&!hero&&!g["title"].string().empty()){draw().rounded({rect.x+4,rect.y+rect.h*.66f,rect.w-8,rect.h*.32f},{24,34,47,255},4);draw().label(g["title"].string(),rect.x+14,rect.y+rect.h*.7f,Tokens::caption,Tokens::white,static_cast<int>(rect.w-28),2);}}
-  void background(const Json& featured){auto url=featured["heroUrl"].string();desiredImages_.push_back(url);auto* image=art_->get(url);if(image&&heroUrl_!=url){oldHero_=heroUrl_;heroUrl_=url;heroMix_=0;}heroMix_=std::min(1.f,heroMix_+delta_/Tokens::fadeSeconds);
+  void background(const Json& featured){auto url=featured["heroUrl"].string();desiredImages_.push_back(url);auto* image=art_->get(url);if(image&&heroUrl_!=url){oldHero_=heroCrossfadeEnabled_?heroUrl_:"";heroUrl_=url;heroMix_=heroCrossfadeEnabled_?0:1;}heroMix_=heroCrossfadeEnabled_?std::min(1.f,heroMix_+delta_/Tokens::fadeSeconds):1;
     Rect rect{Tokens::width*.25f,0,Tokens::width*.75f,std::ceil(Tokens::heroBottom+Tokens::cardHeight*.35f)};auto* video=video_->frame(renderer_);
     auto paint=[&]{draw().fill({0,0,Tokens::width,Tokens::height},Tokens::background);if(!oldHero_.empty()&&heroMix_<1){desiredImages_.push_back(oldHero_);draw().cover(art_->get(oldHero_),rect);}if(image){auto source=crop(featured["heroCrop"]);draw().cover(image,rect,source.w>0?&source:nullptr,static_cast<Uint8>(255*heroMix_));}if(video)draw().cover(video,rect);
       if(image||video||heroMix_<1){const float fadeTop=std::floor(Tokens::heroBottom*.68f);draw().fade({rect.x,0,rect.w*.52f,rect.h},true,true,255);draw().fade({0,fadeTop,Tokens::width,rect.h-fadeTop},false);draw().fade({0,0,Tokens::width,Tokens::header*1.2f},false,true,150);}if(page_!="Discover")draw().fill({0,0,Tokens::width,Tokens::height},{7,11,17,static_cast<Uint8>(page_=="Game"?85:180)});};
     // Compose the static hero once. SDL's PS5 software renderer otherwise blends millions of unchanged pixels every frame.
-    if(!video&&heroMix_>=1&&SDL_RenderTargetSupported(renderer_)){
+    if(!video&&heroMix_>=1&&backdropCacheEnabled_&&SDL_RenderTargetSupported(renderer_)){
       if(!backdropCache_)backdropCache_=SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_ARGB8888,SDL_TEXTUREACCESS_TARGET,static_cast<int>(Tokens::width),static_cast<int>(Tokens::height));
-      const auto key=page_+url+featured["heroCrop"].dump()+(image?":loaded":":empty");
+      const auto key=std::string(1,backdropMode(page_))+url+featured["heroCrop"].dump()+(image?":loaded":":empty");
       if(backdropCache_){if(key!=backdropKey_){if(SDL_SetRenderTarget(renderer_,backdropCache_)!=0){paint();return;}paint();SDL_SetRenderTarget(renderer_,nullptr);backdropKey_=key;backdropCompositions_++;}
         SDL_SetTextureBlendMode(backdropCache_,SDL_BLENDMODE_NONE);SDL_RenderCopy(renderer_,backdropCache_,nullptr,nullptr);return;}
     }
@@ -310,10 +356,10 @@ class Storefront {
     button("network","Server connection",{Tokens::safe,y,480,64},1,[this]{networkSettings();});button("retry","Retry connection",{Tokens::safe,y+95,380,64},2,[this]{lastRefresh_=0;refresh();});button("advanced",advanced_?"Advanced information: on":"Advanced information: off",{Tokens::safe,y+190,480,64},3,[this]{advanced_=!advanced_;});
     button("exit","Exit to PS5 home",{Tokens::safe+Tokens::width*.42f,y,400,64},1,[this]{exitPrompt();});
     float ux=Tokens::safe+Tokens::width*.42f;bool available=!updateManifest_.null();
-    button("app-update",available?"Update & restart":"Check for app updates",{ux,y+95,550,64},2,[this,available]{appUpdate(available);},available,!updateRequest_.valid()&&!credential_.empty());
+    button("app-update",available?"Update & restart":"Check for app updates",{ux,y+95,550,64},2,[this,available]{appUpdate(available);},available,!nativeFrontend&&!updateRequest_.valid()&&!credential_.empty());
     draw().label("PS5Library "+std::string(appVersion),ux,y+190,Tokens::body);draw().label(updateStatus_,ux,y+228,Tokens::caption,Tokens::muted,700,2);
     if(updating_){draw().bar({ux,y+288,550,8},updateBytes_,updateTotal_);draw().label(amount(updateBytes_)+" / "+amount(updateTotal_),ux,y+310,Tokens::caption,Tokens::muted);}
-    button("sounds",audio_->available()?(audio_->enabled()?"Interface sounds: on":"Interface sounds: off"):"Audio unavailable",{Tokens::safe,y+285,480,64},4,[this]{auto next=Json::parse(config_.dump());next.set("interfaceSounds",!audio_->enabled());try{if(!options_.preview)atomicJson(options_.config,next);config_=next;audio_->setEnabled(next["interfaceSounds"].boolean());}catch(const std::exception&){toast("Could not save the sound setting.");}},false,audio_->available());
+    button("sounds",audio_->cuesAvailable()?(audio_->enabled()?"Interface sounds: on":"Interface sounds: off"):"Interface sounds unavailable",{Tokens::safe,y+285,480,64},4,[this]{auto next=Json::parse(config_.dump());next.set("interfaceSounds",!audio_->enabled());try{if(!options_.preview)atomicJson(options_.config,next);config_=next;audio_->setEnabled(next["interfaceSounds"].boolean());}catch(const std::exception&){toast("Could not save the sound setting.");}},false,audio_->cuesAvailable());
     button("autoplay",config_["autoplayTrailers"].null()||config_["autoplayTrailers"].boolean()?"Trailer previews: on":"Trailer previews: off",{Tokens::safe,y+380,480,64},5,[this]{togglePreference("autoplayTrailers");});
     button("trailer-sound",config_["trailerSound"].null()||config_["trailerSound"].boolean()?"Trailer sound: on":"Trailer sound: off",{ux,y+380,550,64},5,[this]{togglePreference("trailerSound");});
     if(!updating_)button("game-music",config_["gameMusic"].null()||config_["gameMusic"].boolean()?"Game music: on":"Game music: off",{ux,y+285,550,64},4,[this]{togglePreference("gameMusic");});
@@ -382,10 +428,16 @@ class Storefront {
     draw().fill({0,0,Tokens::width,Tokens::height},{2,6,12,225});draw().rounded({x,y,w,h},{22,32,47,250},28);
     draw().label("Return to PS5 home?",x+40,y+35,Tokens::title,Tokens::white,static_cast<int>(w-80));
     draw().label("Server preparation continues. Console transfers resume next time.",x+40,y+118,Tokens::body,Tokens::muted,static_cast<int>(w-80),2);
-    button("exit-confirm","Exit PS5Library",{x+40,y+h-95,330,60},1,[this]{running_=false;SDL_StopTextInput();},true);
+    button("exit-confirm","Exit PS5Library",{x+40,y+h-95,330,60},1,[this]{
+#if defined(PS5LIBRARY_NATIVE) && defined(PS5)
+      const int result=ps5library_native_exit();if(result)toast("PS5 could not close the app safely.");else closeModal();
+#else
+      running_=false;SDL_StopTextInput();
+#endif
+    },true);
     button("exit-cancel","Stay in PS5Library",{x+w-390,y+h-95,350,60},1,[this]{closeModal();});
   }
-  void footer(){draw().fade({0,Tokens::height-68,Tokens::width,68},false);draw().label(options_.preview?"DESIGN PREVIEW":offline_?"SERVER OFFLINE  ·  Cached collection":loading_?"Connecting to your library…":"PS5Library",Tokens::safe,Tokens::height-39,Tokens::caption,Tokens::muted);
+  void footer(){draw().fade({0,Tokens::height-68,Tokens::width,68},false);draw().label(options_.preview?"DESIGN PREVIEW":offline_?"SERVER OFFLINE  ·  Cached collection":loading_&&!serverConnected_?"CONNECTING TO SERVER  ·  Cached collection":"PS5Library",Tokens::safe,Tokens::height-39,Tokens::caption,Tokens::muted);
     const std::vector<std::pair<std::string,std::string>> hints=page_=="Downloads"?std::vector<std::pair<std::string,std::string>>{{"options","Actions"},{"shoulders","Switch Tab"},{"cross","View game"},{"circle","Back"}}:std::vector<std::pair<std::string,std::string>>{{"triangle","Utilities"},{"shoulders","Switch Tab"},{"cross","Select"},{"circle","Back"}};
     float total=0;for(const auto& hint:hints)total+=draw().measure(hint.second,Tokens::caption)+(hint.first=="shoulders"?94:hint.first=="options"?46:36)+26;float x=Tokens::width-Tokens::safe-total+26,cy=Tokens::height-28;
     for(const auto& [kind,label]:hints){if(kind=="shoulders"){for(int i=0;i<2;i++){draw().rounded({x+i*39,cy-11,31,22},{225,232,241,255},4);draw().label(i?"R1":"L1",x+i*39+4,cy-10,Tokens::caption,Tokens::background);}x+=94;}else if(kind=="options"){draw().rounded({x,cy-11,34,22},Tokens::white,5);for(int i=0;i<3;i++)draw().stroke(x+8,cy-5+i*5,x+26,cy-5+i*5,Tokens::background,1.7f);x+=46;}else{if(kind=="cross"){draw().rounded({x,cy-12,24,24},Tokens::white,12);draw().icon(kind,x+12,cy,Tokens::background);}else draw().icon(kind,x+12,cy);x+=36;}draw().label(label,x,cy-11,Tokens::caption);x+=draw().measure(label,Tokens::caption)+26;}
@@ -399,7 +451,12 @@ public:
     fs::create_directories(options_.config.parent_path());
 #ifdef PS5
     localAssets(options_.config.parent_path());
-    frontendLock_=open("/data/ps5library/frontend.lock",O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(frontendLock_<0||flock(frontendLock_,LOCK_EX|LOCK_NB)!=0)throw std::runtime_error("PS5Library is already open or updating");
+#ifdef PS5LIBRARY_NATIVE
+    auto lockPath=options_.config.parent_path()/"frontend.lock";
+#else
+    fs::path lockPath="/data/ps5library/frontend.lock";
+#endif
+    frontendLock_=open(lockPath.c_str(),O_CREAT|O_RDWR|O_NOFOLLOW,0600);if(frontendLock_<0||flock(frontendLock_,LOCK_EX|LOCK_NB)!=0)throw std::runtime_error("PS5Library is already open or updating");
 #endif
     if(!config_["serverUrl"].string().empty())try{config_.set("serverUrl",normalizeServerUrl(config_["serverUrl"].string(),config_["allowInsecureLan"].boolean()));}catch(const std::exception& e){toast(e.what());}
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_GAMECONTROLLER)!=0||TTF_Init()!=0)throw std::runtime_error(SDL_GetError());IMG_Init(IMG_INIT_PNG|IMG_INIT_JPG|IMG_INIT_WEBP);SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,"1");
@@ -407,10 +464,10 @@ public:
 #ifdef PS5
     flags|=SDL_WINDOW_FULLSCREEN_DESKTOP;
 #endif
-    window_=SDL_CreateWindow("PS5Library",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,options_.width,options_.height,flags);renderer_=SDL_CreateRenderer(window_,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);if(!renderer_)renderer_=SDL_CreateRenderer(window_,-1,SDL_RENDERER_SOFTWARE);if(!renderer_)throw std::runtime_error(SDL_GetError());SDL_RenderSetLogicalSize(renderer_,static_cast<int>(Tokens::width),static_cast<int>(Tokens::height));
+    window_=SDL_CreateWindow("PS5Library",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,options_.width,options_.height,flags);renderer_=SDL_CreateRenderer(window_,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);if(!renderer_)renderer_=SDL_CreateRenderer(window_,-1,SDL_RENDERER_SOFTWARE);if(!renderer_)throw std::runtime_error(SDL_GetError());SDL_RenderSetLogicalSize(renderer_,static_cast<int>(Tokens::width),static_cast<int>(Tokens::height));backdropCacheEnabled_=SDL_RenderTargetSupported(renderer_)==SDL_TRUE;SDL_RendererInfo rendererInfo{};SDL_GetRendererInfo(renderer_,&rendererInfo);heroCrossfadeEnabled_=heroCrossfade(rendererInfo.flags);
     fs::path font=config_["font"].string("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
 #ifdef PS5
-    if(config_["font"].string().empty()||font=="/data/ps5library/DejaVuSans.ttf")font=options_.config.parent_path()/"Inter-Regular.otf";
+    if(config_["font"].string().empty()||font==options_.config.parent_path()/"DejaVuSans.ttf")font=options_.config.parent_path()/"Inter-Regular.otf";
 #endif
     auto headingFont=font.parent_path()/"Inter-SemiBold.otf";const bool inter=font.filename()=="Inter-Regular.otf"&&fs::exists(headingFont);
     canvas_=std::make_unique<Canvas>(renderer_,font.string(),inter?headingFont.string():"");art_=std::make_unique<Artwork>(config_,options_.config.parent_path()/"artwork-cache",options_.preview);input_=std::make_unique<Input>();
@@ -423,24 +480,24 @@ public:
   }
   ~Storefront(){running_=false;if(updateRequest_.valid())updateRequest_.wait();if(request_.valid())request_.wait();if(agent_.joinable())agent_.join();video_.reset();audio_.reset();art_.reset();SDL_DestroyTexture(backdropCache_);canvas_.reset();input_.reset();SDL_DestroyRenderer(renderer_);SDL_DestroyWindow(window_);IMG_Quit();TTF_Quit();SDL_Quit();if(frontendLock_>=0)close(frontendLock_);}
   std::string launchTitle()const{return launchTitle_;}
-  void run(){auto previous=std::chrono::steady_clock::now();while(running_){auto start=std::chrono::steady_clock::now();if(frameCount_){double interval=std::chrono::duration<double,std::milli>(start-previous).count();if(intervalTimes_.size()<6000)intervalTimes_.push_back(interval);else intervalTimes_[frameCount_%6000]=interval;}delta_=std::min(.05f,std::chrono::duration<float>(start-previous).count());previous=start;pump();pumpUpdate();art_->upload(renderer_);SDL_Event event;
+  void run(){auto previous=std::chrono::steady_clock::now();while(running_){native_stage(100);auto start=std::chrono::steady_clock::now();if(frameCount_){double interval=std::chrono::duration<double,std::milli>(start-previous).count();if(intervalTimes_.size()<6000)intervalTimes_.push_back(interval);else intervalTimes_[frameCount_%6000]=interval;}delta_=std::min(.05f,std::chrono::duration<float>(start-previous).count());previous=start;native_stage(101);pump();native_stage(102);pumpUpdate();native_stage(103);art_->upload(renderer_);native_stage(110);SDL_Event event;
       while(SDL_PollEvent(&event)){visibility_.event(event);if(windowActive_!=visibility_.active()){windowActive_=visibility_.active();video_->stop();audio_->suspend(!windowActive_);}if(!windowActive_&&event.type!=SDL_QUIT)continue;if(textEvent(event))continue;if(event.type==SDL_KEYDOWN&&event.key.keysym.sym==SDLK_SLASH&&(modal_=="Network"||modal_=="Search"))continue;if(event.type==SDL_MOUSEBUTTONDOWN){float x,y;SDL_RenderWindowToLogical(renderer_,event.button.x,event.button.y,&x,&y);for(const auto& [id,rect]:rects_)if(x>=rect.x&&x<rect.x+rect.w&&y>=rect.y&&y<rect.y+rect.h){focus_.select(id);action(Action::Select);break;}}else action(input_->read(event));}if(windowActive_)action(input_->analog());
       if(!windowActive_){preview();SDL_Delay(50);previous=std::chrono::steady_clock::now();continue;}
       if(frameCount_>0&&frameCount_%25==0&&scriptIndex_<script_.size()){auto command=script_[scriptIndex_++];const std::map<std::string,Action> commands={{"up",Action::Up},{"down",Action::Down},{"left",Action::Left},{"right",Action::Right},{"select",Action::Select},{"back",Action::Back},{"next",Action::NextTab},{"prev",Action::PreviousTab},{"search",Action::Search},{"settings",Action::Settings}};if(command=="enter"){SDL_Event typed{};typed.type=SDL_KEYDOWN;typed.key.keysym.sym=SDLK_RETURN;SDL_PushEvent(&typed);}else if(command.rfind("text:",0)==0){auto text=command.substr(5);for(size_t offset=0;offset<text.size();){SDL_Event typed{};typed.type=SDL_TEXTINPUT;auto count=std::min(text.size()-offset,sizeof(typed.text.text)-1);std::memcpy(typed.text.text,text.data()+offset,count);SDL_PushEvent(&typed);offset+=count;}}else if(commands.count(command))action(commands.at(command));}
-      preview();desiredImages_.clear();actions_.clear();rects_.clear();focus_.clear();Json backdrop=page_=="Profile"?Json():heroGame();background(backdrop);if(modal_.empty()&&highlighted().null()&&page_!="Game")ambientBackdrop();navigation();
-      if(!options_.preview&&credential_.empty()&&page_!="Settings"){bool configured=!config_["serverUrl"].string().empty();title("Make yourself at home.",configured?"Open the companion and pair this console with your account.":"Connect your server to start exploring your collection.");draw().label(configured?device_["pairing"]["code"].string("Contacting your server…"):"Your library. Your PS5.",Tokens::safe,Tokens::height*.38f,Tokens::title,Tokens::accent);draw().label("Pair once. Your games and consoles stay with your account.",Tokens::safe,Tokens::height*.52f,Tokens::body,Tokens::muted);button("pair-network",configured?"Server connection":"Connect server",{Tokens::safe,Tokens::height*.65f,350,60},1,[this]{networkSettings();},true);if(configured)button("pair-retry","Retry",{Tokens::safe+380,Tokens::height*.65f,220,60},1,[this]{lastRefresh_=0;});}
-      else if(page_=="Discover")discover();else if(page_=="Game")details();else if(page_=="Downloads")downloadJobs();else if(page_=="My PS5")myPS5();else if(page_=="Settings")settings();else if(page_=="Profile")profile();else gridPage();
-      footer();if(offline_&&modal_.empty()){badge("Server offline — cached view",{Tokens::width-Tokens::safe-355,Tokens::header+5,355,34});}
+      native_stage(120);preview();desiredImages_.clear();actions_.clear();rects_.clear();focus_.clear();Json backdrop=page_=="Profile"?Json():heroGame();native_stage(130);background(backdrop);if(modal_.empty()&&highlighted().null()&&page_!="Game")ambientBackdrop();native_stage(140);navigation();
+      if(!options_.preview&&credential_.empty()&&page_!="Settings"){bool configured=!config_["serverUrl"].string().empty();title("Make yourself at home.",configured?(nativeFrontend?"In the companion, enter this code and choose your registered PS5.":"Open the companion and pair this console with your account."):"Connect your server to start exploring your collection.");draw().label(configured?device_["pairing"]["code"].string("Contacting your server…"):"Your library. Your PS5.",Tokens::safe,Tokens::height*.38f,Tokens::title,Tokens::accent);draw().label("Pair once. Your games and consoles stay with your account.",Tokens::safe,Tokens::height*.52f,Tokens::body,Tokens::muted);button("pair-network",configured?"Server connection":"Connect server",{Tokens::safe,Tokens::height*.65f,350,60},1,[this]{networkSettings();},true);if(configured)button("pair-retry","Retry",{Tokens::safe+380,Tokens::height*.65f,220,60},1,[this]{lastRefresh_=0;});}
+      else if(page_=="Discover"){native_stage(151);discover();}else if(page_=="Game"){native_stage(152);details();}else if(page_=="Downloads"){native_stage(153);downloadJobs();}else if(page_=="My PS5"){native_stage(154);myPS5();}else if(page_=="Settings"){native_stage(155);settings();}else if(page_=="Profile"){native_stage(156);profile();}else{native_stage(157);gridPage();}
+      footer();if(offline_&&!loading_&&modal_.empty()){badge("Server offline — cached view",{Tokens::width-Tokens::safe-355,Tokens::header+5,355,34});}
       if(!modal_.empty()){focus_.clear();actions_.clear();rects_.clear();if(modal_=="Download")downloadModal();else if(modal_=="Network"||modal_=="SwitchServer")networkModal();else if(modal_=="Exit")exitModal();else if(modal_=="Avatar")avatarModal();else if(modal_=="RemoveGame")removalModal();else if(modal_=="JobContext")jobContextModal();else searchModal();}
       if(!focus_.current()&&focus_.id()=="first-card"){if(page_=="Discover"){auto candidate=games([](const Json&g){return g["rail"].string()!="hero";});if(!candidate.empty())focus_.select("rail3:"+candidate[0]["id"].string());}else{auto candidate=games();if(!candidate.empty())focus_.select("grid:"+candidate[0]["id"].string());}}focus_.ensure();
       if(SDL_GetTicks()<toastUntil_){Rect rect{Tokens::width*.2f,Tokens::height-115,Tokens::width*.6f,58};draw().rounded(rect,{35,51,73,245},16);draw().label(message_,rect.x+22,rect.y+15,Tokens::caption,Tokens::white,static_cast<int>(rect.w-44));}
-      art_->desire(desiredImages_);draw().end();SDL_RenderFlush(renderer_);auto composed=std::chrono::steady_clock::now();SDL_RenderPresent(renderer_);auto rendered=std::chrono::steady_clock::now();
+      native_stage(170);if(!loading_)art_->desire(desiredImages_);native_stage(171);draw().end();native_stage(172);auto composed=std::chrono::steady_clock::now();native_stage(180);SDL_RenderPresent(renderer_);native_stage(181);auto rendered=std::chrono::steady_clock::now();
       auto record=[this](std::vector<double>& samples,double duration){if(samples.size()<6000)samples.push_back(duration);else samples[frameCount_%6000]=duration;};
       record(frameTimes_,std::chrono::duration<double,std::milli>(rendered-start).count());record(drawTimes_,std::chrono::duration<double,std::milli>(composed-start).count());record(presentTimes_,std::chrono::duration<double,std::milli>(rendered-composed).count());frameCount_++;
       if(!options_.preview&&(frameCount_==60||frameCount_%300==0)){
         SDL_RendererInfo info{};SDL_GetRendererInfo(renderer_,&info);auto median=[](std::vector<double> samples){std::sort(samples.begin(),samples.end());return static_cast<int64_t>(samples[samples.size()/2]*1000);};
-        auto metrics=Json::object({{"build",appBuild},{"version",appVersion},{"audioAvailable",audio_->available()},{"renderer",info.name?info.name:"unknown"},{"frames",frameCount_},{"renderMedianMicros",median(frameTimes_)},{"drawMedianMicros",median(drawTimes_)},{"presentMedianMicros",median(presentTimes_)},{"backdropCompositions",backdropCompositions_},{"screen",page_}});
-        metrics.set("frameIntervalMedianMicros",median(intervalTimes_));metrics.set("audioDriver",SDL_GetCurrentAudioDriver()?SDL_GetCurrentAudioDriver():"unavailable");metrics.set("soundCuesPlayed",static_cast<int64_t>(audio_->played()));metrics.set("audioQueuedBytes",static_cast<int64_t>(audio_->queued()));metrics.set("interfaceSounds",audio_->enabled());
+        auto metrics=Json::object({{"build",appBuild},{"version",appVersion},{"audioAvailable",audio_->available()},{"renderer",info.name?info.name:"unknown"},{"frames",frameCount_},{"renderMedianMicros",median(frameTimes_)},{"drawMedianMicros",median(drawTimes_)},{"presentMedianMicros",median(presentTimes_)},{"backdropCompositions",backdropCompositions_},{"textureBytes",static_cast<int64_t>(art_->textureBytes())},{"artworkLoads",static_cast<int64_t>(art_->loads())},{"artworkFailures",static_cast<int64_t>(art_->failures())},{"artworkError",art_->lastError()},{"labelTextureBytes",static_cast<int64_t>(draw().labelBytes())},{"labelEntries",static_cast<int64_t>(draw().labelEntries())},{"labelCreates",static_cast<int64_t>(draw().labelCreates())},{"labelDestroys",static_cast<int64_t>(draw().labelDestroys())},{"screen",page_}});
+        const auto intervalTotal=std::accumulate(intervalTimes_.begin(),intervalTimes_.end(),0.0);metrics.set("frameIntervalMedianMicros",median(intervalTimes_));metrics.set("frameIntervalP95Micros",[&]{auto samples=intervalTimes_;std::sort(samples.begin(),samples.end());return static_cast<int64_t>(samples[samples.size()*95/100]*1000);}());metrics.set("effectiveFpsMilli",static_cast<int64_t>(intervalTimes_.size()*1000000/intervalTotal));metrics.set("heroCrossfade",heroCrossfadeEnabled_);metrics.set("audioDriver",SDL_GetCurrentAudioDriver()?SDL_GetCurrentAudioDriver():"unavailable");metrics.set("soundCuesPlayed",static_cast<int64_t>(audio_->played()));metrics.set("audioQueuedBytes",static_cast<int64_t>(audio_->queued()));metrics.set("interfaceSounds",audio_->enabled());metrics.set("musicStarts",static_cast<int64_t>(video_->musicStarts()));metrics.set("trailerStarts",static_cast<int64_t>(video_->starts()));metrics.set("trailerFrames",static_cast<int64_t>(video_->displayed()));metrics.set("trailerActive",video_->active());metrics.set("previewError",video_->error());auto selected=highlighted();metrics.set("previewTitle",selected["title"].string());metrics.set("previewMusicAvailable",!selected["music"].null());metrics.set("previewTrailerAvailable",!selected["trailer"].null());metrics.set("offline",offline_);metrics.set("loading",loading_);metrics.set("serverConnected",serverConnected_);metrics.set("refreshStage",refreshStage_.load());
 #ifdef PS5
         metrics.set("audioOutputCalls",static_cast<int64_t>(audioOutput.calls.load()));metrics.set("audioOutputErrors",static_cast<int64_t>(audioOutput.errors.load()));metrics.set("audioLastError",audioOutput.lastError.load());metrics.set("audioOpenResult",audioOutput.openResult.load());metrics.set("audioVolumeResult",audioOutput.volumeResult.load());metrics.set("audioRoute",audioOutput.user.load()==255?"SYSTEM":"LOCAL_USER");metrics.set("audioInitialUserResult",audioOutput.initialUserResult.load());metrics.set("audioForegroundUserResult",audioOutput.foregroundUserResult.load());metrics.set("audioLocalOpenResult",audioOutput.localOpenResult.load());metrics.set("audioPcmPeak",audioOutput.peak.load());metrics.set("audioNonzeroBlocks",static_cast<int64_t>(audioOutput.nonzeroBlocks.load()));
 #endif
@@ -454,4 +511,14 @@ public:
       // PS5 SDL already blocks on the display flip. An extra sleep can miss the next refresh.
     }std::sort(frameTimes_.begin(),frameTimes_.end());if(!frameTimes_.empty()){auto count=frameTimes_.size();Json metrics=Json::object({{"musicStarts",static_cast<int64_t>(video_->musicStarts())},{"musicAudioBytes",static_cast<int64_t>(video_->musicBytes())},{"backdropCompositions",backdropCompositions_},{"trailerStarts",static_cast<int64_t>(video_->starts())},{"trailerFrames",static_cast<int64_t>(video_->displayed())},{"trailerDecodedFrames",static_cast<int64_t>(video_->decoded())},{"trailerAudioBytes",static_cast<int64_t>(video_->audioBytes())},{"trailerActive",video_->active()},{"audioAvailable",audio_->available()},{"soundCuesPlayed",static_cast<int64_t>(audio_->played())},{"frames",static_cast<int64_t>(count)},{"renderMedianMicros",static_cast<int64_t>(frameTimes_[count/2]*1000)},{"renderP95Micros",static_cast<int64_t>(frameTimes_[count*95/100]*1000)},{"textureBytes",static_cast<int64_t>(art_->textureBytes())},{"screen",page_},{"focus",focus_.id()},{"preview",options_.preview}});atomicJson(options_.config.parent_path()/"performance.json",metrics);std::puts(metrics.dump().c_str());}}
 };
-int main(int argc,char** argv){try{Options options;for(int i=1;i<argc;i++){std::string value=argv[i];if(value=="--preview")options.preview=true;else if(value.rfind("--frames=",0)==0)options.frames=std::stoi(value.substr(9));else if(value.rfind("--capture=",0)==0)options.capture=value.substr(10);else if(value.rfind("--screen=",0)==0)options.screen=value.substr(9);else if(value.rfind("--script=",0)==0)options.script=value.substr(9);else if(value.rfind("--size=",0)==0){auto split=value.find('x');options.width=std::stoi(value.substr(7,split-7));options.height=std::stoi(value.substr(split+1));}else options.config=value;}options.config=fs::absolute(options.config);std::string launch;{Storefront app(options);app.run();launch=app.launchTitle();}if(!launch.empty())loaderRequest(readConfig(options.config)["launcherUrl"].string(),"/launch?titleId="+launch);return 0;}catch(const std::exception&e){std::fprintf(stderr,"Storefront: %s\n",e.what());return 1;}}
+int main(int argc,char** argv){try{Options options;for(int i=1;i<argc;i++){std::string value=argv[i];if(value=="--preview")options.preview=true;else if(value.rfind("--frames=",0)==0)options.frames=std::stoi(value.substr(9));else if(value.rfind("--capture=",0)==0)options.capture=value.substr(10);else if(value.rfind("--screen=",0)==0)options.screen=value.substr(9);else if(value.rfind("--script=",0)==0)options.script=value.substr(9);else if(value.rfind("--size=",0)==0){auto split=value.find('x');options.width=std::stoi(value.substr(7,split-7));options.height=std::stoi(value.substr(split+1));}else options.config=value;}options.config=fs::absolute(options.config);std::string launch;{Storefront app(options);app.run();launch=app.launchTitle();}if(!launch.empty()){
+#if defined(PS5LIBRARY_NATIVE) && defined(PS5)
+  if(ps5library_native_launch(launch.c_str())<0)throw std::runtime_error("Native title launch failed");
+#elif !defined(PS5LIBRARY_NATIVE)
+  loaderRequest(readConfig(options.config)["launcherUrl"].string(),"/launch?titleId="+launch);
+#endif
+}return 0;}catch(const std::exception&e){
+#if defined(PS5LIBRARY_NATIVE) && defined(PS5)
+native_error(e.what());
+#endif
+std::fprintf(stderr,"Storefront: %s\n",e.what());return 1;}}

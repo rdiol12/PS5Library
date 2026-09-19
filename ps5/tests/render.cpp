@@ -1,4 +1,5 @@
 #include "../frontend/render.hpp"
+#include "../frontend/artwork.hpp"
 #include <cassert>
 #include <cstdio>
 #include <vector>
@@ -6,6 +7,16 @@ int main(){
   SDL_setenv("SDL_VIDEODRIVER","dummy",1);assert(SDL_Init(SDL_INIT_VIDEO)==0);assert(TTF_Init()==0);
   auto* surface=SDL_CreateRGBSurfaceWithFormat(0,640,360,32,SDL_PIXELFORMAT_ARGB8888);
   auto* renderer=SDL_CreateSoftwareRenderer(surface);assert(renderer);
+  SDL_RendererInfo rendererInfo{};assert(SDL_GetRendererInfo(renderer,&rendererInfo)==0);
+  assert(!storefront::heroCrossfade(rendererInfo.flags));
+  assert(storefront::heroCrossfade(SDL_RENDERER_ACCELERATED));
+  assert(storefront::backdropMode("Discover")!=storefront::backdropMode("Game"));
+  assert(storefront::backdropMode("Game")!=storefront::backdropMode("My Library"));
+  assert(storefront::backdropMode("My Library")==storefront::backdropMode("Downloads"));
+  assert(storefront::backdropMode("Downloads")==storefront::backdropMode("My PS5"));
+  auto* rgb=SDL_CreateRGBSurfaceWithFormat(0,32,32,24,SDL_PIXELFORMAT_RGB24);assert(rgb);
+  auto* uploaded=storefront::uploadArtworkSurface(renderer,rgb);SDL_FreeSurface(rgb);assert(uploaded);
+  Uint32 uploadedFormat=0;assert(SDL_QueryTexture(uploaded,&uploadedFormat,nullptr,nullptr,nullptr)==0);assert(uploadedFormat==SDL_PIXELFORMAT_ARGB8888);SDL_DestroyTexture(uploaded);
   {
     storefront::Canvas canvas(renderer,"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
     auto* source=SDL_CreateRGBSurfaceWithFormat(0,200,100,32,SDL_PIXELFORMAT_ARGB8888);

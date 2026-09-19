@@ -6,6 +6,9 @@ int main(){
   event.type=SDL_CONTROLLERBUTTONDOWN;visibility.event(event);assert(!visibility.active());
   event.type=SDL_APP_WILLENTERFOREGROUND;visibility.event(event);assert(!visibility.active());
   event.type=SDL_APP_DIDENTERFOREGROUND;visibility.event(event);assert(visibility.active());
+  event.type=SDL_APP_DIDENTERBACKGROUND;visibility.event(event);assert(!visibility.active());
+  event.type=SDL_WINDOWEVENT;event.window.event=SDL_WINDOWEVENT_FOCUS_GAINED;visibility.event(event);assert(!visibility.active());
+  event.type=SDL_APP_DIDENTERFOREGROUND;visibility.event(event);assert(visibility.active());
   event.type=SDL_WINDOWEVENT;event.window.event=SDL_WINDOWEVENT_FOCUS_LOST;visibility.event(event);assert(!visibility.active());
   event.window.event=SDL_WINDOWEVENT_FOCUS_GAINED;visibility.event(event);assert(visibility.active());
 }

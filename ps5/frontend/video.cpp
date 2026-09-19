@@ -29,13 +29,13 @@ void VideoPreview::start(const std::string& key,const Json& config,const std::st
   const auto hash=trailer["sha256"].string();auto size=trailer["size"].number();
   if(!std::regex_match(hash,std::regex("[a-f0-9]{64}"))||size<=0||size>(music?8:128)*1024*1024||trailer["url"].string().rfind(music?"/api/v1/music/":"/api/v1/trailers/",0)!=0)return;
   key_=key;active_=true;sound_=sound;music_=music;if(music)musicStarts_++;else starts_++;
-  {std::lock_guard lock(mutex_);request_={config.dump(),token,trailer["url"].string(),hash,size,++generation_,music};pending_=true;}
+  {std::lock_guard lock(mutex_);error_.clear();request_={config.dump(),token,trailer["url"].string(),hash,size,++generation_,music};pending_=true;}
   wake_.notify_all();
 }
 void VideoPreview::worker(){
   for(;;){Request request;{std::unique_lock lock(mutex_);wake_.wait(lock,[&]{return stopping_||pending_;});if(stopping_)return;request=request_;pending_=false;}
     const auto file=root_/(request.hash+".mp4"),part=root_/(request.hash+".part");
-    try {
+    std::string error;try {
       // ponytail: a 256 MB disk cache with oldest-file eviction; no database for disposable previews.
       uintmax_t bytes=0;std::vector<fs::directory_entry> entries;
       for(const auto& entry:fs::directory_iterator(root_))if(entry.is_regular_file()&&(entry.path().extension()==".mp4"||entry.path().extension()==".part")){bytes+=entry.file_size();if(entry.path()!=file&&entry.path()!=part)entries.push_back(entry);}
@@ -48,8 +48,8 @@ void VideoPreview::worker(){
         client.download(request.url,part,request.size,request.hash,[](int64_t,int64_t){});if(abort())continue;fs::rename(part,file);
       }
       if(!abort()){fs::last_write_time(file,fs::file_time_type::clock::now());double offset=0;do{offset=decode(file,request.generation,request.music,offset);}while(request.music&&!abort());}
-    }catch(...){if(!cancelled(request.generation)){std::error_code error;fs::remove(part,error);}}
-    {std::lock_guard lock(mutex_);if(!cancelled(request.generation))ended_=true;}wake_.notify_all();
+    }catch(const std::exception& e){error=e.what();if(!cancelled(request.generation)){std::error_code ignored;fs::remove(part,ignored);}}catch(...){error="Unknown preview error";}
+    {std::lock_guard lock(mutex_);if(!cancelled(request.generation)){ended_=true;error_=error;}}wake_.notify_all();
   }
 }
 double VideoPreview::decode(const fs::path& file,uint64_t generation,bool music,double offset){

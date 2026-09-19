@@ -1,0 +1,15 @@
+diff --git a/json_object.c b/json_object.c
+index 0a61967..4bf8528 100644
+--- a/json_object.c
++++ b/json_object.c
+@@ -439,7 +439,9 @@ int json_object_put(struct json_object *jso)
+ 			// so we need to actually free it now
+ 			assert(jso->_ref_count == 0);
+ 			jso->_ref_count++;   // We're the exclusive owner of jso, non-atomic add is ok.
+-			assert(_json_object_put_maybe_free(jso, 1) == 0);
++			int free_result = _json_object_put_maybe_free(jso, 1);
++			assert(free_result == 0);
++			(void)free_result;
+ 			jso = parent;
+ 			// iteration will be reset at the top of the loop
+ 		}

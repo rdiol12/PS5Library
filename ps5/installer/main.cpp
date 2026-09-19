@@ -12,7 +12,7 @@ extern "C" {
 int sceAppInstUtilInitialize(void);
 int sceAppInstUtilAppUnInstall(const char*);
 #define ASSET(name) extern const unsigned char name[];extern const size_t name##_size;
-ASSET(frontend) ASSET(icon) ASSET(icon_dds) ASSET(home) ASSET(home_dds) ASSET(param) ASSET(launch) ASSET(font) ASSET(heading_font) ASSET(font_license) ASSET(config) ASSET(certificates)
+ASSET(frontend) ASSET(icon) ASSET(icon_dds) ASSET(home) ASSET(home_dds) ASSET(launch_background) ASSET(launch_background_dds) ASSET(param) ASSET(launch) ASSET(font) ASSET(heading_font) ASSET(font_license) ASSET(config) ASSET(certificates)
 }
 constexpr auto titleId="BREW05001";
 int main(int argc,char** argv){int lock=-1;bool updating=argc>1&&std::string(argv[1])=="--update";try{
@@ -39,7 +39,7 @@ int main(int argc,char** argv){int lock=-1;bool updating=argc>1&&std::string(arg
   const std::vector<install::File> defaults={{"config.json",config,config_size},{"Inter-Regular.otf",font,font_size},{"Inter-SemiBold.otf",heading_font,heading_font_size},{"OFL-Inter.txt",font_license,font_license_size},{"ca-bundle.crt",certificates,certificates_size}};
   for(const auto& file:defaults){auto path=std::filesystem::path("/data/ps5library")/file.name;if(!std::filesystem::exists(path))install::write(path,file.data,file.size);}
   std::printf("Installing PS5Library %s; update mode %s\n",ps5library::appVersion,updating?"yes":"no");
-  install::publish(target,{{"eboot.elf",frontend,frontend_size},{"sce_sys/icon0.png",icon,icon_size},{"sce_sys/icon0.dds",icon_dds,icon_dds_size},{"sce_sys/pic0.png",home,home_size},{"sce_sys/pic0.dds",home_dds,home_dds_size},{"sce_sys/pic1.png",home,home_size},{"sce_sys/pic1.dds",home_dds,home_dds_size},{"sce_sys/param.json",param,param_size},{"launch.html",launch,launch_size}},[&]{int result=registration(titleId,"/user/app/",nullptr);if(result){std::fprintf(stderr,"Registration returned 0x%08x\n",result);throw std::runtime_error("Registration failed; previous files restored");}},updating);
+  install::publish(target,{{"eboot.elf",frontend,frontend_size},{"sce_sys/icon0.png",icon,icon_size},{"sce_sys/icon0.dds",icon_dds,icon_dds_size},{"sce_sys/pic0.png",home,home_size},{"sce_sys/pic0.dds",home_dds,home_dds_size},{"sce_sys/pic1.png",launch_background,launch_background_size},{"sce_sys/pic1.dds",launch_background_dds,launch_background_dds_size},{"sce_sys/param.json",param,param_size},{"launch.html",launch,launch_size}},[&]{int result=registration(titleId,"/user/app/",nullptr);if(result){std::fprintf(stderr,"Registration returned 0x%08x\n",result);throw std::runtime_error("Registration failed; previous files restored");}},updating);
   if(updating){
     using namespace ps5library;const auto launchApp="/hbldr?path=/user/app/BREW05001/eboot.elf&cwd=/data/ps5library&args=ps5library%20/data/ps5library/config.json&daemon=0&pipe=0";
     atomicJson("/data/ps5library/update-boot.json",Json());close(lock);lock=-1;

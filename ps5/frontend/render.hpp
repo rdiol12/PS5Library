@@ -9,12 +9,12 @@
 #include <unordered_map>
 namespace storefront {
 class Canvas {
-  struct Text { SDL_Texture* texture; int width,height; Uint64 seen; };
+  struct Text { SDL_Texture* texture; int width,height; Uint64 seen; size_t bytes; };
   std::map<int,TTF_Font*> fonts_; std::unordered_map<std::string,Text> labels_;
-  SDL_Texture *horizontal_{},*vertical_{};
+  SDL_Texture *horizontal_{},*vertical_{};size_t labelBytes_=0,labelCreates_=0,labelDestroys_=0;
   Text* text(const std::string& value,int size,int width,int lines){
     if(value.empty())return nullptr;auto key=std::to_string(size)+":"+std::to_string(width)+":"+std::to_string(lines)+":"+value;auto found=labels_.find(key);
-    if(found==labels_.end()){auto* surface=TTF_RenderUTF8_Blended_Wrapped(fonts_.at(size),value.c_str(),{255,255,255,255},static_cast<Uint32>(std::max(1,width)));if(!surface)return nullptr;Text t{SDL_CreateTextureFromSurface(renderer,surface),surface->w,std::min(surface->h,TTF_FontLineSkip(fonts_.at(size))*lines),frame};SDL_FreeSurface(surface);found=labels_.emplace(key,t).first;}
+    if(found==labels_.end()){auto* surface=TTF_RenderUTF8_Blended_Wrapped(fonts_.at(size),value.c_str(),{255,255,255,255},static_cast<Uint32>(std::max(1,width)));if(!surface)return nullptr;auto* texture=SDL_CreateTextureFromSurface(renderer,surface);const size_t bytes=texture?static_cast<size_t>(surface->pitch)*surface->h:0;Text t{texture,surface->w,std::min(surface->h,TTF_FontLineSkip(fonts_.at(size))*lines),frame,bytes};SDL_FreeSurface(surface);found=labels_.emplace(key,t).first;labelBytes_+=bytes;labelCreates_++;}
     found->second.seen=frame;return &found->second;
   }
   SDL_Texture* gradient(bool horizontal){auto* surface=SDL_CreateRGBSurfaceWithFormat(0,horizontal?256:1,horizontal?1:256,32,SDL_PIXELFORMAT_RGBA32);auto* pixels=static_cast<Uint32*>(surface->pixels);for(int i=0;i<256;i++)pixels[i]=SDL_MapRGBA(surface->format,Tokens::background.r,Tokens::background.g,Tokens::background.b,static_cast<Uint8>(i));auto* texture=SDL_CreateTextureFromSurface(renderer,surface);SDL_FreeSurface(surface);SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND);return texture;}
@@ -31,6 +31,7 @@ public:
     }SDL_RenderGeometry(renderer,nullptr,vertices,96,indices,288);
   }
   void stroke(float x1,float y1,float x2,float y2,SDL_Color color,float width=2){float length=std::hypot(x2-x1,y2-y1);if(length<=0)return;float dx=(y2-y1)/length*width/2,dy=(x1-x2)/length*width/2;SDL_Vertex v[]={{{x1+dx,y1+dy},color,{}},{{x2+dx,y2+dy},color,{}},{{x2-dx,y2-dy},color,{}},{{x1-dx,y1-dy},color,{}}};int indices[]={0,1,2,0,2,3};SDL_RenderGeometry(renderer,nullptr,v,4,indices,6);}
+  void lineStrip(const SDL_FPoint* points,int count,SDL_Color color){SDL_SetRenderDrawColor(renderer,color.r,color.g,color.b,color.a);SDL_RenderDrawLinesF(renderer,points,count);}
   void icon(const std::string& kind,float x,float y,SDL_Color color=Tokens::white){
     if(kind=="search"){ring(x-3,y-3,11,color);stroke(x+5,y+5,x+16,y+16,color,2.4f);}
     else if(kind=="settings"){ring(x,y,5,color);for(int i=0;i<32;i++){auto point=[&](int n){float a=n*6.2831853f/32,r=(n%4==1||n%4==2)?16.f:12.5f;return SDL_FPoint{x+std::cos(a)*r,y+std::sin(a)*r};};auto a=point(i),b=point(i+1);stroke(a.x,a.y,b.x,b.y,color,2);}}
@@ -77,12 +78,13 @@ public:
   void label(const std::string& value,float x,float y,int size=Tokens::body,SDL_Color color=Tokens::white,int width=1600,int lines=1){auto* t=text(value,size,width,lines);if(!t||!t->texture)return;
     SDL_SetTextureColorMod(t->texture,color.r,color.g,color.b);SDL_SetTextureAlphaMod(t->texture,color.a);SDL_Rect src{0,0,t->width,t->height};SDL_FRect dest{x,y,static_cast<float>(t->width),static_cast<float>(t->height)};SDL_RenderCopyF(renderer,t->texture,&src,&dest);
   }
-  int measure(const std::string& value,int size=Tokens::body){auto key="measure:"+std::to_string(size)+":"+value;auto found=labels_.find(key);if(found==labels_.end()){int width=0;TTF_SizeUTF8(fonts_.at(size),value.c_str(),&width,nullptr);found=labels_.emplace(key,Text{nullptr,width,0,frame}).first;}found->second.seen=frame;return found->second.width;}
+  int measure(const std::string& value,int size=Tokens::body){auto key="measure:"+std::to_string(size)+":"+value;auto found=labels_.find(key);if(found==labels_.end()){int width=0;TTF_SizeUTF8(fonts_.at(size),value.c_str(),&width,nullptr);found=labels_.emplace(key,Text{nullptr,width,0,frame,0}).first;}found->second.seen=frame;return found->second.width;}
   void fade(Rect rect,bool horizontal,bool reverse=false,Uint8 opacity=255){auto* texture=horizontal?horizontal_:vertical_;SDL_SetTextureAlphaMod(texture,opacity);auto dst=rect.sdl();SDL_RenderCopyExF(renderer,texture,nullptr,&dst,0,nullptr,reverse?(horizontal?SDL_FLIP_HORIZONTAL:SDL_FLIP_VERTICAL):SDL_FLIP_NONE);}
   void cover(SDL_Texture* texture,Rect rect,const SDL_Rect* crop=nullptr,Uint8 alpha=255,float radius=0){if(!texture){rounded(rect,{24,34,47,255});rounded({rect.x+rect.w*.2f,rect.y+rect.h*.3f,rect.w*.6f,rect.h*.4f},{34,51,70,255},18);label("PS5Library",rect.x+15,rect.y+rect.h*.75f,Tokens::caption,Tokens::muted,static_cast<int>(rect.w-30));return;}int w,h;SDL_QueryTexture(texture,nullptr,nullptr,&w,&h);SDL_Rect src=crop?*crop:SDL_Rect{0,0,w,h};float aspect=rect.w/rect.h;if(src.w/static_cast<float>(src.h)>aspect){int target=static_cast<int>(src.h*aspect);src.x+=(src.w-target)/2;src.w=target;}else{int target=static_cast<int>(src.w/aspect);src.y+=(src.h-target)/2;src.h=target;}
     if(radius>0)geometry(texture,rect,radius,{255,255,255,alpha},{static_cast<float>(src.x)/w,static_cast<float>(src.y)/h,static_cast<float>(src.w)/w,static_cast<float>(src.h)/h});
     else{SDL_SetTextureAlphaMod(texture,alpha);auto dst=rect.sdl();SDL_RenderCopyF(renderer,texture,&src,&dst);SDL_SetTextureAlphaMod(texture,255);}}
   void bar(Rect rect,int64_t done,int64_t total){rounded(rect,{45,57,73,220},rect.h/2);if(total>0)rounded({rect.x,rect.y,rect.w*std::clamp(done/static_cast<float>(total),0.f,1.f),rect.h},Tokens::accent,rect.h/2);else{float x=static_cast<float>((SDL_GetTicks()%1400)/1400.0);rounded({rect.x+(rect.w-80)*x,rect.y,80,rect.h},Tokens::accent,rect.h/2);}}
-  void end(){frame++;if(labels_.size()>320)for(auto i=labels_.begin();i!=labels_.end();){if(frame-i->second.seen>120){SDL_DestroyTexture(i->second.texture);i=labels_.erase(i);}else ++i;}}
+  size_t labelBytes()const{return labelBytes_;}size_t labelEntries()const{return labels_.size();}size_t labelCreates()const{return labelCreates_;}size_t labelDestroys()const{return labelDestroys_;}
+  void end(){frame++;if(labels_.size()>320)for(auto i=labels_.begin();i!=labels_.end();){if(frame-i->second.seen>120){labelBytes_-=i->second.bytes;SDL_DestroyTexture(i->second.texture);labelDestroys_++;i=labels_.erase(i);}else ++i;}}
 };
 }

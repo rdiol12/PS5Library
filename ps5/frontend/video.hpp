@@ -22,7 +22,7 @@ class VideoPreview {
   ps5library::fs::path root_;UiAudio& audio_;SDL_Texture* texture_=nullptr;
   std::mutex mutex_;std::condition_variable wake_;std::thread worker_;
   std::atomic<bool> stopping_{false};std::atomic<uint64_t> generation_{0};
-  std::deque<Picture> pictures_;std::deque<Sound> sounds_;Request request_;bool pending_=false,ended_=false;
+  std::deque<Picture> pictures_;std::deque<Sound> sounds_;Request request_;bool pending_=false,ended_=false;std::string error_;
   std::string key_;bool active_=false,clockStarted_=false,sound_=true,music_=false;Uint64 started_=0;double lastPts_=0,audioEnd_=0;
   int width_=0,height_=0;uint64_t displayed_=0,audioBytes_=0,starts_=0;std::atomic<uint64_t> decoded_{0};
   uint64_t musicStarts_=0,musicBytes_=0;
@@ -36,6 +36,7 @@ public:
   SDL_Texture* frame(SDL_Renderer* renderer);
   bool active()const{return active_;}
   bool music()const{return music_;}uint64_t musicStarts()const{return musicStarts_;}uint64_t musicBytes()const{return musicBytes_;}
+  std::string error(){std::lock_guard lock(mutex_);return error_;}
   uint64_t displayed()const{return displayed_;}uint64_t decoded()const{return decoded_;}uint64_t audioBytes()const{return audioBytes_;}uint64_t starts()const{return starts_;}
 };
 }

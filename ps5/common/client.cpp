@@ -13,12 +13,14 @@
 #include <sys/file.h>
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <cctype>
 #ifdef PS5
 #include <ps5/kernel.h>
 extern "C" int sceKernelSendNotificationRequest(int, void*, size_t, int);
 #endif
 namespace ps5library {
+static CURLcode perform(CURL* curl){static std::mutex mutex;std::lock_guard lock(mutex);return curl_easy_perform(curl);}
 Json readJson(const fs::path& filename) { std::ifstream file(filename); if(!file || fs::file_size(filename)>8*1024*1024) throw std::runtime_error("Cannot read configuration/state"); return Json::parse(std::string(std::istreambuf_iterator<char>(file),{})); }
 std::string normalizeServerUrl(const std::string& input,bool allowHttp) {
   auto first=input.find_first_not_of(" \t\r\n"),last=input.find_last_not_of(" \t\r\n");
@@ -52,6 +54,27 @@ void atomicBytes(const fs::path& filename,std::string_view data) {
   fs::rename(temp,filename);
 }
 void atomicJson(const fs::path& filename,const Json& value){atomicBytes(filename,value.dump());}
+Json pairFrontend(const fs::path& configPath,const Json& config,const std::function<bool()>& cancelled){
+  auto state=loadDeviceState(configPath,config);auto path=configPath.parent_path()/"device-state.json";
+  if(!state["credential"].string().empty())return state;
+  // Persist the app identity before making a request, including failed requests.
+  atomicJson(path,state);Client client(config);client.cancelled=cancelled;
+  if(!state["pairing"].null()){
+    Json result;
+    try{result=client.request("POST","/api/v1/pairings/"+state["pairing"]["id"].string()+"/poll",Json::object({{"pollSecret",state["pairing"]["pollSecret"]}}));}
+    catch(const RequestError& e){if(e.status!=410)throw;state.set("pairing",Json());atomicJson(path,state);}
+    if(result["status"].string()=="PAIRED"){
+      auto credential=result["credential"].string();
+      if(credential.size()!=64||credential.find_first_not_of("0123456789abcdef")!=std::string::npos||result["consoleId"].string().empty())throw std::runtime_error("Invalid pairing response");
+      state.set("credential",credential);state.set("consoleId",result["consoleId"]);state.set("pairing",Json());atomicJson(path,state);return state;
+    }
+  }
+  if(state["pairing"].null()){
+    state.set("pairing",client.request("POST","/api/v1/frontend/pairings",Json::object({{"deviceId",state["deviceId"]}})));
+    atomicJson(path,state);
+  }
+  return state;
+}
 Json saveServerSettings(const fs::path& configPath,const std::string& input,bool allowHttp,bool resetPairing){
   auto path=fs::absolute(configPath);
   auto server=normalizeServerUrl(input,allowHttp);fs::create_directories(path.parent_path());
@@ -84,17 +107,22 @@ fs::path beneath(const fs::path& root,const std::string& relative) {
     if(fs::is_symlink(fs::symlink_status(value))) throw std::runtime_error("Symlinks are not allowed");
   } return value;
 }
-void notify(const std::string& message) {
+bool notify(const std::string& message) {
 #ifdef PS5
   struct Request { char reserved[45]; char message[3075]; } request{};
   std::snprintf(request.message,sizeof(request.message),"PS5Library: %s",message.c_str());
-  if(sceKernelSendNotificationRequest(0,&request,sizeof(request),0)!=0) std::fprintf(stderr,"Notification unavailable\n");
+  const int result=sceKernelSendNotificationRequest(0,&request,sizeof(request),0);
+  if(result!=0) std::fprintf(stderr,"Notification unavailable: %#x\n",result);
+  return result==0;
 #else
   std::fprintf(stderr,"PS5Library: %s\n",message.c_str());
+  return true;
 #endif
 }
 Client::Client(const Json& config):base_(normalizeServerUrl(config["serverUrl"].string(),config["allowInsecureLan"].boolean())),ca_(config["caBundle"].string()),insecure_(config["allowInsecureLan"].boolean()) {
-  if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK) throw std::runtime_error("Network initialization failed");
+  static std::once_flag once;static CURLcode initialized=CURLE_FAILED_INIT;
+  std::call_once(once,[]{initialized=curl_global_init(CURL_GLOBAL_DEFAULT);});
+  if(initialized!=CURLE_OK) throw std::runtime_error("Network initialization failed");
 }
 CURL* Client::handle(const std::string& relative) const {
   if(cancelled&&cancelled())throw std::runtime_error("Request aborted");
@@ -116,7 +144,7 @@ std::string Client::nativeDownloadUrl(const std::string& relative) const {
 static size_t collect(char* ptr,size_t size,size_t count,void* userdata) {
   auto& out=*static_cast<std::string*>(userdata); if(size*count>12*1024*1024-out.size()) return 0; out.append(ptr,size*count); return size*count;
 }
-static curl_slist* headers(const std::string& credential) { auto* list=curl_slist_append(nullptr,"Content-Type: application/json"); if(!credential.empty()) list=curl_slist_append(list,("Authorization: Bearer "+credential).c_str()); return list; }
+static curl_slist* headers(const std::string& credential) { auto* list=curl_slist_append(nullptr,"Content-Type: application/json");list=curl_slist_append(list,"Connection: close");if(!credential.empty()) list=curl_slist_append(list,("Authorization: Bearer "+credential).c_str()); return list; }
 Client::ImageResponse Client::artwork(const std::string& relative,const std::string& etag,const std::function<bool()>& cancelled) const {
   CURL* curl=handle(relative);auto* list=headers(credential);if(!etag.empty())list=curl_slist_append(list,("If-None-Match: "+etag).c_str());ImageResponse result;
   curl_easy_setopt(curl,CURLOPT_HTTPHEADER,list);curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,collect);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&result.data);
@@ -124,22 +152,23 @@ Client::ImageResponse Client::artwork(const std::string& relative,const std::str
   curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,+[](void* callback,curl_off_t,curl_off_t,curl_off_t,curl_off_t)->int{return (*static_cast<const std::function<bool()>*>(callback))()?1:0;});
   curl_easy_setopt(curl,CURLOPT_HEADERDATA,&result.etag);
   curl_easy_setopt(curl,CURLOPT_HEADERFUNCTION,(+[](char* data,size_t a,size_t b,void* output)->size_t{std::string line(data,a*b);if(line.size()>5&&(line.substr(0,5)=="ETag:"||line.substr(0,5)=="etag:")){auto start=line.find_first_not_of(" \t",5);auto end=line.find_last_not_of("\r\n ");if(start!=std::string::npos)*static_cast<std::string*>(output)=line.substr(start,end-start+1);}return a*b;}));
-  auto error=curl_easy_perform(curl);long status=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);curl_slist_free_all(list);curl_easy_cleanup(curl);
+  auto error=perform(curl);long status=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);curl_slist_free_all(list);curl_easy_cleanup(curl);
   if(error!=CURLE_OK||!(status==200||status==304))throw std::runtime_error("Artwork unavailable");result.unchanged=status==304;return result;
 }
 std::string Client::bytes(const std::string& relative) const {
   CURL* curl=handle(relative); auto* list=headers(credential); std::string output;
   curl_easy_setopt(curl,CURLOPT_HTTPHEADER,list); curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,collect); curl_easy_setopt(curl,CURLOPT_WRITEDATA,&output);
-  auto error=curl_easy_perform(curl); long status=0; curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status); curl_slist_free_all(list); curl_easy_cleanup(curl);
+  auto error=perform(curl); long status=0; curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status); curl_slist_free_all(list); curl_easy_cleanup(curl);
   if(error!=CURLE_OK || status<200 || status>=300) throw std::runtime_error("Server request failed ("+std::to_string(status)+")"); return output;
 }
 Json Client::request(const std::string& method,const std::string& relative,const Json& body) const {
-  CURL* curl=handle(relative); auto* list=headers(credential); auto data=body.dump(); std::string output;
+  CURL* curl=handle(relative); auto* list=headers(credential); auto data=body.dump(); std::string output; char details[CURL_ERROR_SIZE]{};
+  curl_easy_setopt(curl,CURLOPT_ERRORBUFFER,details);
   curl_easy_setopt(curl,CURLOPT_HTTPHEADER,list); curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,method.c_str());
   if(method!="GET") { curl_easy_setopt(curl,CURLOPT_POSTFIELDS,data.c_str()); curl_easy_setopt(curl,CURLOPT_POSTFIELDSIZE,static_cast<long>(data.size())); }
   curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,collect); curl_easy_setopt(curl,CURLOPT_WRITEDATA,&output);
-  auto error=curl_easy_perform(curl); long status=0; curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status); curl_slist_free_all(list); curl_easy_cleanup(curl);
-  if(error!=CURLE_OK) throw std::runtime_error(curl_easy_strerror(error)); auto result=Json::parse(output);
+  auto error=perform(curl); long status=0,osError=0; curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);curl_easy_getinfo(curl,CURLINFO_OS_ERRNO,&osError); curl_slist_free_all(list); curl_easy_cleanup(curl);
+  if(error!=CURLE_OK) throw std::runtime_error(std::string(details[0]?details:curl_easy_strerror(error))+" (errno "+std::to_string(osError)+")"); auto result=Json::parse(output);
   if(status<200 || status>=300) throw RequestError(status,result["error"].string("Server error")); return result;
 }
 struct Transfer { FILE* file; int64_t offset,total,written=0,lastBytes=0; std::chrono::steady_clock::time_point last=std::chrono::steady_clock::now(); const std::function<void(int64_t,int64_t)>* progress; std::string error; };
@@ -162,7 +191,7 @@ void Client::download(const std::string& relative,const fs::path& part,int64_t s
   curl_easy_setopt(curl,CURLOPT_FAILONERROR,1L);
   curl_easy_setopt(curl,CURLOPT_TIMEOUT,0L); curl_easy_setopt(curl,CURLOPT_LOW_SPEED_LIMIT,1024L); curl_easy_setopt(curl,CURLOPT_LOW_SPEED_TIME,30L);
   curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,writeChunk); curl_easy_setopt(curl,CURLOPT_WRITEDATA,&transfer);
-  auto error=curl_easy_perform(curl); long status=0; curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status); curl_slist_free_all(list); curl_easy_cleanup(curl);
+  auto error=perform(curl); long status=0; curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status); curl_slist_free_all(list); curl_easy_cleanup(curl);
   int flushed=fflush(file); int synced=fsync(fileno(file)); fclose(file);
   if(!transfer.error.empty()) throw std::runtime_error(transfer.error);
   if(error!=CURLE_OK || (status!=200 && status!=206) || flushed || synced) throw std::runtime_error("Transfer interrupted; partial file retained");

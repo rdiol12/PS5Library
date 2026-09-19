@@ -12,7 +12,7 @@ and other content you are authorized to use.
 client code, installer, tests, and build workflow. A separately hosted PS5Library
 server is required; the server and its data are not included here.
 
-[Download ELF releases](https://github.com/rdiol12/PS5Library/releases)
+[Download releases](https://github.com/rdiol12/PS5Library/releases)
 · [Build status](https://github.com/rdiol12/PS5Library/actions/workflows/elf.yml)
 
 ## Features
@@ -32,8 +32,11 @@ ShadowMount remains reachable for supported USB/M.2 destinations. Compatibility
 profiles and free-space checks still apply. Native package installation currently
 supports PS5 base games on internal storage; native update/DLC installation is pending.
 
-The previous startup and updater corrections are retained: IPMI loads before
-AppInstUtil, built ELF dependencies are checked, and an empty update feed parses correctly.
+The native preview is distributed as an installed store package plus one agent
+ELF. The store remembers its server address; on first start the agent copies that
+address into its separate device identity, so no compiled address or third config
+file is required. IPMI loads before AppInstUtil, built ELF dependencies are checked,
+and an empty update feed parses correctly.
 
 The storefront follows the approved dark cinematic
 reference: Inter typography, translucent controls, a larger hero composition,
@@ -69,16 +72,23 @@ jobs and a failed preparation from that library.
 
 ## Install
 
-1. Start a compatible jailbreak and homebrew loader on your PS5.
-2. Download **`ps5library-install.elf`** from a release.
-3. Send that installer through your compatible payload loader. It installs the
-   frontend/assets and requests the supported homebrew title registration path.
-4. Open PS5Library, enter your server address, and complete console pairing.
+1. Start the jailbreak and the compatible kstuff/FPKG patches for your firmware.
+2. Download **`PS5Library.pkg`** and **`ps5library-agent.elf`** from the same release.
+3. Install `PS5Library.pkg` with the package installer supplied by your runtime.
+4. Open PS5Library from the PS5 Home screen, enter your self-hosted server address,
+   and complete the account pairing shown by the store.
+5. Load `ps5library-agent.elf` with Payload Manager or another compatible ELF
+   loader. Claim its pairing code when the PS5 notification appears.
 
-`ps5library.elf` is the application itself; **`ps5library-install.elf` is the file
-for installation or updating**. The launcher integration currently uses the
-compatible local homebrew launcher/websrv path. A standalone native title package
-is not implemented.
+The package stays installed. The agent supplies console inventory, runtime and
+storage capabilities, native FPKG download submission, transfer progress, and
+installation confirmation. Load it again after each reboot; a payload manager may
+autoload it after the jailbreak. Start the store and save its server address before
+the agent's first launch. These two release files are the complete console-side
+installation; the separately hosted PS5Library server is still required.
+
+The older `ps5library-install.elf` and `ps5library.elf` artifacts remain the
+developer/homebrew-loader route. New users should use the native package above.
 
 The server address is configured at first launch, not compiled into the app.
 Keep the release's `SHA256SUMS` to verify downloaded files. GitHub releases are
@@ -112,13 +122,21 @@ Results appear in `dist/`:
 | `ps5library-install.elf.json` | Version, build and integrity metadata |
 | `SHA256SUMS` | Download integrity checks |
 
+The native application source is in `ps5/native/`. Its FSELF build pins ProsperoTV
+at commit `fdee81e746308f7f2b27f7914a84eab678088fb6` and verifies an extract/readback
+round trip. Creating the final FPKG requires locally installed PS5 Publishing Tools,
+which cannot be redistributed or installed on GitHub-hosted runners. GitHub Releases
+therefore host the exact package that passed the physical-console check; Actions
+continues to build the open-source ELF artifacts.
+
 The public update verification key is in `ps5/assets/update-public-key.pem`.
 Its private key is not included. Builds for a different update publisher must
 use that publisher's public key and matching signed manifests.
 
 ## Automated releases
 
-GitHub Actions builds/tests main-branch pushes, pull requests, and manual runs.
+GitHub Actions tests main-branch pushes and pull requests. Installable artifacts are
+built only for an explicit version tag or a manually started packaging workflow.
 Push a version tag matching `ps5/common/version.hpp` to publish the verified ELF
 files as a prerelease:
 
@@ -137,11 +155,12 @@ downloads are pinned by hash in `licenses/sources.json`.
 - Development targets a user-reported **4.51** console. Support for every
   jailbreakable firmware has not been verified; features are negotiated at runtime.
 - Host tests and cross-compilation do not prove physical-console behavior.
-- HDMI audio remains inaudible on the tested console despite successful audio calls.
+- Interface sounds use the native PS5 SDL audio device and were verified on the
+  development console. Per-game music/trailers still depend on media supplied by
+  the configured server.
 - PS-button **Home/background** behavior remains unresolved.
 - Native PS5 base-package downloads use the AppInstUtil URL installer when it
-  initializes successfully. Native queue appearance and acceptance on physical
-  hardware remain unverified. The first adapter confirms internal installs;
+  initializes successfully. The first adapter confirms internal installs;
   external targets, native update/DLC installation and automatic native error
   polling are not implemented. Use PS5 Downloads for its queue controls/errors.
 - ShadowMount 1.7 overlays use verified staging and separate title directories;
@@ -149,8 +168,8 @@ downloads are pinned by hash in `licenses/sources.json`.
   These runtime paths require matching server profiles and physical launch tests.
 - The app does not claim completion from an accepted install request: installed
   package bytes, exact title metadata and server inventory must agree.
-- Standalone persistent-agent/background support and direct native title startup
-  are not established. Existing launcher integration remains required.
+- The native title and separate agent were tested on firmware 4.51. The agent is
+  not cold-boot persistent and must be loaded again after the jailbreak.
 
 ## Source layout
 
@@ -159,6 +178,7 @@ ps5/frontend/    Store UI, input, artwork, audio and video
 ps5/common/      API client, configuration and signed-update verification
 ps5/agent/       Console discovery, inventory and transfer-related client code
 ps5/installer/   Installer and asset publication
+ps5/native/      Native-title link/FSELF build and readback verification
 ps5/assets/      PS5Library branding and launch assets
 ps5/tests/       Native checks and hardware diagnostic source
 scripts/        Build, packaging and release checks
