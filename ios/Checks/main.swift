@@ -92,6 +92,8 @@ assert(!serverAddressAllowed(URL(string:"http://172.32.0.1:3150")!))
 assert(!serverAddressAllowed(URL(string:"ftp://192.168.1.20")!))
 assert(webSocketScheme(for:"https") == "wss")
 assert(webSocketScheme(for:"http") == "ws")
+let info=try PropertyListSerialization.propertyList(from:Data(contentsOf:URL(fileURLWithPath:"PS5LibraryCompanion/Info.plist")),format:nil) as! [String:Any]
+assert((info["NSAppTransportSecurity"] as? [String:Any])?["NSAllowsLocalNetworking"] as? Bool == true)
 let pairingServer=URL(string:"https://library.example:443")!
 let scanned=PairingQR("https://library.example/pair?code=ab12cd34ef&kind=frontend",server:pairingServer)
 assert(scanned?.code == "AB12CD34EF" && scanned?.frontend == true)
