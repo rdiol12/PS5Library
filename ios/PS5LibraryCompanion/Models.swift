@@ -1,5 +1,23 @@
 import Foundation
 
+func serverAddressAllowed(_ url: URL) -> Bool {
+    guard let scheme=url.scheme?.lowercased(),let rawHost=url.host?.lowercased(),!rawHost.isEmpty,
+          url.user==nil,url.password==nil,url.query==nil,url.fragment==nil,url.path.isEmpty||url.path=="/" else{return false}
+    if scheme=="https" { return true }
+    guard scheme=="http" else{return false}
+    let host=rawHost.trimmingCharacters(in:CharacterSet(charactersIn:"[]")),plain=host.split(separator:"%",maxSplits:1).first.map(String.init) ?? host
+    if plain=="localhost" || plain.hasSuffix(".local") { return true }
+    let parts=plain.split(separator:".",omittingEmptySubsequences:false)
+    if parts.count==4,parts.allSatisfy({!$0.isEmpty&&$0.allSatisfy(\.isNumber)}),parts.allSatisfy({Int($0).map{(0...255).contains($0)}==true}) {
+        let a=Int(parts[0])!,b=Int(parts[1])!
+        return a==10 || a==127 || (a==172&&(16...31).contains(b)) || (a==192&&b==168) || (a==169&&b==254) || (a==100&&(64...127).contains(b))
+    }
+    if plain.contains(":") { return plain=="::1" || plain.hasPrefix("fc") || plain.hasPrefix("fd") || ["fe8","fe9","fea","feb"].contains(where:plain.hasPrefix) }
+    return !plain.contains(".") && !plain.allSatisfy(\.isNumber)
+}
+func webSocketScheme(for scheme: String?) -> String { scheme?.lowercased()=="http" ? "ws":"wss" }
+private func defaultPort(for scheme: String?) -> Int { scheme?.lowercased()=="http" ? 80:443 }
+
 struct Account: Codable, Identifiable, Equatable {
     var id: String; var server: URL; var username: String; var role: String
 }
@@ -73,10 +91,10 @@ struct FirmwareRefresh: Decodable { let requestId: String }
 struct PairingQR {
     let code: String; let frontend: Bool
     init?(_ payload: String, server: URL) {
-        guard payload.utf8.count<=2048,server.scheme=="https",
-              let parts=URLComponents(string:payload),parts.scheme=="https",
+        guard payload.utf8.count<=2048,serverAddressAllowed(server),
+              let parts=URLComponents(string:payload),parts.scheme?.lowercased()==server.scheme?.lowercased(),
               parts.host?.lowercased()==server.host?.lowercased(),parts.host != nil,
-              (parts.port ?? 443)==(server.port ?? 443),parts.user==nil,parts.password==nil,
+              (parts.port ?? defaultPort(for:parts.scheme))==(server.port ?? defaultPort(for:server.scheme)),parts.user==nil,parts.password==nil,
               parts.fragment==nil,parts.percentEncodedPath=="/pair" else{return nil}
         let query=parts.queryItems ?? []
         let codes=query.filter{$0.name=="code"},kinds=query.filter{$0.name=="kind"}

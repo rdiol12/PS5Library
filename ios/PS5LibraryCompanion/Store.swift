@@ -20,7 +20,7 @@ enum Credentials {
 actor API {
     let base: URL; let token: String; let session: URLSession
     init(server: URL, token: String = "") throws {
-        guard server.scheme=="https",server.host != nil,server.user==nil,server.password==nil,server.query==nil,server.fragment==nil,server.path.isEmpty||server.path=="/" else{throw StoreError.message("Enter your server's HTTPS address, for example https://library.example.net.")}
+        guard serverAddressAllowed(server) else{throw StoreError.message("Use HTTPS, or HTTP only for a private LAN server such as http://192.168.1.20:3150.")}
         base=server;self.token=token
         let config=URLSessionConfiguration.ephemeral;config.httpShouldSetCookies=false;config.timeoutIntervalForRequest=20
         config.urlCache=URLCache(memoryCapacity:32*1024*1024,diskCapacity:128*1024*1024,diskPath:"PS5Library-"+server.host!)
@@ -74,7 +74,7 @@ actor API {
         guard count==asset.size,digest.finalize().map({String(format:"%02x",$0)}).joined()==asset.sha256 else{throw StoreError.message("Media verification failed. Refresh the catalog and try again.")}
         keep=true;return file
     }
-    func events(after:Int64) throws -> URLSessionWebSocketTask { var request=try makeRequest("/api/v1/events/live?after=\(after)");var url=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!;url.scheme="wss";request.url=url.url;let socket=session.webSocketTask(with:request);socket.resume();return socket }
+    func events(after:Int64) throws -> URLSessionWebSocketTask { var request=try makeRequest("/api/v1/events/live?after=\(after)");var url=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!;url.scheme=webSocketScheme(for:base.scheme);request.url=url.url;let socket=session.webSocketTask(with:request);socket.resume();return socket }
 }
 @MainActor final class Store: ObservableObject {
     @Published var accounts:[Account]=[];@Published var account:Account?;@Published var data=Snapshot(games:[],consoles:[],jobs:[],featured:nil,library:[],consoleId:"")

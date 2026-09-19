@@ -82,6 +82,16 @@ assert(trailer.valid(for:"trailers"))
 let restoredMedia=try JSONDecoder().decode(MediaAsset.self,from:JSONEncoder().encode(trailer))
 assert(restoredMedia == trailer)
 print("iOS media metadata checks passed")
+assert(serverAddressAllowed(URL(string:"https://library.example")!))
+assert(serverAddressAllowed(URL(string:"http://192.168.1.20:3150")!))
+assert(serverAddressAllowed(URL(string:"http://10.0.0.2:3150")!))
+assert(serverAddressAllowed(URL(string:"http://ps5library.local:3150")!))
+assert(serverAddressAllowed(URL(string:"http://localhost:3150")!))
+assert(!serverAddressAllowed(URL(string:"http://library.example")!))
+assert(!serverAddressAllowed(URL(string:"http://172.32.0.1:3150")!))
+assert(!serverAddressAllowed(URL(string:"ftp://192.168.1.20")!))
+assert(webSocketScheme(for:"https") == "wss")
+assert(webSocketScheme(for:"http") == "ws")
 let pairingServer=URL(string:"https://library.example:443")!
 let scanned=PairingQR("https://library.example/pair?code=ab12cd34ef&kind=frontend",server:pairingServer)
 assert(scanned?.code == "AB12CD34EF" && scanned?.frontend == true)
@@ -98,6 +108,9 @@ for invalid in [
     "https://library.example/pair?code=AB12CD34EF&next=https://other.example",
     "AB12CD34EF"
 ] { assert(PairingQR(invalid,server:pairingServer)==nil,invalid) }
+let localPairingServer=URL(string:"http://192.168.1.20:3150")!
+assert(PairingQR("http://192.168.1.20:3150/pair?code=AB12CD34EF",server:localPairingServer)?.code == "AB12CD34EF")
+assert(PairingQR("https://192.168.1.20:3150/pair?code=AB12CD34EF",server:localPairingServer) == nil)
 print("iOS QR pairing checks passed")
 let unsupported=try JSONDecoder().decode(Plan.self,from:Data(#"{"method":null,"methods":[],"compatibility":{"status":"UNSUPPORTED_METHOD","method":null},"storage":[],"allowed":false,"reason":"UNSUPPORTED_METHOD","message":"No supported method","estimated":false}"#.utf8))
 assert(unsupported.method == nil && unsupported.online == nil)
