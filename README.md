@@ -28,11 +28,7 @@ server is required; the server and its data are not included here.
 - Firmware saved at registration, with an explicit refresh in My PS5.
 - Exact backport profile selection, missing-file warnings and verified placement.
 
-Version 0.2.10 lets you choose the installation method before selecting storage.
-This fixes a dead end when the default FPKG route cannot use the selected drive:
-ShadowMount remains reachable for supported USB/M.2 destinations. Compatibility
-profiles and free-space checks still apply. Native package installation currently
-supports PS5 base games on internal storage; native update/DLC installation is pending.
+
 
 The native preview is distributed as an installed store package plus one agent
 ELF. The store remembers its server address; on first start the agent copies that
@@ -40,13 +36,10 @@ address into its separate device identity, so no compiled address or third confi
 file is required. IPMI loads before AppInstUtil, built ELF dependencies are checked,
 and an empty update feed parses correctly.
 
-The storefront follows the approved dark cinematic
-reference: Inter typography, translucent controls, a larger hero composition,
-clean controller icons and a consistent profile page. Search's View All retains
-the selected results. Fonts and their license are bundled for offline startup.
+
 
 The app needs the matching private server APIs (firmware, backport and
-native-download APIs). A 4.51 system can carry a libc SDK baseline labelled 4.50;
+native-download APIs).
 the registration measurement now uses the system software API and rejects
 conflicting version reports. Host checks cover that distinction; hardware
 confirmation remains required.
@@ -55,10 +48,6 @@ Availability depends on the connected server and the console's actual runtime.
 PS5Library is independent of Sony infrastructure and does not request PSN credentials.
 
 ## Screenshots
-
-Captured from version 0.2.10 running on the development PS5 at 1920×1080,
-using its paired server and actual library data. Downloads shows completed source
-jobs and a failed preparation from that library.
 
 ### Discover
 
