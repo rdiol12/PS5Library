@@ -44,9 +44,6 @@ the registration measurement now uses the system software API and rejects
 conflicting version reports. Host checks cover that distinction; hardware
 confirmation remains required.
 
-Availability depends on the connected server and the console's actual runtime.
-PS5Library is independent of Sony infrastructure and does not request PSN credentials.
-
 ## Screenshots
 
 ### Discover
@@ -119,28 +116,6 @@ round trip. Creating the final FPKG requires locally installed PS5 Publishing To
 which cannot be redistributed or installed on GitHub-hosted runners. GitHub Releases
 therefore host the exact package that passed the physical-console check; Actions
 continues to build the open-source ELF artifacts.
-
-The public update verification key is in `ps5/assets/update-public-key.pem`.
-Its private key is not included. Builds for a different update publisher must
-use that publisher's public key and matching signed manifests.
-
-## Automated releases
-
-GitHub Actions tests main-branch pushes and pull requests. Installable artifacts are
-built only for an explicit version tag or a manually started packaging workflow.
-Push a version tag matching `ps5/common/version.hpp` to publish the verified ELF
-files as a prerelease:
-
-```sh
-git tag v0.2.10
-git push origin v0.2.10
-```
-
-For subsequent releases, update the application version and increase its build
-number first. Tagged releases also include the dependency sources, upstream
-patches/build recipes, and license notices needed for redistribution. Source
-downloads are pinned by hash in `licenses/sources.json`.
-
 
 ## Source layout
 
