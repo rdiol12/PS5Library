@@ -15,6 +15,27 @@ func serverAddressAllowed(_ url: URL) -> Bool {
     if plain.contains(":") { return plain=="::1" || plain.hasPrefix("fc") || plain.hasPrefix("fd") || ["fe8","fe9","fea","feb"].contains(where:plain.hasPrefix) }
     return !plain.contains(".") && !plain.allSatisfy(\.isNumber)
 }
+func normalizedServerAddress(_ input: String) -> URL? {
+    let value=input.trimmingCharacters(in:.whitespacesAndNewlines)
+    guard !value.isEmpty else{return nil}
+    let candidate=value.contains("://") ? value:"http://"+value
+    guard let url=URL(string:candidate),serverAddressAllowed(url) else{return nil}
+    return url
+}
+func serverConnectionMessage(_ error: Error, server: URL) -> String? {
+    guard let failure=error as? URLError else{return nil}
+    if failure.code == .secureConnectionFailed || failure.code == .serverCertificateUntrusted {
+        var parts=URLComponents(url:server,resolvingAgainstBaseURL:false)
+        parts?.scheme="http"
+        if let local=parts?.url,serverAddressAllowed(local) {
+            return "Secure connection failed. This private server is not serving trusted HTTPS. Enter \(local.absoluteString) to use it on your local network."
+        }
+    }
+    if [.notConnectedToInternet,.cannotConnectToHost,.cannotFindHost,.timedOut,.networkConnectionLost].contains(failure.code) {
+        return "Cannot reach PS5Library. Connect the iPhone to the server's Wi-Fi and enable PS5Library under Settings > Privacy & Security > Local Network."
+    }
+    return nil
+}
 func webSocketScheme(for scheme: String?) -> String { scheme?.lowercased()=="http" ? "ws":"wss" }
 private func defaultPort(for scheme: String?) -> Int { scheme?.lowercased()=="http" ? 80:443 }
 
