@@ -13,7 +13,7 @@ func serverAddressAllowed(_ url: URL) -> Bool {
         return a==10 || a==127 || (a==172&&(16...31).contains(b)) || (a==192&&b==168) || (a==169&&b==254) || (a==100&&(64...127).contains(b))
     }
     if plain.contains(":") { return plain=="::1" || plain.hasPrefix("fc") || plain.hasPrefix("fd") || ["fe8","fe9","fea","feb"].contains(where:plain.hasPrefix) }
-    return !plain.contains(".") && !plain.allSatisfy(\.isNumber)
+    return false
 }
 func normalizedServerAddress(_ input: String) -> URL? {
     let value=input.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -82,6 +82,12 @@ struct Storage: Codable, Identifiable {
 struct Console: Codable, Identifiable {
     let id: String; let name: String; let presence: String; let firmware: String?
     let runtime: String; let games: Int; let storage: [Storage]; let isDefault: Bool
+    let capabilities: ConsoleCapabilities?
+}
+struct ConsoleCapabilities: Codable { let remotePlayPairing: Bool?; let saveBackup: Bool?; let saveExport:Bool?;let saveImport:Bool?;let saveRollback:Bool? }
+struct RemotePlayPairing: Codable, Identifiable {
+    let id: String; let state: String; let expiresAt: String; let updatedAt: String?
+    let error: String?; let pin: String?; let accountId: String?
 }
 struct ConsoleUpdate: Encodable { var name: String? = nil; var isDefault: Bool? = nil }
 struct CatalogSource: Decodable, Identifiable {
@@ -178,6 +184,11 @@ struct ReviewedInstallation {
 struct Artifact: Decodable, Identifiable { let id: String; let title: String; let version: String; let format: String; let size: Int64; let verified: Bool }
 struct Acknowledgement: Decodable { let id: String?; let ok: Bool?; let consoleId: String? }
 struct Invitation: Decodable { let token: String }
+struct CommunityStatus: Decodable {
+    let configured:Bool;let masterUrl:String?;let displayName:String?;let serverId:String?;let state:String
+    let userCode:String?;let verificationUri:String?;let verificationUriComplete:String?;let expiresAt:String?;let banReason:String?;let error:String?;let updatedAt:String?
+}
+struct CommunityRequest: Encodable { let displayName:String }
 struct Events: Decodable { struct Event: Decodable { let id: Int64 }; let events: [Event] }
 struct Snapshot: Codable { var games: [Game]; var consoles: [Console]; var jobs: [Job]; var featured: Featured?; var library: [LibraryEntry]; var consoleId: String; var installations: [InstallationStatus]? = nil }
 struct Profile: Decodable {
@@ -185,11 +196,38 @@ struct Profile: Decodable {
 }
 struct ProfileConsole: Decodable, Identifiable {
     let id: String; let name: String; let trophySummary: TrophySummary?; let trophySyncedAt: String?
-    let games: [ProfileGame]
+    let games: [ProfileGame]; let saveData: [SaveSlot]?
 }
+struct SaveSlot: Decodable, Identifiable {
+    var id:String { localUserId+"|"+platform+"|"+saveTitleId+"|"+directory }
+    let localUserId:String;let platform:String; let gameTitleId:String; let saveTitleId:String; let directory:String
+    let title:String; let subtitle:String; let detail:String; let sizeBytes:Int64; let modifiedAt:Double
+}
+struct SaveBackupRequest: Encodable { let localUserId:String; let platform:String; let saveTitleId:String; let directory:String }
+struct SaveBackup: Decodable, Identifiable {
+    let id:String; let consoleId:String; let localUserId:String; let platform:String; let gameTitleId:String; let saveTitleId:String; let directory:String
+    let sourceModifiedAt:Int64; let format:String; let state:String; let totalBytes:Int64?; let uploadedBytes:Int64; let sha256:String?; let error:String?
+    let createdAt:String; let updatedAt:String; let downloadUrl:String?
+    var progress:Double? { guard let totalBytes,totalBytes>0 else{return nil};return min(1,max(0,Double(uploadedBytes)/Double(totalBytes))) }
+    var downloadable:Bool { state=="READY" && totalBytes==uploadedBytes && totalBytes != nil && sha256?.range(of:"^[a-f0-9]{64}$",options:.regularExpression) != nil && downloadUrl=="/api/v1/save-backups/\(id)/download" }
+}
+struct CommunityTerms:Decodable {let version:String;let sha256:String;let body:String;let acceptLabel:String;let accepted:Bool}
+struct PortableSave:Decodable,Identifiable {
+    let id:String;let origin:String;let consoleId:String?;let localUserId:String?;let platform:String;let gameTitleId:String;let saveTitleId:String;let directory:String;let gameVersion:String;let state:String;let totalBytes:Int64?;let uploadedBytes:Int64;let displayName:String?;let masterPublicationId:String?;let masterState:String?;let error:String?
+    var progress:Double?{guard let totalBytes,totalBytes>0 else{return nil};return min(1,max(0,Double(uploadedBytes)/Double(totalBytes)))}
+}
+struct SaveImport:Decodable,Identifiable {let id:String;let archiveId:String;let consoleId:String;let localUserId:String;let rollbackBackupId:String;let state:String;let rollbackState:String;let displayName:String?;let gameTitleId:String;let gameVersion:String;let saveTitleId:String;let directory:String;let downloadedBytes:Int64;let totalBytes:Int64;let speedBytesPerSecond:Int64;let error:String?;var progress:Double{totalBytes>0 ? min(1,max(0,Double(downloadedBytes)/Double(totalBytes))):0}}
+struct CommunitySaveCatalog:Decodable {struct Version:Decodable {let gameVersion:String;let saves:[CommunitySave]};let gameTitleId:String;let versions:[Version]}
+struct CommunitySave:Decodable,Identifiable {let id:String;let platform:String;let gameTitleId:String;let saveTitleId:String;let gameVersion:String;let region:String?;let displayName:String;let description:String;let size:Int64;let publisher:String}
+struct SaveExportRequest:Encodable {let localUserId:String;let platform:String;let saveTitleId:String;let directory:String;let gameVersion:String}
+struct CommunityConsent:Encodable {let accepted:Bool;let termsVersion:String;let termsSha256:String}
+struct PortablePublication:Encodable {let displayName:String;let description:String}
+struct CommunityDownloadRequest:Encodable {let consoleId:String;let gameTitleId:String;let gameVersion:String}
+struct SaveImportRequest:Encodable {let consoleId:String;let localUserId:String}
+struct SaveTaskCreated:Decodable {let id:String?;let state:String;let rollbackBackupId:String?;let publicationId:String?}
 struct ProfileGame: Decodable, Identifiable {
-    var id: String { gameId }; let gameId: String; let title: String; let platform: String
-    let available: Bool; let coverUrl: String
+    var id: String { gameId }; let gameId: String; let title: String;let titleId:String; let platform: String
+    let available: Bool; let coverUrl: String;let versions:[String]
 }
 struct TrophySummary: Decodable {
     struct Counts: Decodable { let platinum: Int; let gold: Int; let silver: Int; let bronze: Int }
