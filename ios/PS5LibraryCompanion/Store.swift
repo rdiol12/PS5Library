@@ -36,7 +36,9 @@ actor API {
     func request<T:Decodable, Body:Encodable>(_ path: String, method: String, body: Body) async throws -> T {
         var request=try makeRequest("/api/v1"+path);request.httpMethod=method
         if method != "GET" { request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=try JSONEncoder().encode(body) }
-        let (data,response)=try await session.data(for:request)
+        let result:(Data,URLResponse)
+        do{result=try await session.data(for:request)}catch{if let message=serverConnectionMessage(error,server:base){throw StoreError.message(message)};throw error}
+        let (data,response)=result
         guard let response=response as? HTTPURLResponse,(200..<300).contains(response.statusCode) else { let value=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any];throw StoreError.message(readable(value?["error"] as? String ?? "Server request failed")) }
         guard data.count<=12*1024*1024 else{throw StoreError.message("Server response is too large.")}
         return try JSONDecoder().decode(T.self,from:data)
@@ -99,7 +101,7 @@ actor API {
             if let file=try? cache(selected.id),let encoded=try? JSONEncoder().encode(data){try? encoded.write(to:file,options:[.atomic,.completeFileProtection])}
         }catch{if account?.id==selected.id,!Task.isCancelled{offline=true;self.error=error.localizedDescription}}
     }
-    func login(server:String,username:String,password:String,invite:String,register:Bool) async throws { guard let url=URL(string:server) else{throw StoreError.message("Invalid server address")};let client=try API(server:url);var body=["username":username,"password":password];if register{body["inviteToken"]=invite};let result:Login=try await client.request(register ? "/auth/register":"/auth/login",method:"POST",json:body)
+    func login(server:String,username:String,password:String,invite:String,register:Bool) async throws { guard let url=normalizedServerAddress(server) else{throw StoreError.message("Enter HTTPS, a private LAN URL, or a LAN address such as 192.168.1.20:3150.")};let client=try API(server:url);var body=["username":username,"password":password];if register{body["inviteToken"]=invite};let result:Login=try await client.request(register ? "/auth/register":"/auth/login",method:"POST",json:body)
         let id=accounts.first(where:{$0.server==url&&$0.username==username})?.id ?? UUID().uuidString;let profile=Account(id:id,server:url,username:result.user.username,role:result.user.role);try Credentials.save(result.token,id:id);accounts.removeAll(where:{$0.id==id});accounts.append(profile);UserDefaults.standard.set(try JSONEncoder().encode(accounts),forKey:"accounts");activate(profile)
     }
     func perform(_ action: @escaping (API) async throws -> Void) { guard let api=api else{return};let owner=account?.id;Task{do{try await action(api);if account?.id==owner{await refresh()}}catch{if account?.id==owner{self.error=error.localizedDescription}}} }
