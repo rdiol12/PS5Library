@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import VisionKit
+import UIKit
 
 private let accent=Color(red:0.48,green:0.7,blue:0.98)
 private let appBackground=Color(red:0.025,green:0.047,blue:0.08)
@@ -90,7 +91,7 @@ struct RootView:View {
                     NavigationLink("My Profile & Trophies"){ProfileView().id(store.account?.id)}
                     NavigationLink("Notifications"){NotificationsView().id(store.account?.id)}
                     NavigationLink("Prepared packages on this server"){CacheView()}
-                    if store.account?.role=="ADMIN"{InvitationView()}
+                    if store.account?.role=="ADMIN"{NavigationLink("Community Master"){CommunityMasterView()};InvitationView()}
                 }
                 Section{Text("Independent homebrew library. Sony/PSN credentials are never required.").font(.footnote).foregroundStyle(.secondary)}
             }.navigationTitle("Settings")
@@ -383,6 +384,7 @@ struct ConsoleCard:View {
     @State private var editing=false
     @State private var revoking=false
     @State private var busy=false
+    @State private var remotePlay=false
     var body:some View {
         Section {
             VStack(alignment:.leading,spacing:16) {
@@ -399,6 +401,9 @@ struct ConsoleCard:View {
                 Button("Rename"){name=console.name;editing=true}
                 if !console.isDefault{Button("Make default PS5"){update(ConsoleUpdate(isDefault:true))}}
                 Button("Refresh firmware"){refreshFirmware()}
+                if console.capabilities?.remotePlayPairing == true {
+                    Button("Pair a Remote Play client",systemImage:"play.rectangle.on.rectangle"){remotePlay=true}.disabled(console.presence != "ONLINE")
+                } else { Text("Remote Play pairing is unavailable until the updated agent reports support.").font(.caption).foregroundStyle(.secondary) }
                 Button("Revoke console access",role:.destructive){revoking=true}
                 if busy{ProgressView()}
                 if !message.isEmpty{Text(message).font(.caption).accessibilityLabel(message)}
@@ -413,6 +418,7 @@ struct ConsoleCard:View {
             Button("Revoke access",role:.destructive){revoke()}
             Button("Cancel",role:.cancel){}
         } message:{Text("This disconnects this console's agent and storefront. Games remain on the console. Reconnecting requires resetting its device identity and pairing again.")}
+        .sheet(isPresented:$remotePlay){NavigationStack{RemotePlayPairingView(console:console)}}
     }
     func update(_ body:ConsoleUpdate) {
         run { api in
@@ -443,6 +449,48 @@ struct ConsoleCard:View {
                 message=result;await store.refresh()
             } catch { if store.account?.id==owner{message=error.localizedDescription} }
         }
+    }
+}
+struct RemotePlayPairingView:View {
+    @EnvironmentObject var store:Store
+    @Environment(\.dismiss) private var dismiss
+    let console:Console
+    @State private var pairing:RemotePlayPairing?
+    @State private var failure:String?
+    var body:some View {
+        VStack(alignment:.leading,spacing:20) {
+            Text(console.name).font(.title.bold())
+            if let pairing {
+                switch pairing.state {
+                case "REQUESTED": ProgressView("Asking the PS5 for a native Remote Play PIN…")
+                case "READY":
+                    Text("REMOTE PLAY PIN").font(.caption.bold()).foregroundStyle(accent)
+                    Text(pairing.pin ?? "").font(.system(size:40,weight:.bold,design:.monospaced)).textSelection(.enabled)
+                    Button("Copy PIN"){UIPasteboard.general.string=pairing.pin}
+                    Text("ACCOUNT ID").font(.caption.bold()).foregroundStyle(.secondary)
+                    Text(pairing.accountId ?? "").font(.body.monospaced()).textSelection(.enabled)
+                    Button("Copy account ID"){UIPasteboard.general.string=pairing.accountId}
+                    Text("On a PC connected to the same private network, open chiaki-ng, add this PS5, and enter the account ID and PIN. Remote Play must already be enabled under PS5 Settings > System > Remote Play. The PIN expires after five minutes.").foregroundStyle(.secondary)
+                case "PAIRED": Label("Remote Play client paired",systemImage:"checkmark.circle.fill").foregroundStyle(.green)
+                default: Label(readable(pairing.error ?? pairing.state),systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
+            } else if let failure { Label(failure,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
+            else { ProgressView("Starting native Remote Play pairing…") }
+            Spacer()
+        }.padding(24).navigationTitle("Remote Play").toolbar{ToolbarItem(placement:.cancellationAction){Button("Close"){dismiss()}}}
+            .task{await pair()}
+    }
+    func pair() async {
+        guard let api=store.api else{return};let owner=store.account?.id
+        do {
+            var value:RemotePlayPairing=try await api.request("/consoles/\(console.id)/remote-play/pairing",method:"POST")
+            guard store.account?.id==owner else{return};pairing=value
+            while store.account?.id==owner && ["REQUESTED","READY"].contains(value.state) {
+                try await Task.sleep(nanoseconds:1_000_000_000)
+                value=try await api.request("/consoles/\(console.id)/remote-play/pairing/\(value.id)")
+                if store.account?.id==owner{pairing=value}
+            }
+        } catch is CancellationError {} catch { if store.account?.id==owner{failure=error.localizedDescription} }
     }
 }
 struct CacheView:View{@EnvironmentObject var store:Store;@State private var artifacts:[Artifact]=[];var body:some View{List{Section{Text("Verified packages stay on your PC for reuse. Deleting a cached copy keeps the original source and your console's copy.").font(.footnote)};ForEach(artifacts){artifact in VStack(alignment:.leading){Text(artifact.title).font(.headline);Text(artifact.version+" · "+bytes(artifact.size)).font(.caption)}.swipeActions{Button("Delete PC copy",role:.destructive){store.perform{api in let _:Acknowledgement=try await api.request("/artifacts/\(artifact.id)",method:"DELETE");artifacts=try await api.request("/artifacts")}}}}}.navigationTitle("Server cache").task{guard let api=store.api else{return};do{artifacts=try await api.request("/artifacts")}catch{store.error=error.localizedDescription}}}}
@@ -505,6 +553,7 @@ struct ProfileView:View {
                             Text("Local summary from \(Date(timeIntervalSince1970:summary.modifiedAt).formatted(date:.abbreviated,time:.shortened))").font(.caption).foregroundStyle(.secondary)
                         } else { Text("Trophy summary unavailable").foregroundStyle(.secondary) }
                         Text("Per-game earned progress has not been collected. Totals are separate for each console.").font(.caption).foregroundStyle(.secondary)
+                        NavigationLink { SaveBackupsView(console:console) } label: { Label("Save backups",systemImage:"externaldrive.badge.timemachine") }
                         ForEach(console.games){game in
                             HStack {
                                 ArtworkView(path:game.coverUrl).frame(width:44,height:58).clipShape(RoundedRectangle(cornerRadius:6))
@@ -540,6 +589,95 @@ struct ProfileView:View {
         }
     }
 }
+struct SaveBackupsView:View {
+    @EnvironmentObject var store:Store;let console:ProfileConsole
+    @State private var backups:[SaveBackup]=[];@State private var portable:[PortableSave]=[];@State private var imports:[SaveImport]=[];@State private var terms:CommunityTerms?;@State private var acceptedRisk=false;@State private var community:[CommunitySave]=[];@State private var communityUnavailable=false
+    @State private var busy="";@State private var loading=false;@State private var failure:String?;@State private var exported:(id:String,url:URL)?;@State private var deleting:SaveBackup?
+    var live:Console?{store.data.consoles.first{$0.id==console.id}}
+    var enabled:Bool{!store.offline && live?.presence=="ONLINE" && live?.capabilities?.saveBackup==true}
+    var portableEnabled:Bool{enabled && live?.capabilities?.saveExport==true && live?.capabilities?.saveImport==true && live?.capabilities?.saveRollback==true}
+    var body:some View {
+        List {
+            Section { Text("Encrypted backups remain bound to this PS5. Portable community saves use a separate console-local export/import path and always create an encrypted rollback backup first.").font(.footnote) }
+            Section("Saved games") {
+                if (console.saveData ?? []).isEmpty { Text("This console has not reported any save slots.").foregroundStyle(.secondary) }
+                ForEach(console.saveData ?? []){save in
+                    VStack(alignment:.leading,spacing:8) {
+                        Text(save.title.isEmpty ? (save.subtitle.isEmpty ? save.saveTitleId:save.subtitle):save.title).font(.headline)
+                        Text(save.platform+" ? "+save.saveTitleId+" ? "+bytes(save.sizeBytes)).font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("Back up to server",systemImage:"arrow.up.doc"){request(save)}.buttonStyle(.borderedProminent).disabled(!enabled || !busy.isEmpty || active(save))
+                            if terms?.accepted==true,portableEnabled,let game=console.games.first(where:{$0.titleId==save.gameTitleId}) {
+                                Menu("Share save",systemImage:"person.2") { ForEach(game.versions,id:\.self){version in Button("Version "+version){preparePortable(save,version)}} }.disabled(!busy.isEmpty)
+                            }
+                        }
+                    }.padding(.vertical,4)
+                }
+                if !enabled { Text("Open the updated PS5Library app on this console to enable encrypted backups.").font(.caption).foregroundStyle(.secondary) }
+            }
+            Section("Backup history") {
+                if backups.isEmpty { Text("No backups yet.").foregroundStyle(.secondary) }
+                ForEach(backups){backup in
+                    VStack(alignment:.leading,spacing:8) {
+                        Text(backup.saveTitleId+" ? "+backup.directory).font(.headline)
+                        Text(readable(backup.state)+(backup.totalBytes.map{" ? "+bytes(backup.uploadedBytes)+" / "+bytes($0)} ?? " ? Waiting for console")).font(.caption).foregroundStyle(.secondary)
+                        if let progress=backup.progress,!backup.downloadable { ProgressView(value:progress) }
+                        if let error=backup.error { Text(readable(error)).font(.caption).foregroundStyle(.orange) }
+                        HStack {
+                            if exported?.id==backup.id,let file=exported?.url { ShareLink(item:file){Label("Save to Files",systemImage:"square.and.arrow.up")} }
+                            else if backup.downloadable { Button("Download",systemImage:"arrow.down.doc"){download(backup)}.disabled(!busy.isEmpty) }
+                            Button("Delete",role:.destructive){deleting=backup}.disabled(!busy.isEmpty)
+                        }
+                    }.padding(.vertical,4)
+                }
+            }
+            Section("Community saves") {
+                if let terms,terms.accepted==false {
+                    Text(terms.body).font(.footnote)
+                    Toggle(terms.acceptLabel,isOn:$acceptedRisk)
+                    Button("Accept and continue"){acceptTerms(terms)}.disabled(!acceptedRisk || !busy.isEmpty)
+                } else if terms?.accepted==true {
+                    if !portableEnabled { Text("Portable save mount/import is unavailable on this console runtime.").foregroundStyle(.secondary) }
+                    ForEach(portable){save in
+                        VStack(alignment:.leading,spacing:6) {
+                            Text(save.displayName ?? save.saveTitleId).font(.headline)
+                            Text(readable(save.origin)+" ? "+save.gameVersion+" ? "+readable(save.state)).font(.caption).foregroundStyle(.secondary)
+                            if let progress=save.progress,save.state != "READY" { ProgressView(value:progress) }
+                            if let error=save.error { Text(readable(error)).font(.caption).foregroundStyle(.orange) }
+                            if save.origin=="EXPORT" && save.state=="READY" && save.masterPublicationId==nil { Button("Submit for community review"){publish(save)}.disabled(!busy.isEmpty) }
+                            if save.origin=="COMMUNITY" && save.state=="READY" { Button("Import with rollback"){importSave(save)}.disabled(!portableEnabled || !busy.isEmpty || !(console.saveData ?? []).contains(where:{$0.saveTitleId==save.saveTitleId && $0.directory==save.directory})) }
+                        }.padding(.vertical,3)
+                    }
+                    Menu("Find compatible saves",systemImage:"magnifyingglass") { ForEach(console.games.filter(\.available)){game in ForEach(game.versions,id:\.self){version in Button(game.title+" ? "+version){find(game,version)}}} }.disabled(!portableEnabled || !busy.isEmpty)
+                    ForEach(community){save in
+                        VStack(alignment:.leading,spacing:5) { Text(save.displayName).font(.headline);Text(save.publisher+" ? "+save.gameVersion+" ? "+bytes(save.size)).font(.caption).foregroundStyle(.secondary);if !save.description.isEmpty{Text(save.description).font(.footnote)};Button("Download to my server"){downloadCommunity(save)}.disabled(!busy.isEmpty) }.padding(.vertical,3)
+                    }
+                    ForEach(imports){item in VStack(alignment:.leading){Text(item.displayName ?? item.saveTitleId).font(.headline);Text("Import "+readable(item.state)+" ? rollback "+readable(item.rollbackState)).font(.caption).foregroundStyle(.secondary);if ["REQUESTED","IMPORTING","VERIFYING"].contains(item.state){ProgressView(value:item.progress);Text(bytes(item.downloadedBytes)+" / "+bytes(item.totalBytes)+(item.speedBytesPerSecond>0 ? " ? "+bytes(item.speedBytesPerSecond)+"/s":"")).font(.caption.monospacedDigit()).foregroundStyle(.secondary)};if let error=item.error{Text(readable(error)).font(.caption).foregroundStyle(.orange)}} }
+                } else if communityUnavailable { Text("Community saves are unavailable. Encrypted backups still work.").foregroundStyle(.secondary) }
+                else { ProgressView("Loading community terms?") }
+            }
+            if !busy.isEmpty { ProgressView("Working?") }
+            if let failure { Section { Text(failure).foregroundStyle(.orange);Button("Retry"){Task{await load()}} } }
+        }.navigationTitle(console.name+" Saves").refreshable{await load()}
+        .task { while !Task.isCancelled { await load();try? await Task.sleep(nanoseconds:2_000_000_000) } }
+        .onDisappear{if let file=exported?.url{try? FileManager.default.removeItem(at:file)}}
+        .alert("Delete this backup?",isPresented:Binding(get:{deleting != nil},set:{if !$0{deleting=nil}}),presenting:deleting){backup in
+            Button("Delete",role:.destructive){remove(backup)};Button("Cancel",role:.cancel){}
+        } message:{_ in Text("This removes the server copy. The save on your PS5 is unchanged.")}
+    }
+    func active(_ save:SaveSlot)->Bool{backups.contains{$0.consoleId==console.id && $0.localUserId==save.localUserId && $0.platform==save.platform && $0.saveTitleId==save.saveTitleId && $0.directory==save.directory && ["REQUESTED","UPLOADING","VERIFYING"].contains($0.state)}}
+    func load() async {guard !loading,let api=store.api else{return};loading=true;defer{loading=false};do{let all:[SaveBackup]=try await api.request("/save-backups");if !Task.isCancelled{backups=all.filter{$0.consoleId==console.id};failure=nil}}catch{if !Task.isCancelled{failure=error.localizedDescription};return};async let allPortable:[PortableSave]?=try? api.request("/portable-saves");async let allImports:[SaveImport]?=try? api.request("/save-imports");async let currentTerms:CommunityTerms?=try? api.request("/community/terms");let result=await(allPortable,allImports,currentTerms);if !Task.isCancelled{if let values=result.0{portable=values.filter{$0.consoleId==nil || $0.consoleId==console.id}};if let values=result.1{imports=values.filter{$0.consoleId==console.id}};terms=result.2;communityUnavailable=result.2==nil}}
+    func request(_ save:SaveSlot){run(save.id){api in let _:Acknowledgement=try await api.request("/consoles/\(console.id)/saves/backups",method:"POST",body:SaveBackupRequest(localUserId:save.localUserId,platform:save.platform,saveTitleId:save.saveTitleId,directory:save.directory))}}
+    func download(_ backup:SaveBackup){run(backup.id){api in let file=try await api.downloadSave(backup);if let old=exported?.url{try? FileManager.default.removeItem(at:old)};exported=(backup.id,file)}}
+    func remove(_ backup:SaveBackup){run(backup.id){api in let _:Acknowledgement=try await api.request("/save-backups/\(backup.id)",method:"DELETE");if exported?.id==backup.id,let file=exported?.url{try? FileManager.default.removeItem(at:file);exported=nil}}}
+    func acceptTerms(_ value:CommunityTerms){run("terms"){api in let _:Acknowledgement=try await api.request("/community/terms/accept",method:"POST",body:CommunityConsent(accepted:true,termsVersion:value.version,termsSha256:value.sha256));acceptedRisk=false}}
+    func preparePortable(_ save:SaveSlot,_ version:String){run(save.id){api in let _:SaveTaskCreated=try await api.request("/consoles/\(console.id)/saves/exports",method:"POST",body:SaveExportRequest(localUserId:save.localUserId,platform:save.platform,saveTitleId:save.saveTitleId,directory:save.directory,gameVersion:version))}}
+    func publish(_ save:PortableSave){run(save.id){api in let _:SaveTaskCreated=try await api.request("/portable-saves/\(save.id)/publish",method:"POST",body:PortablePublication(displayName:save.displayName ?? save.saveTitleId,description:"Shared from "+console.name))}}
+    func find(_ game:ProfileGame,_ version:String){guard let api=store.api else{return};busy=game.id;Task{@MainActor in defer{busy=""};do{let value:CommunitySaveCatalog=try await api.request("/community/saves?consoleId=\(console.id)&gameTitleId=\(game.titleId)&gameVersion=\(version)");community=value.versions.flatMap(\.saves);failure=nil}catch{failure=error.localizedDescription}}}
+    func downloadCommunity(_ save:CommunitySave){run(save.id){api in let _:SaveTaskCreated=try await api.request("/community/saves/\(save.id)/download",method:"POST",body:CommunityDownloadRequest(consoleId:console.id,gameTitleId:save.gameTitleId,gameVersion:save.gameVersion))}}
+    func importSave(_ save:PortableSave){guard let slot=(console.saveData ?? []).first(where:{$0.saveTitleId==save.saveTitleId && $0.directory==save.directory}) else{failure="Create the matching save slot in the game first.";return};run(save.id){api in let _:SaveTaskCreated=try await api.request("/portable-saves/\(save.id)/import",method:"POST",body:SaveImportRequest(consoleId:console.id,localUserId:slot.localUserId))}}
+    func run(_ id:String,_ action:@escaping(API) async throws->Void){guard busy.isEmpty,let api=store.api else{return};let owner=store.account?.id;busy=id;failure=nil;Task{@MainActor in defer{busy=""};do{try await action(api);if store.account?.id==owner{await load()}}catch{if store.account?.id==owner{failure=error.localizedDescription}}}}
+}
 struct NotificationsView:View {
     @EnvironmentObject var store:Store
     @State private var notices:[Notice]=[]
@@ -567,6 +705,49 @@ struct NotificationsView:View {
     }
 }
 struct InvitationView:View{@EnvironmentObject var store:Store;@State private var invitation="";var body:some View{Button("Create invitation for a friend"){store.perform{api in let response:Invitation=try await api.request("/admin/invites",method:"POST");invitation=response.token}};if !invitation.isEmpty{Text("Single use · expires in 7 days").font(.caption);Text(invitation).font(.caption.monospaced()).textSelection(.enabled)}}}
+struct CommunityMasterView:View {
+    @EnvironmentObject var store:Store
+    @State private var status:CommunityStatus?
+    @State private var name="Family Library"
+    @State private var busy=false
+    @State private var failure:String?
+    var body:some View {
+        Form {
+            Section("Connection") {
+                if let status {
+                    LabeledContent("State",value:readable(status.state))
+                    if let serverId=status.serverId{LabeledContent("Server ID"){Text(serverId).font(.caption.monospaced()).textSelection(.enabled)}}
+                    if let reason=status.banReason{LabeledContent("Ban reason",value:reason)}
+                    if let error=status.error{LabeledContent("Last error",value:readable(error))}
+                } else { ProgressView("Loading community status…") }
+            }
+            if status?.configured==false {
+                Section { Text("Set COMMUNITY_MASTER_URL to the exact HTTPS Master origin on your server, then restart it.").foregroundStyle(.secondary) }
+            } else if status?.state=="DISCONNECTED" {
+                Section("Request access") {
+                    TextField("Server name",text:$name)
+                    Button("Request Master access"){requestAccess()}.disabled(busy||name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                }
+            } else if status?.state=="AWAITING_OWNER" {
+                Section("Authorize this server") {
+                    if let code=status?.userCode{Text(code).font(.system(.title2,design:.monospaced).weight(.bold)).tracking(3).textSelection(.enabled)}
+                    if let value=status?.verificationUriComplete,let url=URL(string:value){Link("Sign in with passkey and authorize",destination:url)}
+                    Text("Master administrator approval is required after you authorize the server.").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            if let status,status.state != "DISCONNECTED" {
+                Section { Button("Refresh status"){refresh()}.disabled(busy);Button("Disconnect from Master",role:.destructive){disconnect()}.disabled(busy) }
+            }
+            Section { Text("The Master carries community saves and social state only. Dumps, packages, backports, source credentials and console credentials remain on this Library Node.").font(.footnote).foregroundStyle(.secondary) }
+            if let failure{Section{Text(failure).foregroundStyle(.orange)}}
+        }.navigationTitle("Community Master").task{await monitor()}.refreshable{await load()}.disabled(busy)
+    }
+    func monitor() async { await load();while !Task.isCancelled,["AWAITING_OWNER","PENDING"].contains(status?.state ?? ""){try? await Task.sleep(nanoseconds:5_000_000_000);await load()} }
+    @MainActor func load() async {guard let api=store.api else{return};do{status=try await api.request("/admin/community");failure=nil}catch{failure=error.localizedDescription}}
+    func requestAccess(){guard let api=store.api else{return};let displayName=name.trimmingCharacters(in:.whitespacesAndNewlines);busy=true;Task{@MainActor in defer{busy=false};do{status=try await api.request("/admin/community/request",method:"POST",body:CommunityRequest(displayName:displayName));failure=nil}catch{failure=error.localizedDescription}}}
+    func refresh(){guard let api=store.api else{return};busy=true;Task{@MainActor in defer{busy=false};do{let empty:[String:String]=[:];status=try await api.request("/admin/community/refresh",method:"POST",body:empty);failure=nil}catch{failure=error.localizedDescription}}}
+    func disconnect(){guard let api=store.api else{return};busy=true;Task{@MainActor in defer{busy=false};do{let _:Acknowledgement=try await api.request("/admin/community",method:"DELETE",body:[String:String]());await load()}catch{failure=error.localizedDescription}}}
+}
 struct SourcesView:View {
     @EnvironmentObject var store:Store
     @State private var sources:[CatalogSource]=[]

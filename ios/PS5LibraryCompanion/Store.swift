@@ -3,7 +3,7 @@ import Security
 import SwiftUI
 import CryptoKit
 
-private final class MediaRedirectPolicy:NSObject,URLSessionTaskDelegate {
+private final class NoRedirectPolicy:NSObject,URLSessionTaskDelegate {
     func urlSession(_ session:URLSession,task:URLSessionTask,willPerformHTTPRedirection response:HTTPURLResponse,newRequest request:URLRequest,completionHandler:@escaping (URLRequest?)->Void) { completionHandler(nil) }
 }
 
@@ -24,12 +24,12 @@ actor API {
         base=server;self.token=token
         let config=URLSessionConfiguration.ephemeral;config.httpShouldSetCookies=false;config.timeoutIntervalForRequest=20
         config.urlCache=URLCache(memoryCapacity:32*1024*1024,diskCapacity:128*1024*1024,diskPath:"PS5Library-"+server.host!)
-        session=URLSession(configuration:config)
+        session=URLSession(configuration:config,delegate:NoRedirectPolicy(),delegateQueue:nil)
     }
     func url(_ path: String) throws -> URL {
         guard path.hasPrefix("/api/v1/"),!path.contains(".."),let url=URL(string:path,relativeTo:base)?.absoluteURL,url.host==base.host,url.port==base.port,url.scheme==base.scheme else{throw StoreError.message("Invalid server resource.")};return url
     }
-    func makeRequest(_ path: String) throws -> URLRequest { var request=URLRequest(url:try url(path));request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization");return request }
+    func makeRequest(_ path: String) throws -> URLRequest { var request=URLRequest(url:try url(path));if !token.isEmpty{request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")};return request }
     func request<T:Decodable>(_ path: String, method: String = "GET", json: [String:String] = [:]) async throws -> T {
         try await request(path, method:method, body:json)
     }
@@ -48,7 +48,7 @@ actor API {
         guard asset.valid(for:kind) else{throw StoreError.message("Invalid media metadata.")}
         let config=URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies=false;config.urlCache=nil;config.timeoutIntervalForRequest=30;config.timeoutIntervalForResource=300
-        let download=URLSession(configuration:config,delegate:MediaRedirectPolicy(),delegateQueue:nil)
+        let download=URLSession(configuration:config,delegate:NoRedirectPolicy(),delegateQueue:nil)
         defer{download.invalidateAndCancel()}
         let (stream,response)=try await download.bytes(for:makeRequest(asset.url))
         guard let response=response as? HTTPURLResponse,response.statusCode==200,
@@ -75,6 +75,20 @@ actor API {
         digest.update(data:chunk);try output.write(contentsOf:chunk)
         guard count==asset.size,digest.finalize().map({String(format:"%02x",$0)}).joined()==asset.sha256 else{throw StoreError.message("Media verification failed. Refresh the catalog and try again.")}
         keep=true;return file
+    }
+    func downloadSave(_ backup:SaveBackup) async throws -> URL {
+        guard backup.downloadable,let location=backup.downloadUrl,let size=backup.totalBytes,let expected=backup.sha256 else{throw StoreError.message("This backup is not ready to download.")}
+        let config=URLSessionConfiguration.ephemeral;config.httpShouldSetCookies=false;config.urlCache=nil;config.timeoutIntervalForRequest=30;config.timeoutIntervalForResource=1800
+        let download=URLSession(configuration:config,delegate:NoRedirectPolicy(),delegateQueue:nil);defer{download.invalidateAndCancel()}
+        let (source,response)=try await download.download(for:makeRequest(location))
+        guard let response=response as? HTTPURLResponse,response.statusCode==200,response.mimeType=="application/vnd.ps5library.save",response.expectedContentLength==size else{throw StoreError.message("The save backup response does not match the server record.")}
+        let input=try FileHandle(forReadingFrom:source);defer{try? input.close()};var count:Int64=0,digest=SHA256()
+        while let data=try input.read(upToCount:1024*1024),!data.isEmpty{try Task.checkCancellation();count+=Int64(data.count);guard count<=size else{throw StoreError.message("The save backup exceeds its declared size.")};digest.update(data:data)}
+        guard count==size,digest.finalize().map({String(format:"%02x",$0)}).joined()==expected else{throw StoreError.message("Save backup verification failed.")}
+        let safe=(backup.saveTitleId+"-"+backup.directory).map{$0.isLetter||$0.isNumber||$0=="-" ? $0:"_"};let destination=FileManager.default.temporaryDirectory.appendingPathComponent(String(safe)+"-"+backup.id+".ps5save")
+        try? FileManager.default.removeItem(at:destination)
+        do{try FileManager.default.moveItem(at:source,to:destination);try FileManager.default.setAttributes([.protectionKey:FileProtectionType.complete],ofItemAtPath:destination.path);return destination}
+        catch{try? FileManager.default.removeItem(at:destination);throw error}
     }
     func events(after:Int64) throws -> URLSessionWebSocketTask { var request=try makeRequest("/api/v1/events/live?after=\(after)");var url=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!;url.scheme=webSocketScheme(for:base.scheme);request.url=url.url;let socket=session.webSocketTask(with:request);socket.resume();return socket }
 }
