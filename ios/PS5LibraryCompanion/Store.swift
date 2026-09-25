@@ -11,9 +11,6 @@ enum StoreError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case let .message(text) = self { return text }; return nil }
 }
-private func capture<T>(_ operation:() async throws -> T) async -> (T?,String?) {
-    do{return (try await operation(),nil)}catch{return (nil,error.localizedDescription)}
-}
 enum Credentials {
     static func query(_ id: String) -> [String: Any] { [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"PS5Library",kSecAttrAccount as String:id] }
     static func read(_ id: String) -> String? { var q=query(id);q[kSecReturnData as String]=true;var value:CFTypeRef?;guard SecItemCopyMatching(q as CFDictionary,&value)==errSecSuccess,let data=value as? Data else{return nil};return String(data:data,encoding:.utf8) }
@@ -25,30 +22,26 @@ actor API {
     init(server: URL, token: String = "") throws {
         guard serverAddressAllowed(server) else{throw StoreError.message("Use HTTPS, or HTTP only for a private LAN server such as http://192.168.1.20:3150.")}
         base=server;self.token=token
-        let config=URLSessionConfiguration.ephemeral;config.httpShouldSetCookies=false;config.waitsForConnectivity=true;config.timeoutIntervalForRequest=20
+        let config=URLSessionConfiguration.ephemeral;config.httpShouldSetCookies=false;config.timeoutIntervalForRequest=20
         config.urlCache=URLCache(memoryCapacity:32*1024*1024,diskCapacity:128*1024*1024,diskPath:"PS5Library-"+server.host!)
         session=URLSession(configuration:config,delegate:NoRedirectPolicy(),delegateQueue:nil)
     }
     func url(_ path: String) throws -> URL {
         guard path.hasPrefix("/api/v1/"),!path.contains(".."),let url=URL(string:path,relativeTo:base)?.absoluteURL,url.host==base.host,url.port==base.port,url.scheme==base.scheme else{throw StoreError.message("Invalid server resource.")};return url
     }
-    func makeRequest(_ path: String) throws -> URLRequest { var request=URLRequest(url:try url(path));request.setValue("companion",forHTTPHeaderField:"X-PS5Library-Client");if !token.isEmpty{request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")};return request }
+    func makeRequest(_ path: String) throws -> URLRequest { var request=URLRequest(url:try url(path));if !token.isEmpty{request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")};return request }
     func request<T:Decodable>(_ path: String, method: String = "GET", json: [String:String] = [:]) async throws -> T {
         try await request(path, method:method, body:json)
     }
     func request<T:Decodable, Body:Encodable>(_ path: String, method: String, body: Body) async throws -> T {
-        let data=try await response(path,method:method,body:method=="GET" ? nil:JSONEncoder().encode(body));return try JSONDecoder().decode(T.self,from:data)
-    }
-    func send<Body:Encodable>(_ path:String,method:String,body:Body) async throws {_ = try await response(path,method:method,body:JSONEncoder().encode(body))}
-    private func response(_ path:String,method:String,body:Data?) async throws -> Data {
         var request=try makeRequest("/api/v1"+path);request.httpMethod=method
-        if let body {request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=body}
+        if method != "GET" { request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=try JSONEncoder().encode(body) }
         let result:(Data,URLResponse)
         do{result=try await session.data(for:request)}catch{if let message=serverConnectionMessage(error,server:base){throw StoreError.message(message)};throw error}
         let (data,response)=result
         guard let response=response as? HTTPURLResponse,(200..<300).contains(response.statusCode) else { let value=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any];throw StoreError.message(readable(value?["error"] as? String ?? "Server request failed")) }
         guard data.count<=12*1024*1024 else{throw StoreError.message("Server response is too large.")}
-        return data
+        return try JSONDecoder().decode(T.self,from:data)
     }
     func artwork(_ path:String) async throws -> Data { let(data,response)=try await session.data(for:makeRequest(path));guard (response as? HTTPURLResponse)?.statusCode==200,data.count<=12*1024*1024 else{throw StoreError.message("Artwork unavailable")};return data }
     func media(_ asset:MediaAsset,kind:String) async throws -> URL {
@@ -115,14 +108,12 @@ actor API {
         }catch{if Task.isCancelled{return};try? await Task.sleep(nanoseconds:5_000_000_000)}}}
     }
     func refresh() async { guard !refreshing,let api=api,let selected=account else{return};refreshing=true;loading=data.games.isEmpty;defer{if account?.id==selected.id{refreshing=false;loading=false}}
-        async let games:([Game]?,String?)=capture{try await api.request("/catalog")};async let consoles:([Console]?,String?)=capture{try await api.request("/consoles")};async let jobs:([Job]?,String?)=capture{try await api.request("/jobs")};async let featured:(Featured?,String?)=capture{try await api.request("/featured")};async let installations:([InstallationStatus]?,String?)=capture{try await api.request("/installations")}
-        let fetched=await(games,consoles,jobs,featured,installations);let batch=RefreshBatch(games:fetched.0.0,consoles:fetched.1.0,jobs:fetched.2.0,featured:fetched.3.0,installations:fetched.4.0)
-        guard account?.id==selected.id,!Task.isCancelled else{return}
-        guard batch.reachable else{offline=true;error=fetched.0.1 ?? fetched.1.1 ?? fetched.2.1 ?? fetched.3.1 ?? fetched.4.1 ?? "Cannot reach PS5Library.";return}
-        var next=batch.applying(to:data);let id=next.consoleId.isEmpty ? (next.consoles.first(where:{$0.isDefault})?.id ?? next.consoles.first?.id ?? "") : next.consoleId
-        if !id.isEmpty,let library:[LibraryEntry]=try? await api.request("/consoles/\(id)/library"){next.library=library}else if id != data.consoleId{next.library=[]}
-        guard account?.id==selected.id,!Task.isCancelled else{return};next.consoleId=id;data=next;offline=false;error=nil
-        if let file=try? cache(selected.id),let encoded=try? JSONEncoder().encode(data){try? encoded.write(to:file,options:[.atomic,.completeFileProtection])}
+        do{async let games:[Game]=api.request("/catalog");async let consoles:[Console]=api.request("/consoles");async let jobs:[Job]=api.request("/jobs");async let featured:Featured=api.request("/featured");async let installations:[InstallationStatus]=api.request("/installations")
+            let fetched=try await(games,consoles,jobs,featured,installations);let id=data.consoleId.isEmpty ? (fetched.1.first(where:{$0.isDefault})?.id ?? fetched.1.first?.id ?? "") : data.consoleId
+            let library:[LibraryEntry]=id.isEmpty ? [] : try await api.request("/consoles/\(id)/library")
+            guard account?.id==selected.id,!Task.isCancelled else{return};data=Snapshot(games:fetched.0,consoles:fetched.1,jobs:fetched.2,featured:fetched.3,library:library,consoleId:id,installations:fetched.4);offline=false
+            if let file=try? cache(selected.id),let encoded=try? JSONEncoder().encode(data){try? encoded.write(to:file,options:[.atomic,.completeFileProtection])}
+        }catch{if account?.id==selected.id,!Task.isCancelled{offline=true;self.error=error.localizedDescription}}
     }
     func login(server:String,username:String,password:String,invite:String,register:Bool) async throws { guard let url=normalizedServerAddress(server) else{throw StoreError.message("Enter HTTPS, a private LAN URL, or a LAN address such as 192.168.1.20:3150.")};let client=try API(server:url);var body=["username":username,"password":password];if register{body["inviteToken"]=invite};let result:Login=try await client.request(register ? "/auth/register":"/auth/login",method:"POST",json:body)
         let id=accounts.first(where:{$0.server==url&&$0.username==username})?.id ?? UUID().uuidString;let profile=Account(id:id,server:url,username:result.user.username,role:result.user.role);try Credentials.save(result.token,id:id);accounts.removeAll(where:{$0.id==id});accounts.append(profile);UserDefaults.standard.set(try JSONEncoder().encode(accounts),forKey:"accounts");activate(profile)
