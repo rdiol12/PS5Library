@@ -850,7 +850,7 @@ struct CommunityFriendsView:View {
                 else if status?.state=="AWAITING_OWNER" {
                     if let code=status?.userCode {Text(code).font(.system(.title2,design:.monospaced).weight(.bold)).tracking(3).textSelection(.enabled)}
                     if let location=status?.verificationUriComplete,let url=URL(string:location){Link("Sign in with passkey and authorize",destination:url)}
-                    Button("Check authorization"){refreshLink()}.disabled(busy)
+                    Button("Check authorization"){Task{await refreshLink()}}.disabled(busy)
                 }
                 if ["CONNECTED","DISCONNECT_PENDING"].contains(status?.state ?? "") {Button(status?.state=="DISCONNECT_PENDING" ? "Retry disconnect":"Disconnect Master account",role:.destructive){disconnect()}.disabled(busy)}
                 if let error=status?.error {Text(readable(error)).foregroundStyle(warning)}
