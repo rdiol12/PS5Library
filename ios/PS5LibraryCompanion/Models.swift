@@ -145,7 +145,7 @@ struct LibraryEntry: Codable {
 struct Job: Codable, Identifiable {
     let id: String; let title: String?; let releaseId: String; let kind: String; let state: String
     let consoleId: String?; let storageId: String?; let downloadedBytes: Int64; let totalBytes: Int64?
-    let speedBytesPerSecond: Int64; let etaSeconds: Int?; let error: String?; let location: String?; let progress: BuildProgress?
+    let speedBytesPerSecond: Int64; let etaSeconds: Int?; let error: String?; let queuePosition: Int?; let location: String?; let progress: BuildProgress?
     var retryable: Bool { state == "ERROR" }
     var dismissible: Bool { ["COMPLETED","READY_ON_PS5","ERROR","CANCELLED"].contains(state) }
 }
@@ -189,8 +189,28 @@ struct CommunityStatus: Decodable {
     let userCode:String?;let verificationUri:String?;let verificationUriComplete:String?;let expiresAt:String?;let banReason:String?;let error:String?;let updatedAt:String?
 }
 struct CommunityRequest: Encodable { let displayName:String }
+struct CommunityIdentity:Decodable {let id:String;let handle:String;let displayName:String}
+struct CommunityAccountStatus:Decodable {
+    let configured:Bool;let state:String;let userCode:String?;let verificationUri:String?;let verificationUriComplete:String?;let expiresAt:String?;let account:CommunityIdentity?;let error:String?;let updatedAt:String?
+}
+struct CommunityIdentityRequest:Encodable {let deviceName:String}
+struct CommunityGameSessionSummary:Decodable {let id:String;let adapterId:String;let gameTitleId:String;let gameVersion:String;let playerCount:Int;let maxPlayers:Int;let expiresAt:String}
+struct CommunityFriend:Decodable,Identifiable {let id:String;let handle:String;let displayName:String;let state:String;let updatedAt:String?;let session:CommunityGameSessionSummary?}
+struct CommunityFriendRequest:Decodable,Identifiable {let id:String;let createdAt:String;let from:CommunityIdentity?;let to:CommunityIdentity?}
+struct CommunityFriendRequests:Decodable {let incoming:[CommunityFriendRequest];let outgoing:[CommunityFriendRequest]}
+struct CommunityFriendRequestBody:Encodable {let handle:String}
 struct Events: Decodable { struct Event: Decodable { let id: Int64 }; let events: [Event] }
 struct Snapshot: Codable { var games: [Game]; var consoles: [Console]; var jobs: [Job]; var featured: Featured?; var library: [LibraryEntry]; var consoleId: String; var installations: [InstallationStatus]? = nil }
+struct RefreshBatch {
+    let games:[Game]?;let consoles:[Console]?;let jobs:[Job]?;let featured:Featured?;let installations:[InstallationStatus]?
+    var reachable:Bool { games != nil || consoles != nil || jobs != nil || featured != nil || installations != nil }
+    func applying(to current:Snapshot)->Snapshot {
+        var next=current
+        if let games{next.games=games};if let consoles{next.consoles=consoles};if let jobs{next.jobs=jobs}
+        if let featured{next.featured=featured};if let installations{next.installations=installations}
+        return next
+    }
+}
 struct Profile: Decodable {
     let username: String; let role: String; let avatarUrl: String?; let consoles: [ProfileConsole]
 }
