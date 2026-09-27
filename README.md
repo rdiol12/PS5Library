@@ -1,92 +1,54 @@
-server files will be release after i ironed out some bugs  
-
 <p align="center"><img src="ps5/assets/icon0.png" width="140" alt="PS5Library icon"></p>
 
 # PS5Library
 
-A native, controller-first storefront for a self-hosted PS5 library.
+PS5Library is a controller-first native PS5 storefront for locally available titles and other content you are authorized to use.
 
-Browse cover artwork, explore games, manage your console library, and follow real
-download progress. Designed for your own dumps, homebrew, private repositories,
-and other content you are authorized to use.
-
-**Engineering preview.** This repository contains the PS5 frontend, console-side
-client code, installer, tests, and build workflow. A separately hosted PS5Library
-server is required; the server and its data are not included here.
+**Engineering preview.** This repository contains the PS5 storefront, console agent, native-title wrapper, tests, and reproducible ELF build. It does not contain games, dumps, package links, credentials, or diagnostic logs.
 
 [Download releases](https://github.com/rdiol12/PS5Library/releases)
-· [Build status](https://github.com/rdiol12/PS5Library/actions/workflows/elf.yml)
+· [Build status](https://github.com/rdiol12/PS5Library/actions/workflows/client-checks.yml)
 
-## Features
+## Release files
 
-- Cinematic Discover screen, artwork rails, game details, search, and categories.
-- Controller navigation, account/profile screens, and persistent console pairing.
-- Separate views of server packages and games reported by console inventory.
-- Storage selection, supported title launching, and real job/transfer progress.
-- Cached artwork, supplied game music, and trailers after five seconds of focus.
-- Capability negotiation and signed updates from your configured server.
-- Firmware saved at registration, with an explicit refresh in My PS5.
-- Exact backport profile selection, missing-file warnings and verified placement.
+Version 0.2.54 provides:
 
+- `PS5Library-0.2.54-update.pkg` — native storefront update, content version `01.043.000`.
+- `ps5library-agent-0.2.54.elf` — matching console agent.
 
+The 0.2.54 PKG is an **update package**, not a fresh-install base. It requires PS5Library content version `01.042.000` already installed. Do not install it over another content version.
 
-The native preview is distributed as an installed store package plus one agent
-ELF. The store remembers its server address; on first start the agent copies that
-address into its separate device identity, so no compiled address or third config
-file is required. IPMI loads before AppInstUtil, built ELF dependencies are checked,
-and an empty update feed parses correctly.
+## Offline installation
 
+1. Start your jailbreak and the compatible FPKG runtime for your firmware.
+2. Install `PS5Library-0.2.54-update.pkg` with your runtime's package installer.
+3. Load `ps5library-agent-0.2.54.elf` with Payload Manager or another compatible ELF loader.
+4. Open PS5Library from the Home screen.
+5. Open Settings and turn **Offline mode** on.
+6. Leave PS5Library open until the native notification says **PS5Library Agent connected**.
 
+Wait for that notification before using local inventory or console actions. Until the connection completes, the footer says `OFFLINE MODE · WAITING FOR LOCAL AGENT` and local actions remain unavailable.
 
-The app needs the matching private server APIs (firmware, backport and
-native-download APIs).
-the registration measurement now uses the system software API and rejects
-conflicting version reports. Host checks cover that distinction; hardware
-confirmation remains required.
+Load the agent again after every reboot. The installed storefront stays on the Home screen, but the agent does not survive a cold boot.
 
-## Screenshots
+## Offline capabilities
 
-### Discover
+After the connection notification, offline mode can:
 
-![Discover on PS5](ps5/screenshots/discover.png)
+- Scan locally installed PS4 and PS5 titles.
+- Show My Library, profile, console status, runtime, ShadowMountPlus status, and storage.
+- Use locally available cover, hero, and menu-music assets.
+- Show locally readable trophy and save summaries.
+- Launch an installed title.
+- Delete or move a title when the console reports that operation as supported.
 
-### Downloads
+Discover, New Releases, and Categories are disabled in offline mode. Offline mode does not fetch or install packages, and unsupported console actions stay disabled.
 
-![Downloads on PS5](ps5/screenshots/downloads.png)
-
-### Profile
-
-![Profile and console library on PS5](ps5/screenshots/profile.png)
-
-## Install
-
-1. Start the jailbreak and the compatible kstuff/FPKG patches for your firmware.
-2. Download **`PS5Library.pkg`** and **`ps5library-agent.elf`** from the same release.
-3. Install `PS5Library.pkg` with the package installer supplied by your runtime.
-4. Open PS5Library from the PS5 Home screen, enter your self-hosted server address,
-   and complete the account pairing shown by the store.
-5. Load `ps5library-agent.elf` with Payload Manager or another compatible ELF
-   loader. Claim its pairing code when the PS5 notification appears.
-
-The package stays installed. The agent supplies console inventory, runtime and
-storage capabilities, native FPKG download submission, transfer progress, and
-installation confirmation. Load it again after each reboot; a payload manager may
-autoload it after the jailbreak. Start the store and save its server address before
-the agent's first launch. These two release files are the complete console-side
-installation; the separately hosted PS5Library server is still required.
-
-The older `ps5library-install.elf` and `ps5library.elf` artifacts remain the
-developer/homebrew-loader route. New users should use the native package above.
-
-The server address is configured at first launch, not compiled into the app.
-Keep the release's `SHA256SUMS` to verify downloaded files. GitHub releases are
-downloads; in-app updates still come from your configured server and require a
-trusted signed update envelope.
+USB formatting is experimental and is not a supported offline capability in this release.
 
 ## Build
 
-Requires Git and Docker with Linux containers. The verified development setup is
-Windows with Docker Desktop running Linux x86-64 containers.
+Requires Git and Docker with Linux containers.
 
 ```sh
 git clone https://github.com/rdiol12/PS5Library.git
@@ -95,46 +57,22 @@ docker build -t ps5library-build -f docker/ps5-build.Dockerfile .
 docker run --rm --network none -v "${PWD}:/workspace" ps5library-build bash scripts/build.sh
 ```
 
-The same Docker commands work in PowerShell. The Docker build downloads the
-public PS5 payload SDK **v0.43** and ports **v0.40.2**, verifying their SHA-256
-digests. The application build runs without network access.
-
-`scripts/build.sh` builds the desktop test targets, runs the native tests,
-cross-compiles the PS5 frontend/installer, and checks the ELF files and metadata.
-Results appear in `dist/`:
-
-| File | Purpose |
-| --- | --- |
-| `ps5library-install.elf` | Install/update the frontend and its assets |
-| `ps5library.elf` | Application binary |
-| `ps5library-install.elf.json` | Version, build and integrity metadata |
-| `SHA256SUMS` | Download integrity checks |
-
-The native application source is in `ps5/native/`. Its FSELF build pins ProsperoTV
-at commit `fdee81e746308f7f2b27f7914a84eab678088fb6` and verifies an extract/readback
-round trip. Creating the final FPKG requires locally installed PS5 Publishing Tools,
-which cannot be redistributed or installed on GitHub-hosted runners. GitHub Releases
-therefore host the exact package that passed the physical-console check; Actions
-continues to build the open-source ELF artifacts.
+The build runs host checks, cross-compiles the storefront and agent, validates ELF dependencies, and writes verified outputs to `dist/`. The native PKG packaging step uses separately installed PS5 publishing tools and is not part of the GitHub Actions build.
 
 ## Source layout
 
 ```text
-ps5/frontend/    Store UI, input, artwork, audio and video
-ps5/common/      API client, configuration and signed-update verification
-ps5/agent/       Console discovery, inventory and transfer-related client code
-ps5/installer/   Installer and asset publication
-ps5/native/      Native-title link/FSELF build and readback verification
-ps5/assets/      PS5Library branding and launch assets
-ps5/tests/       Native checks and hardware diagnostic source
-scripts/        Build, packaging and release checks
-docker/         Pinned PS5 build environment
+ps5/frontend/    Store UI, controller input, artwork, audio, and video
+ps5/agent/       Local inventory, capabilities, storage, and console actions
+ps5/common/      Shared client, configuration, and update verification
+ps5/installer/   ELF installer and bundled assets
+ps5/native/      Native-title wrapper and FSELF verification
+ps5/assets/      PS5Library branding and fonts
+ps5/tests/       Host and native boundary checks
+scripts/         Build and public-release checks
+docker/          Pinned PS5 build environment
 ```
-
-No server implementation, account database, private credentials, diagnostic logs,
-game dumps, or game media are published in this repository.
 
 ## License
 
-Original PS5Library console code: **GPL-3.0-or-later**. Dependencies retain their
-own copyrights and licenses. See [LICENSE](LICENSE) and [NOTICE.txt](NOTICE.txt).
+Original PS5Library console code: **GPL-3.0-or-later**. Dependencies retain their own licenses. See [LICENSE](LICENSE) and [NOTICE.txt](NOTICE.txt).

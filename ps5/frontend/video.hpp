@@ -8,17 +8,19 @@
 #include <thread>
 
 namespace storefront {
+bool musicCodecSupported(int codec);
+constexpr int mediaDurationLimit(bool music){return music?900:181;}
 // One start per uninterrupted focus; returning to a cover starts a fresh countdown.
 class PreviewDelay {
   std::string key_;uint64_t since_=0;bool started_=false;
 public:
-  bool ready(const std::string& key,uint64_t now,uint64_t delay=5000){if(key!=key_){key_=key;since_=now;started_=false;}if(key.empty()||started_||now-since_<delay)return false;started_=true;return true;}
+  bool ready(const std::string& key,uint64_t now,uint64_t delay=4000){if(key!=key_){key_=key;since_=now;started_=false;}if(key.empty()||started_||now-since_<delay)return false;started_=true;return true;}
 };
 
 class VideoPreview {
   struct Picture {int width,height;double pts;std::vector<uint8_t> pixels;};
   struct Sound {double pts;std::vector<Sint16> samples;};
-  struct Request {std::string config,token,url,hash;int64_t size=0;uint64_t generation=0;bool music=false;};
+  struct Request {std::string config,token,url,hash,local;int64_t size=0;uint64_t generation=0;bool music=false,offline=false;};
   ps5library::fs::path root_;UiAudio& audio_;SDL_Texture* texture_=nullptr;
   std::mutex mutex_;std::condition_variable wake_;std::thread worker_;
   std::atomic<bool> stopping_{false};std::atomic<uint64_t> generation_{0};
@@ -32,7 +34,7 @@ public:
   VideoPreview(const ps5library::fs::path& root,UiAudio& audio);
   ~VideoPreview();
   void stop();
-  void start(const std::string& key,const Json& config,const std::string& token,const Json& trailer,bool sound,bool music=false);
+  void start(const std::string& key,const Json& config,const std::string& token,const Json& trailer,bool sound,bool music=false,bool offline=false,const ps5library::fs::path& local={});
   SDL_Texture* frame(SDL_Renderer* renderer);
   bool active()const{return active_;}
   bool music()const{return music_;}uint64_t musicStarts()const{return musicStarts_;}uint64_t musicBytes()const{return musicBytes_;}

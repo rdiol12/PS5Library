@@ -2,8 +2,10 @@
 #include <cassert>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <string>
 #include <stdexcept>
+#include <vector>
 #include "../frontend/async.hpp"
 #include "../frontend/lifecycle.hpp"
 
@@ -12,11 +14,11 @@ static unsigned char background=0;
 static bool corruptStatus=false;
 struct NativeLaunchContext;
 extern "C" int ps5library_native_launch(const char*);
-extern "C" int ps5library_native_exit();
-static int foregroundResult=0,launchResult=0x4017,launchCalls=0,runningApp=41,titleResult=0,killResult=0,killCalls=0;
-static std::string runningTitle="PPSA99051";
+static int foregroundResult=0,launchResult=0x4017,launchCalls=0;
 static std::string launchedTitle;
 static std::deque<SDL_Event> events;
+#define PS5LIBRARY_NATIVE_DIAGNOSTIC
+#define PS5LIBRARY_NATIVE_DIAGNOSTIC_ROOT "/tmp/ps5library-native-runtime-checks"
 #define main applicationEntry
 #include "../native/main.cpp"
 #undef main
@@ -34,11 +36,8 @@ extern "C" int __real_sceImeDialogGetStatus(){return 0;}
 extern "C" int sceImeDialogAbort(){return 0;}
 extern "C" int sceUserServiceGetForegroundUser(std::uint32_t* user){if(!foregroundResult)*user=42;return foregroundResult;}
 extern "C" int sceSystemServiceLaunchApp(const char* title,char** arguments,NativeLaunchContext* context){
-  ++launchCalls;launchedTitle=title;assert(arguments&&arguments[0]==nullptr&&context&&context->user==42);return launchResult;
+  ++launchCalls;launchedTitle=title;assert(arguments&&arguments[0]==nullptr&&context&&context->size==sizeof(*context)&&context->user==42);return launchResult;
 }
-extern "C" int sceSystemServiceGetAppIdOfRunningBigApp(){return runningApp;}
-extern "C" int sceLncUtilGetAppTitleId(std::uint32_t app,char* title){assert(app==static_cast<std::uint32_t>(runningApp));if(!titleResult)std::strcpy(title,runningTitle.c_str());return titleResult;}
-extern "C" int sceSystemServiceKillApp(int app,int how,int reason,int coreDump){++killCalls;assert(app==runningApp&&how==-1&&reason==0&&coreDump==0);return killResult;}
 extern "C" int sceSystemServiceNavigateToGoHome(){++homeRequests;return 0;}
 extern "C" int sceSystemServiceGetStatus(void* target){++statusCalls;auto* bytes=static_cast<unsigned char*>(target);bytes[5]=background;if(corruptStatus)bytes[136]=0;return statusResult;}
 extern "C" void __real_SDL_RenderPresent(SDL_Renderer*){}
@@ -46,18 +45,18 @@ extern "C" int __real_SDL_PollEvent(SDL_Event* event){if(events.empty())return 0
 int storefront_main(int argc,char** argv){assert(argc==1);assert(std::strcmp(argv[0],"ps5library")==0);return 7;}
 
 int main(){
+  constexpr char traceRoot[]="/tmp/ps5library-native-runtime-checks";
+  constexpr char tracePath[]="/tmp/ps5library-native-runtime-checks/ps5library-native-stage.bin";
+  unlink(tracePath);rmdir(traceRoot);assert(mkdir(traceRoot,0755)==0);
   storefront::AsyncWorker worker;std::thread::id first,second,mainThread=std::this_thread::get_id();
   assert(worker.submit([&]{first=std::this_thread::get_id();return std::string("first");}).get()=="first");
   assert(worker.submit([&]{second=std::this_thread::get_id();return std::string("second");}).get()=="second");
   assert(first==second&&first!=mainThread);
-  assert(applicationEntry()==7); // Normal return must reach the native CRT's exit.
+  assert(applicationEntry()==7);
   assert(ps5library_native_launch("BAD")==-EINVAL&&launchCalls==0);
   foregroundResult=-55;assert(ps5library_native_launch("PPSA12345")==-55&&launchCalls==0);
   foregroundResult=0;assert(ps5library_native_launch("PPSA12345")==launchResult&&launchCalls==1&&launchedTitle=="PPSA12345");
   assert(ps5library_native_launch("CUSA54321")==launchResult&&launchCalls==2&&launchedTitle=="CUSA54321");
-  assert(ps5library_native_exit()==0&&killCalls==1);
-  runningTitle="CUSA54321";assert(ps5library_native_exit()==-EPERM&&killCalls==1);
-  runningTitle="PPSA99051";runningApp=-1;assert(ps5library_native_exit()==-ESRCH&&killCalls==1);
   assert(__wrap_sceKeyboardInit()==-1&&errno==ENOSYS);
   assert(__wrap_sceKeyboardOpen(0,0,0,nullptr)==-1);
   assert(__wrap_sceImeDialogInit(nullptr,nullptr)==0);
@@ -68,4 +67,18 @@ int main(){
   assert(__wrap_SDL_PollEvent(&event)==0);assert(homeRequests==0&&statusCalls==0);
   background=2;corruptStatus=true;
   assert(__wrap_SDL_PollEvent(&event)==0);assert(statusCalls==0); // Release builds never call the unverified ABI.
+  nativeTraceClose();unlink(tracePath);nativeTraceSequence=0;
+  for(int stage=0;stage<static_cast<int>(nativeTraceCapacity)+7;stage++)native_stage(1000+stage);
+  nativeTraceClose();native_stage(424242);nativeTraceClose();
+  struct TraceRecord {std::uint32_t magic;std::int32_t stage;std::uint64_t sequence,checksum;};
+  static_assert(sizeof(TraceRecord)==24);
+  std::ifstream trace(tracePath,std::ios::binary);assert(trace);
+  std::vector<TraceRecord> records(8);trace.read(reinterpret_cast<char*>(records.data()),records.size()*sizeof(TraceRecord));
+  assert(trace.gcount()==static_cast<std::streamsize>(records.size()*sizeof(TraceRecord))&&trace.peek()==EOF);
+  std::uint64_t latest=0;int latestStage=0,previousStage=0;size_t valid=0;
+  for(const auto& record:records)if(record.magic==nativeTraceMagic&&record.checksum==nativeTraceChecksum(record.stage,record.sequence)){
+    ++valid;if(record.sequence>latest){previousStage=latestStage;latest=record.sequence;latestStage=record.stage;}
+  }
+  assert(valid==8&&previousStage==1000+static_cast<int>(nativeTraceCapacity)+6&&latestStage==424242);
+  unlink(tracePath);rmdir(traceRoot);
 }

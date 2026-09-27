@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
              for name in ('Alpha', 'Beta', 'Gamma')]
     (root / 'preview.json').write_text(json.dumps({
         'catalog': games, 'consoles': [{'id': 'test-console', 'name': 'Test PS5'}],
-        'device': {'consoleId': 'test-console'}, 'profile': {'username': 'Tester'},
+        'device': {'consoleId': 'test-console'}, 'profile': {'username': 'Tester', 'role': 'ADMIN'},
     }))
 
     def check(script, page, focus, size='1920x1080', start='Discover'):
@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
     check('search,text:Beta,enter,right,select', 'Results', 'grid:beta')
     check('right,select,back', 'Discover', 'rail3:beta')
     check('up,up,' + 'right,' * 6 + 'select', 'Discover', 'search-input', '1280x720')
-    check('up,up,' + 'right,' * 7 + 'select', 'Settings', 'network')
+    check('settings', 'Discover', 'network')
     check('up,up,' + 'right,' * 8 + 'select', 'Profile', 'profile-picture')
     # Even when the default method has no destination, its alternative must be reachable.
     check('select,down,select,select', 'Game', 'method', start='Game')
@@ -41,4 +41,6 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
     fixture['consoles'][0]['storage'] = [{'storageId': 'usb', 'displayName': 'USB SSD'}]
     (root / 'preview.json').write_text(json.dumps(fixture))
     check('select,down,select,select,down,select,select', 'Game', 'confirm-download', start='Game')
-    print('PASS: collections, return focus, search, settings, profile and method-before-storage downloads')
+    # ShellCore owns backgrounding. Circle at the root must leave the title alive.
+    check('back', 'Discover', 'rail3:alpha')
+    print('PASS: collections, return focus, search, Options menu, profile, downloads and lifecycle')

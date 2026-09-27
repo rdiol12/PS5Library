@@ -13,6 +13,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <SDL.h>
 #ifdef PS5LIBRARY_NATIVE_TARGET
 #include <ucontext.h>
@@ -20,9 +21,48 @@
 
 extern "C" long _write(int, const void*, unsigned long);
 static volatile sig_atomic_t nativeStage = 0;
-extern "C" void native_stage(int stage) { nativeStage = stage; }
+#ifdef PS5LIBRARY_NATIVE_DIAGNOSTIC
+#ifndef PS5LIBRARY_NATIVE_DIAGNOSTIC_ROOT
+#define PS5LIBRARY_NATIVE_DIAGNOSTIC_ROOT "/download0"
+#endif
+static constexpr char nativeTracePath[] = PS5LIBRARY_NATIVE_DIAGNOSTIC_ROOT "/ps5library-native-stage.bin";
+static constexpr char nativeFaultPath[] = PS5LIBRARY_NATIVE_DIAGNOSTIC_ROOT "/ps5library-native-fault.bin";
+static constexpr std::uint32_t nativeTraceMagic = 0x354c504e;
+static constexpr std::size_t nativeTraceCapacity = 8192;
+struct NativeTraceRecord { std::uint32_t magic;std::int32_t stage;std::uint64_t sequence,checksum; };
+static_assert(sizeof(NativeTraceRecord)==24);
+static volatile sig_atomic_t nativeTraceDescriptor = -1;
+static std::uint64_t nativeTraceSequence = 0;
+static unsigned nativeTraceFrames = 0;
+static constexpr std::uint64_t nativeTraceChecksum(std::int32_t stage,std::uint64_t sequence) {
+    return 0x71545350354c4942ULL ^ (static_cast<std::uint64_t>(static_cast<std::uint32_t>(stage)) << 32) ^ sequence;
+}
+static bool nativeTraceWrite(int descriptor,const void* data,std::size_t size) {
+    return _write(descriptor,data,size)==static_cast<long>(size);
+}
+static void nativeTraceOpen() {
+    if(nativeTraceDescriptor>=0)return;
+    nativeTraceDescriptor=open(nativeTracePath,O_CREAT|O_WRONLY|O_APPEND,0644);
+}
+static void nativeTraceSync(){const int descriptor=nativeTraceDescriptor;if(descriptor>=0)fsync(descriptor);}
+static void nativeTraceClose(){const int descriptor=nativeTraceDescriptor;nativeTraceDescriptor=-1;if(descriptor>=0){fsync(descriptor);close(descriptor);}}
+static void nativeTraceRecord(int stage) {
+    nativeTraceOpen();
+    if(nativeTraceSequence>=nativeTraceCapacity){nativeTraceClose();if(unlink(nativeTracePath)!=0&&errno!=ENOENT)return;nativeTraceSequence=0;nativeTraceOpen();}
+    const int descriptor=nativeTraceDescriptor;if(descriptor<0)return;
+    const auto sequence=nativeTraceSequence+1;const NativeTraceRecord record{nativeTraceMagic,stage,sequence,nativeTraceChecksum(stage,sequence)};
+    if(nativeTraceWrite(descriptor,&record,sizeof(record)))nativeTraceSequence=sequence;else nativeTraceClose();
+    if(stage==181&&++nativeTraceFrames==15){nativeTraceFrames=0;nativeTraceSync();}
+}
+#endif
+extern "C" void native_stage(int stage) {
+    nativeStage = stage;
+#ifdef PS5LIBRARY_NATIVE_DIAGNOSTIC
+    nativeTraceRecord(stage);
+#endif
+}
 extern "C" void native_error(const char* message) {
-#ifdef PS5LIBRARY_NATIVE_PROBE
+#if defined(PS5LIBRARY_NATIVE_PROBE) || defined(PS5LIBRARY_NATIVE_DIAGNOSTIC)
     constexpr mode_t permissions=0644;
 #else
     constexpr mode_t permissions=0600;
@@ -53,22 +93,14 @@ struct NativeLaunchContext { std::uint32_t size,user,options;std::uint64_t crash
 static_assert(sizeof(NativeLaunchContext)==32);
 extern "C" int sceUserServiceGetForegroundUser(std::uint32_t*);
 extern "C" int sceSystemServiceLaunchApp(const char*,char**,NativeLaunchContext*);
-extern "C" int sceSystemServiceGetAppIdOfRunningBigApp();
-extern "C" int sceLncUtilGetAppTitleId(std::uint32_t,char*);
-extern "C" int sceSystemServiceKillApp(int,int,int,int);
+extern "C" int sceSystemServiceNavigateToGoHome();
 extern "C" int ps5library_native_launch(const char* title) {
     const std::string id=title?title:"";
     if(id.size()!=9||(id.compare(0,4,"PPSA")&&id.compare(0,4,"CUSA"))||
        !std::all_of(id.begin()+4,id.end(),[](char value){return value>='0'&&value<='9';})) return -EINVAL;
-    NativeLaunchContext context{};
+    NativeLaunchContext context{};context.size=sizeof(context);
     const int user=sceUserServiceGetForegroundUser(&context.user);if(user)return user;
     char* arguments[]={nullptr};return sceSystemServiceLaunchApp(id.c_str(),arguments,&context);
-}
-extern "C" int ps5library_native_exit() {
-    const int app=sceSystemServiceGetAppIdOfRunningBigApp();if(app<=0)return -ESRCH;
-    char title[16]{};const int result=sceLncUtilGetAppTitleId(static_cast<std::uint32_t>(app),title);if(result)return result;
-    if(std::strcmp(title,"PPSA99051")!=0)return -EPERM;
-    return sceSystemServiceKillApp(app,-1,0,0);
 }
 extern "C" int __real_sceUserServiceInitialize(const void*);
 extern "C" int __wrap_sceUserServiceInitialize(const void* value) {
@@ -145,7 +177,6 @@ extern "C" int __wrap_fcntl(int descriptor, int command, ...) {
 }
 extern "C" int __real_SDL_PollEvent(SDL_Event*);
 #ifdef PS5LIBRARY_NATIVE_PROBE
-extern "C" int sceSystemServiceNavigateToGoHome();
 extern "C" void __real_SDL_RenderPresent(SDL_Renderer*);
 static std::uint64_t presented = 0;
 static Uint32 lifecycleStart = 0;
@@ -204,6 +235,16 @@ static void fault(int signal) {
 #else
 #ifdef PS5LIBRARY_NATIVE_TARGET
 static void fault(int signal, siginfo_t *info, void *raw_context) {
+#ifdef PS5LIBRARY_NATIVE_DIAGNOSTIC
+    (void)info;(void)raw_context;
+    static volatile sig_atomic_t handling = 0;if(handling)_exit(128+signal);handling=1;
+    nativeTraceSync();
+    const std::uint32_t record[] = {0x544c4650,static_cast<std::uint32_t>(signal),static_cast<std::uint32_t>(nativeStage),static_cast<std::uint32_t>(getpid())};
+    const int descriptor=open(nativeFaultPath,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW,0644);
+    if(descriptor>=0){fchmod(descriptor,0644);_write(descriptor,record,sizeof(record));fsync(descriptor);close(descriptor);}
+    timespec delay{0,300000000};while(nanosleep(&delay,&delay)<0&&errno==EINTR){}
+    _exit(128+signal);
+#else
     const auto *context = static_cast<const ucontext_t *>(raw_context);
     struct FaultRecord {
         std::uint32_t magic, signal, stage, pid, code, trap;
@@ -218,6 +259,7 @@ static void fault(int signal, siginfo_t *info, void *raw_context) {
     const int fd = open("/download0/ps5library-native-fault.bin", O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW, 0644);
     if (fd >= 0) { fchmod(fd, 0644); _write(fd, &record, sizeof(record)); close(fd); }
     _exit(128 + signal);
+#endif
 }
 #else
 static void fault(int signal) {
@@ -260,7 +302,11 @@ int main() {
     native_trace(100 + result);
     return result;
 #else
+#ifdef PS5LIBRARY_NATIVE_DIAGNOSTIC
+    unlink(nativeFaultPath);unlink(nativeTracePath);nativeTraceSequence=0;nativeTraceOpen();native_stage(0);nativeTraceSync();
+#else
     unlink("/download0/ps5library-native-fault.bin");
+#endif
 #ifdef PS5LIBRARY_NATIVE_TARGET
     struct sigaction action{}; action.sa_sigaction = fault; action.sa_flags = SA_SIGINFO; sigemptyset(&action.sa_mask);
     for (int signal : {SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, SIGSYS}) sigaction(signal, &action, nullptr);
@@ -291,6 +337,9 @@ int main() {
     const int result = storefront_main(1, args);
 #endif
     if (networkPool >= 0) sceNetPoolDestroy(networkPool);
+#ifdef PS5LIBRARY_NATIVE_DIAGNOSTIC
+    nativeTraceClose();
+#endif
     return result;
 #endif
 }

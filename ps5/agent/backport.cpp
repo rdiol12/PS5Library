@@ -2,6 +2,12 @@
 #include <regex>
 #include <set>
 namespace ps5library {
+static bool safeOverlayPath(const std::string& name){
+  if(name.empty()||name[0]=='/'||name.find('\\')!=std::string::npos||!std::regex_match(name,std::regex("[A-Za-z0-9._/-]+")))return false;
+  fs::path path(name);if(path.is_absolute()||path.lexically_normal().generic_string()!=name)return false;
+  for(const auto& part:path)if(part=="."||part==".."||part.empty())return false;
+  return true;
+}
 Json shadowMountScanRoots(const Json& settings,const Json& version){
   auto roots=settings["scan_paths"];if(roots.size())return roots;
   if(version["shadowmount_version"].string().rfind("1.7",0)!=0)return Json::array();
@@ -13,9 +19,9 @@ Json shadowMountScanRoots(const Json& settings,const Json& version){
 bool verifyBackport(const fs::path& folder,const Json& backport){
   try{
     const auto files=backport["files"];std::set<std::string> expected;
-    if(files.size()>100)return false;
+    if(files.size()>201)return false;
     for(size_t i=0;i<files.size();i++){
-      const auto f=files[i];auto name=f["path"].string();if(!std::regex_match(name,std::regex("fakelib2?/[A-Za-z0-9._/-]+"))||!expected.insert(name).second)return false;
+      const auto f=files[i];auto name=f["path"].string();if(!safeOverlayPath(name)||!expected.insert(name).second)return false;
       auto file=beneath(folder,name);if(!fs::is_regular_file(file)||static_cast<int64_t>(fs::file_size(file))!=f["size"].number()||fileHash(file)!=f["sha256"].string())return false;
     }
     for(const auto& entry:fs::recursive_directory_iterator(folder))if(entry.is_symlink()||(entry.is_regular_file()&&!expected.count(fs::relative(entry.path(),folder).generic_string())))return false;

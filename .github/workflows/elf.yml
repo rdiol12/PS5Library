@@ -1,8 +1,6 @@
-name: Build and publish PS5 ELF
+name: Build PS5 ELF
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -33,34 +31,3 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: ps5library-elf
-          path: dist
-      - name: Publish verified ELF release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          (cd dist && sha256sum -c SHA256SUMS)
-          cat > "$RUNNER_TEMP/release-notes.txt" <<'EOF'
-          PS5Library console frontend engineering preview.
-
-          Send ps5library-install.elf through a compatible homebrew payload loader to install/update. ps5library.elf is the application binary. Enter your own PS5Library server address on first launch.
-
-          See the README at this tag for the changes, screenshots and verified capabilities of this version.
-
-          Built from this tag after native host tests and ELF/hash verification. Native Downloads submission, backport placement and installation have not been tested on a physical PS5. Native update/DLC installation and external destinations remain unsupported. ShadowMount images use their separate transfer/mount route. HDMI audio and PS-button Home/background behavior remain unresolved.
-
-          This repository contains console code and build assets only. The application still requires a separately hosted PS5Library server. No server address or private update-signing key is bundled.
-          EOF
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GH_REPO" --verify-tag \
-            --title "PS5Library $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.txt" --prerelease

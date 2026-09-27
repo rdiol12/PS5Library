@@ -13,7 +13,7 @@ def check_source():
     files = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')[:-1]
     if not files:
         raise ValueError('No tracked frontend files')
-    roots = {'ps5', 'ios', 'scripts', 'docker', '.github', 'licenses'}
+    roots = {'ps5', 'scripts', 'docker', '.github', 'licenses'}
     standalone = {'.gitignore', '.gitattributes', '.dockerignore', 'LICENSE', 'NOTICE.txt', 'README.md'}
     for name in files:
         path = Path(name)
@@ -44,7 +44,7 @@ def check_release(folder):
         raise ValueError('Release tag must equal the application version: v' + version)
     metadata = json.loads((folder / 'ps5library-install.elf.json').read_text())
     hashes = {}
-    for name in ('ps5library.elf', 'ps5library-install.elf'):
+    for name in ('ps5library.elf', 'ps5library-agent.elf', 'ps5library-install.elf'):
         data = (folder / name).read_bytes()
         if (len(data) < 64 or data[:6] != b'\x7fELF\x02\x01' or
                 struct.unpack_from('<H', data, 18)[0] != 62 or
