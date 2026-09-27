@@ -2,6 +2,7 @@
 #include <fstream>
 #include <regex>
 #include <set>
+#include <sqlite3.h>
 #include <vector>
 namespace ps5library {
 static uint64_t integer(const std::string& data,size_t offset,size_t width,bool big=false){
@@ -39,8 +40,50 @@ Json inspectPs4Package(const fs::path& file){
   if(!std::regex_match(id,std::regex("CUSA[0-9]{5}"))||content.size()>80||content.size()<20||content.substr(7,9)!=id||!std::regex_match(version,std::regex("[0-9]{2}\\.[0-9]{2}"))||title.empty()||title.size()>200||(category!="gd"&&category!="gp"))throw std::runtime_error("UNSUPPORTED_INPUT");
   return Json::object({{"title",title},{"titleId",id},{"contentId",content},{"version",version},{"platform","PS4"},{"category",category},{"size",static_cast<int64_t>(fs::file_size(file))}});
 }
+Json inspectPs5Installed(const fs::path& databaseFile,const fs::path& appmetaRoot,const fs::path& appRoot){
+  Json result=Json::array();auto status=fs::symlink_status(databaseFile);if(fs::is_symlink(status)||!fs::is_regular_file(status))return result;
+  sqlite3* raw=nullptr;if(sqlite3_open_v2(databaseFile.c_str(),&raw,SQLITE_OPEN_READONLY|SQLITE_OPEN_NOMUTEX,nullptr)!=SQLITE_OK){if(raw)sqlite3_close(raw);return result;}
+  struct Database{sqlite3* value;~Database(){sqlite3_close(value);}} database{raw};sqlite3_busy_timeout(raw,50);sqlite3_exec(raw,"PRAGMA query_only=ON",nullptr,nullptr,nullptr);
+  sqlite3_stmt* rawStatement=nullptr;const char* query="SELECT titleId,titleName,size,uninstallable FROM tbl_contentinfo WHERE titleId LIKE 'PPSA%' ORDER BY titleId LIMIT 4096";
+  if(sqlite3_prepare_v2(raw,query,-1,&rawStatement,nullptr)!=SQLITE_OK)return result;
+  struct Statement{sqlite3_stmt* value;~Statement(){sqlite3_finalize(value);}} statement{rawStatement};
+  auto text=[&](int column,size_t limit){const auto bytes=sqlite3_column_bytes(rawStatement,column);const auto* value=sqlite3_column_text(rawStatement,column);if(bytes<0||static_cast<size_t>(bytes)>limit||(!value&&bytes))return std::string();return std::string(reinterpret_cast<const char*>(value),static_cast<size_t>(bytes));};
+  while(sqlite3_step(rawStatement)==SQLITE_ROW){
+    const auto id=text(0,9),databaseTitle=text(1,200);if(!std::regex_match(id,std::regex("PPSA[0-9]{5}"))||id=="PPSA99051")continue;
+    fs::path metadata,application;try{metadata=beneath(appmetaRoot,id+"/param.json");application=beneath(appRoot,id);}catch(...){continue;}
+    auto metadataStatus=fs::symlink_status(metadata),applicationStatus=fs::symlink_status(application);const bool filesReady=!fs::is_symlink(metadataStatus)&&fs::is_regular_file(metadataStatus)&&fs::file_size(metadata)<=128*1024&&!fs::is_symlink(applicationStatus)&&fs::is_directory(applicationStatus);
+    if(!filesReady){if(sqlite3_column_int(rawStatement,3)==0&&databaseTitle.rfind("*FG*",0)==0)result.add(Json::object({{"titleId",id},{"registrationBlocked",true},{"available",false}}));continue;}
+    try{
+      auto data=readJson(metadata);const auto content=data["contentId"].string(),version=data["contentVersion"].string();if(data["titleId"].string()!=id||content.size()>80||content.size()<16||content.substr(7,9)!=id||version.empty()||version.size()>30)continue;
+      const auto localized=data["localizedParameters"];const auto language=localized["defaultLanguage"].string("en-US");auto title=localized[language.c_str()]["titleName"].string(localized["en-US"]["titleName"].string(databaseTitle));if(title.empty()||title.size()>200)continue;
+      const auto size=sqlite3_column_int64(rawStatement,2);result.add(Json::object({{"title",title},{"titleId",id},{"contentId",content},{"version",version},{"platform","PS5"},{"storageId","internal-installed"},{"relativePath","app/"+id},{"source","INSTALLED_TITLE"},{"sha256",Json()},{"size",size>0?Json(static_cast<int64_t>(size)):Json()},{"available",true},{"registered",true},{"nativeRegistered",true}}));
+    }catch(...){ }
+  }
+  return result;
+}
 Json Agent::discoverInstalled(const Json& volumes){
   Json result=Json::array();size_t scanned=0;std::set<std::string> seen;
+#ifdef PS5
+  std::vector<std::pair<fs::path,std::string>> nativeRoots;std::pair<fs::path,std::string> internal;
+  for(size_t v=0;v<volumes.size();v++){
+    const auto root=fs::path(volumes[v]["path"].string());const auto storageId=volumes[v]["storageId"].string();
+    if(root=="/user")internal={root/"app",storageId};
+    else if(root=="/mnt/ext0"){nativeRoots.push_back({root/"user/app",storageId});nativeRoots.push_back({root/"ps5/user/app",storageId});}
+    else if(root=="/mnt/ext1")nativeRoots.push_back({root/"user/app",storageId});
+  }
+  if(!internal.first.empty())nativeRoots.push_back(internal);
+  std::set<std::string> nativeSeen,blocked;
+  for(const auto& [appRoot,defaultStorage]:nativeRoots){
+    if(!fs::is_directory(appRoot))continue;auto native=inspectPs5Installed("/system_data/priv/mms/app.db","/user/appmeta",appRoot);
+    for(size_t i=0;i<native.size();i++){
+      auto item=native[i];const auto title=item["titleId"].string();if(item["registrationBlocked"].boolean()){blocked.insert(title);continue;}if(nativeSeen.count(title))continue;
+      auto application=beneath(appRoot,title);std::string storageId=defaultStorage;
+      for(size_t v=0;v<volumes.size();v++)if(sameStorageDevice(application,volumes[v]["path"].string())){storageId=volumes[v]["storageId"].string();break;}
+      item.set("storageId",storageId);nativeSeen.insert(title);result.add(item);
+    }
+  }
+  for(const auto& title:blocked)if(!nativeSeen.count(title))result.add(Json::object({{"titleId",title},{"registrationBlocked",true},{"available",false}}));
+#endif
   for(size_t v=0;v<volumes.size();v++)for(const auto* apps:{"app","user/app"})try{
     auto volume=volumes[v];const fs::path root=volume["path"].string();auto directory=beneath(root,apps);if(!fs::is_directory(directory))continue;
     for(const auto& entry:fs::directory_iterator(directory)){
@@ -59,13 +102,7 @@ Json Agent::discoverInstalled(const Json& volumes){
           size+=updated["size"].number();if(updated["version"].string()>item["version"].string())item.set("version",updated["version"]);
         }
         item.set("size",size);item.set("storageId",volume["storageId"]);item.set("relativePath",relative);item.set("source","INSTALLED_TITLE");item.set("sha256",Json());item.set("available",true);item.set("registered",false);
-        fs::path artwork;
-        for(size_t p=0;p<volumes.size();p++)for(const auto* meta:{"appmeta","user/appmeta"}){auto candidate=beneath(volumes[p]["path"].string(),std::string(meta)+"/"+id);if(fs::is_regular_file(candidate/"icon0.png"))artwork=candidate;}
-        if(artwork.empty())try{
-          artwork=beneath(statePath_.parent_path(),"inventory-artwork/"+id+"/"+item["version"].string());
-          if(!fs::is_regular_file(artwork/"icon0.png"))atomicBytes(artwork/"icon0.png",packageResource(file,0x1200,16*1024*1024));
-        }catch(const std::exception&){/* Metadata remains useful when artwork is absent. */}
-        item.set("_artworkRoot",artwork.string());result.add(item);
+        result.add(item);
       }catch(const std::exception& e){inventoryComplete_=false;std::fprintf(stderr,"Installed title %s: %s\n",id.c_str(),e.what());}
     }
   }catch(const std::exception&){inventoryComplete_=false;}

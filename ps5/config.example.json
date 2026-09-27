@@ -10,6 +10,7 @@
   "firmware": null,
   "nativeNotifications": false,
   "nativePackageDownloads": true,
+  "nativeInstallProgress": false,
   "font": "/data/ps5library/Inter-Regular.otf",
   "storage": [
     { "storageId": "internal", "displayName": "Internal Storage", "path": "/data" },

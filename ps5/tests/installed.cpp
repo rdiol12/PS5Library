@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <sqlite3.h>
 #include <vector>
 #include <unistd.h>
 
@@ -55,6 +56,12 @@ int main() {
     bad=pkg;put(bad,sfoOffset+20,0xffff,2);reject(bad,"entry key offset lies outside the key table");
     bad=pkg;put(bad,sfoOffset+32,0xfffffff0,4);reject(bad,"entry value offset lies outside the value table");
     bad=pkg;put(bad,sfoOffset+24,0xffffffff,4);reject(bad,"entry value length overflows the value table");
-    fs::remove(file);fs::remove(root);std::puts("PASS: PS4 package metadata and malformed bounds");return 0;
+    const auto database=root/"app.db",appmeta=root/"appmeta",apps=root/"app";fs::create_directories(appmeta/"PPSA99996");fs::create_directories(apps/"PPSA99996");
+    atomicJson(appmeta/"PPSA99996/param.json",Json::parse(R"({"titleId":"PPSA99996","contentId":"IV0000-PPSA99996_00-PS5LIBRARYDEMO00","contentVersion":"01.002.000","localizedParameters":{"defaultLanguage":"en-US","en-US":{"titleName":"Synthetic PS5 title"}}})"));
+    sqlite3* db=nullptr;if(sqlite3_open(database.c_str(),&db)!=SQLITE_OK)throw std::runtime_error("Cannot create native install fixture");char* error=nullptr;const char* sql="CREATE TABLE tbl_contentinfo(titleId TEXT,titleName TEXT,size INTEGER,uninstallable INTEGER);INSERT INTO tbl_contentinfo VALUES('PPSA99996','Synthetic PS5 title',1234,1);INSERT INTO tbl_contentinfo VALUES('PPSA99995','*FG* Legacy title',0,0);INSERT INTO tbl_contentinfo VALUES('../escape','*FG* Invalid',0,0);";if(sqlite3_exec(db,sql,nullptr,nullptr,&error)!=SQLITE_OK){std::string message=error?error:"SQLite fixture failed";sqlite3_free(error);sqlite3_close(db);throw std::runtime_error(message);}sqlite3_close(db);
+    auto ps5=inspectPs5Installed(database,appmeta,apps);if(ps5.size()!=2||ps5[size_t(0)]["titleId"].string()!="PPSA99995"||!ps5[size_t(0)]["registrationBlocked"].boolean()||ps5[size_t(1)]["titleId"].string()!="PPSA99996"||!ps5[size_t(1)]["nativeRegistered"].boolean()||ps5[size_t(1)]["size"].number()!=1234)throw std::runtime_error("Native PS5 registration metadata was not classified correctly: "+ps5.dump());
+    const auto stale=Json::parse(R"({"titleId":"PPSA99996","contentId":"IV0000-PPSA99996_00-PS5LIBRARYDEMO00","version":"01.002.000"})"),current=Json::parse(R"({"titleId":"PPSA99996","contentId":"IV0000-PPSA99996_00-PS5LIBRARYDEMO00","version":"01.005.000"})");
+    if(sameInventoryRelease(stale,current))throw std::runtime_error("A stale receipt swallowed a newer installed native release");
+    fs::remove_all(root);std::puts("PASS: native PS4/PS5 metadata and malformed bounds");return 0;
   }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\nTest path: %s\n",error.what(),root.c_str());return 1;}
 }

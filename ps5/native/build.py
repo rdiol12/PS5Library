@@ -12,6 +12,8 @@ import shlex
 import shutil
 import subprocess
 import json
+import re
+from urllib.parse import urlsplit
 from verify import verify_readback
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,12 +23,47 @@ parser.add_argument("--upstream", required=True, type=Path)
 parser.add_argument("--payload-build", type=Path, default=ROOT / "ps5/build/ps5")
 parser.add_argument("--json-c", type=Path, help="patched json-c archive (defaults to the native build image copy)")
 parser.add_argument("--mode", choices=("probe", "app"), default="probe")
+parser.add_argument("--diagnostic", action="store_true", help="persist the bounded storefront stage and fault trace (app mode only)")
 parser.add_argument("--output", type=Path)
 parser.add_argument("--tab-stress", action="store_true", help="cycle storefront tabs for the hardware soak test")
+parser.add_argument("--content-version", default="01.000.000", help="PS5 package content version (MM.mmm.ppp)")
+parser.add_argument("--selection-audio", type=Path, default=os.environ.get("PS5LIBRARY_SND0_AT9"), help="ATRAC9 Home-menu selection audio for app builds")
+parser.add_argument("--right-sprx", type=Path, default=os.environ.get("PS5LIBRARY_RIGHT_SPRX"), help="debug right.sprx used by native app packages")
+public_url = os.environ.get("PUBLIC_URL", "").rstrip("/")
+master_url = os.environ.get("COMMUNITY_MASTER_URL", "").strip().rstrip("/")
+parser.add_argument("--version-file-uri", default=os.environ.get("PS5LIBRARY_NATIVE_VERSION_URI") or None, help="server version.xml used by the PS5 Home tile")
+parser.add_argument("--print-version-file-uri", action="store_true", help=argparse.SUPPRESS)
 args = parser.parse_args()
-upstream, payload = args.upstream.resolve(), args.payload_build.resolve()
-work = (args.output or ROOT / ("ps5/build/native-app" if args.mode == "app" else "ps5/build/native")).resolve()
+if not re.fullmatch(r"\d{2}\.\d{3}\.\d{3}", args.content_version):
+    parser.error("--content-version must use MM.mmm.ppp")
 probe = args.mode == "probe"
+if probe and args.diagnostic:
+    parser.error("--diagnostic requires --mode app")
+if master_url:
+    master = urlsplit(master_url)
+    if master.scheme != "https" or not master.hostname or master.username or master.password or master.path or master.query or master.fragment:
+        parser.error("COMMUNITY_MASTER_URL must be an exact HTTPS origin")
+origin = master_url or public_url
+version_uri = "" if probe else (args.version_file_uri or (origin + f"/api/v1/native-updates/PPSA99051/from/{args.content_version}/version.xml" if origin else "")).strip()
+if version_uri:
+    parsed = urlsplit(version_uri)
+    if len(version_uri) > 255 or parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        parser.error("--version-file-uri must be an HTTP(S) URL without credentials or a fragment")
+if args.print_version_file_uri:
+    print(version_uri)
+    raise SystemExit(0)
+upstream, payload = args.upstream.resolve(), args.payload_build.resolve()
+work = (args.output or ROOT / ("ps5/build/native-app-diagnostic" if args.diagnostic else "ps5/build/native-app" if args.mode == "app" else "ps5/build/native")).resolve()
+selection_audio = args.selection_audio.resolve() if args.selection_audio else None
+right_sprx = args.right_sprx.resolve() if args.right_sprx else None
+if not probe:
+    if not selection_audio or not selection_audio.is_file():
+        parser.error("app builds require --selection-audio or PS5LIBRARY_SND0_AT9")
+    header = selection_audio.read_bytes()[:16]
+    if selection_audio.suffix.lower() != ".at9" or selection_audio.stat().st_size > 16 * 1024 * 1024 or not header.startswith(b"RIFF") or header[8:12] != b"WAVE":
+        parser.error("selection audio must be a valid ATRAC9 RIFF/WAVE file no larger than 16 MiB")
+    if not right_sprx or not right_sprx.is_file() or right_sprx.suffix.lower() != ".sprx" or right_sprx.stat().st_size > 16 * 1024 * 1024 or right_sprx.read_bytes()[:4] != b"\x54\x14\xf5\xee":
+        parser.error("app builds require a valid --right-sprx or PS5LIBRARY_RIGHT_SPRX")
 sdk = Path(os.environ["PS5_PAYLOAD_SDK"]).resolve()
 json_c = (args.json_c or sdk / "target/user/homebrew/lib/libjson-c.a").resolve()
 native = upstream / "tooling/native"
@@ -154,11 +191,12 @@ for name, source in (("app_crt", work / "app_crt.cpp"), ("app_cpp_runtime", work
     run(sdk / "bin/prospero-clang++", "-std=c++20", "-Os", "-fno-exceptions", "-fno-rtti",
         "-ffunction-sections", "-fdata-sections", "-c", source, "-o", work / (name + ".o"))
 run(sdk / "bin/prospero-clang++", "-std=c++17", "-Os", "-ffunction-sections", "-fdata-sections",
-    "-DPS5", "-DPS5LIBRARY_NATIVE", "-Dmain=storefront_main",
+    "-DPS5", "-DPS5LIBRARY_NATIVE", f'-DPS5LIBRARY_NATIVE_CONTENT_VERSION="{args.content_version}"', "-Dmain=storefront_main",
     "-isystem", sdk / "target/user/homebrew/include", "-isystem", sdk / "target/user/homebrew/include/SDL2",
     "-c", ROOT / "ps5/frontend/main.cpp", "-o", work / "main.o")
 run(sdk / "bin/prospero-clang++", "-std=c++17", "-Os", "-DPS5LIBRARY_NATIVE_TARGET", "-isystem", sdk / "target/user/homebrew/include/SDL2",
     *(["-DPS5LIBRARY_NATIVE_PROBE"] if probe else []),
+    *(["-DPS5LIBRARY_NATIVE_DIAGNOSTIC"] if args.diagnostic else []),
     *(["-DPS5LIBRARY_TAB_STRESS"] if args.tab_stress else []),
     "-c", ROOT / "ps5/native/main.cpp", "-o", work / "native-main.o")
 # SDK v0.43 lacks this import declaration. Use the pinned upstream link-only
@@ -190,14 +228,19 @@ run(sdk / "bin/prospero-lld", "-T", work / "native.ld", "--eh-frame-hdr", "--gc-
     "-L" + str(sdk / "target/user/homebrew/lib"), "-L" + str(sdk / "target/lib"),
     "-e", "_start", "-o", work / "llvm-pie.elf", work / "app_crt.o", work / "app_cpp_runtime.o", work / "native-main.o",
     "--start-group", *inputs, "-lc++abi", "-lunwind", "-lc", "--end-group", "--as-needed", "-lSceLibcInternal", "-lSceNet", work / "libSceCommonDialog.so")
+run("python3", ROOT / "ps5/tests/native_live_worker.py", "nm", work / "llvm-pie.elf")
 symbols = subprocess.check_output(["nm", "-C", str(work / "llvm-pie.elf")], text=True)
+assert "ps5library::atomicBytesMode" not in symbols, "native storefront must use the hardware-proven atomic writer"
+for unsafe in ("openat", "renameat", "unlinkat"):
+    assert not re.search(rf"\b[Tt] {unsafe}$", symbols, re.MULTILINE), f"native storefront uses unsupported {unsafe}"
 assert " U strdup" not in symbols and " U vasprintf" not in symbols, "C allocation helpers must use the executable allocator"
 assert "ps5library::Agent::tick()" not in symbols, "Sandboxed UI must not report console-wide inventory"
 assert "kernel_get_fw_version" not in symbols, "Native title must not use the payload CRT"
 assert "__eh_frame_hdr_start" in symbols and "__eh_frame_end" in symbols
 assert " U sceCommonDialogInitialize" in symbols, "CommonDialog must remain a real console import"
 if not probe:
-    assert "sceSystemServiceNavigateToGoHome" not in symbols, "App must not issue an automatic Home request"
+    assert " U sceSystemServiceNavigateToGoHome" not in symbols, "ShellCore must own native title backgrounding"
+    assert "sceSystemServiceKillApp" not in symbols, "The native app must not terminate itself"
     assert " U sceSystemServiceLaunchApp" in symbols, "Native Play must import the real title launcher"
     assert " U sceNetInit" in symbols, "Native storefront must initialize networking"
     assert " U sceNetPoolCreate" in symbols and " U sceNetPoolDestroy" in symbols, "Native storefront must own a network pool"
@@ -220,20 +263,30 @@ run(tool, "self", "--sign", "--in", work / "libc.raw.elf", "--out", dist / "sce_
 assert hashlib.sha256((dist / "sce_module/libc.prx").read_bytes()).hexdigest() == "e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036"
 param = {
     "titleId": "PPSA99051", "conceptId": "99051", "contentId": "UP9000-PPSA99051_00-PS5LIBRARYHOMETE",
-    "contentVersion": "01.000.000", "masterVersion": "01.00", "applicationCategoryType": 0,
+    "contentVersion": args.content_version, "masterVersion": "01.00", "applicationCategoryType": 0,
     "applicationDrmType": "free", "contentBadgeType": 1, "downloadDataSize": 256,
-    "attribute": 0, "attribute2": 0, "attribute3": 0, "ageLevel": {"default": 0},
-    "requiredSystemSoftwareVersion": "0x0000000000000000", "sdkVersion": "0x0000000000000000",
+    "attribute": 0, "attribute2": 0, "attribute3": 0, "ageLevel": {"default": 0, "US": 0, "JP": 0},
+    "requiredSystemSoftwareVersion": "0x0200000000000000", "sdkVersion": "0x0200000000000000",
     "gameIntent": {"permittedIntents": [{"intentType": "launchActivity"}]},
     "localizedParameters": {"defaultLanguage": "en-US", "en-US": {"titleName": "PS5Library Native Test" if probe else "PS5Library"}},
-    "versionFileUri": ""
+    "versionFileUri": version_uri
 }
 (dist / "sce_sys/param.json").write_text(json.dumps(param, indent=2) + "\n")
 shutil.copyfile(ROOT / "ps5/assets/icon0.png", dist / "sce_sys/icon0.png")
 for name in ("pic0.dds", "pic1.dds"):
     shutil.copyfile(ROOT / "ps5/assets" / name, dist / "sce_sys" / name)
+shutil.copyfile(ROOT / "ps5/assets/pic2.png", dist / "sce_sys/pic2.png")
+if selection_audio:
+    shutil.copyfile(selection_audio, dist / "sce_sys/snd0.at9")
+if right_sprx:
+    (dist / "sce_sys/about").mkdir(exist_ok=True)
+    shutil.copyfile(right_sprx, dist / "sce_sys/about/right.sprx")
 (dist / "assets/banner.txt").write_text("PS5Library native storefront experiment\n")
-manifest = {"mode": args.mode, "upstream": PIN, "fselfSha256": hashlib.sha256((dist / "eboot.bin").read_bytes()).hexdigest(), "releaseReady": False, "tabStress": args.tab_stress}
+manifest = {"mode": args.mode, "diagnostic": args.diagnostic, "upstream": PIN, "contentVersion": args.content_version, "fselfSha256": hashlib.sha256((dist / "eboot.bin").read_bytes()).hexdigest(), "releaseReady": False, "tabStress": args.tab_stress, "serverUpdateCheck": bool(version_uri)}
+if selection_audio:
+    manifest["selectionAudioSha256"] = hashlib.sha256(selection_audio.read_bytes()).hexdigest()
+if right_sprx:
+    manifest["rightSprxSha256"] = hashlib.sha256(right_sprx.read_bytes()).hexdigest()
 if not probe:
     agent = payload / "ps5library-agent.elf"
     assert agent.is_file(), "Build the standalone agent before packaging the native app"
