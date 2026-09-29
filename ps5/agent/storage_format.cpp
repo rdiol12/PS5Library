@@ -1,6 +1,7 @@
 #include "storage_format.hpp"
 #include "../common/client.hpp"
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -15,10 +16,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #ifdef PS5
+#include <ps5/kernel.h>
 #include <sys/mount.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
 #include <dlfcn.h>
 extern "C" int sceShellCoreUtilFormatExternalHdd(const char*);
 extern "C" float sceShellCoreUtilGetProgressOfFormatExternalHdd();
+struct SystemSoftwareVersion {uint64_t size;char text[28];uint32_t version;uint64_t reserved;};
+extern "C" int sceKernelGetProsperoSystemSwVersion(SystemSoftwareVersion*);
 #endif
 
 namespace ps5library {
@@ -65,8 +71,25 @@ Json StorageFormatCoordinator::confirm(const std::string& storageId,const std::s
 }
 
 #ifdef PS5
+static int processId(const char* wanted){
+  int mib[4]={CTL_KERN,KERN_PROC,KERN_PROC_PROC,0};size_t size=0;if(sysctl(mib,4,nullptr,&size,nullptr,0)||!size||size>4*1024*1024)return -1;std::vector<unsigned char> data(size);if(sysctl(mib,4,data.data(),&size,nullptr,0))return -1;
+  for(size_t offset=0;offset<size;){if(size-offset<sizeof(int))return -1;int length=0;std::memcpy(&length,data.data()+offset,sizeof(length));constexpr size_t end=offsetof(kinfo_proc,ki_comm)+sizeof(kinfo_proc::ki_comm);if(length<static_cast<int>(end)||static_cast<size_t>(length)>size-offset)return -1;const auto* process=reinterpret_cast<const kinfo_proc*>(data.data()+offset);const char* name=reinterpret_cast<const char*>(data.data()+offset+offsetof(kinfo_proc,ki_comm));if(std::string(name,strnlen(name,sizeof(kinfo_proc::ki_comm)))==wanted)return process->ki_pid;offset+=static_cast<size_t>(length);}return -1;
+}
+std::string applyUsbHighSpeedStoragePatch(){
+  SystemSoftwareVersion system{};system.size=sizeof(system);if(sceKernelGetProsperoSystemSwVersion(&system))return "FIRMWARE_UNAVAILABLE";const auto firmware=system.version&0xffff0000u;if(firmware!=0x04500000u&&firmware!=0x04510000u)return "UNSUPPORTED_FIRMWARE";
+  const int pid=processId("SceShellCore");if(pid<=0)return "SHELLCORE_NOT_FOUND";uint32_t handle=0;if(kernel_dynlib_handle(pid,"SceShellCore",&handle)&&kernel_dynlib_handle(pid,"SceShellCore.elf",&handle))return "SHELLCORE_MODULE_NOT_FOUND";const auto base=static_cast<uintptr_t>(kernel_dynlib_mapbase_addr(pid,handle));
+  constexpr uintptr_t contextOffset=0x28fcef;constexpr size_t patchIndex=12;const std::array<unsigned char,26> expected={0x80,0xbd,0x6f,0xfb,0xff,0xff,0x00,0x75,0x04,0x41,0x80,0x0e,0x08,0x80,0xbd,0x6e,0xfb,0xff,0xff,0x00,0x74,0x04,0x41,0x80,0x0e,0x20};auto patched=expected;patched[patchIndex]=0;std::array<unsigned char,26> observed{};
+  if(base<0x10000||base>=0x0000800000000000ull-contextOffset-expected.size())return "SHELLCORE_BASE_INVALID";if(kernel_proc_copyout(pid,base+contextOffset,observed.data(),observed.size()))return "SHELLCORE_READ_FAILED";if(observed==patched)return "ALREADY_APPLIED";if(observed!=expected)return "SHELLCORE_CONTEXT_MISMATCH";const unsigned char zero=0;if(kernel_proc_copyin(pid,&zero,base+contextOffset+patchIndex,1))return "SHELLCORE_WRITE_FAILED";if(kernel_proc_copyout(pid,base+contextOffset,observed.data(),observed.size())||observed!=patched){const unsigned char restore=0x08;if(kernel_proc_copyin(pid,&restore,base+contextOffset+patchIndex,1)||kernel_proc_copyout(pid,base+contextOffset,observed.data(),observed.size())||observed!=expected)return "SHELLCORE_ROLLBACK_FAILED";return "SHELLCORE_READBACK_FAILED";}return "APPLIED";
+}
+std::string applyExternalFpkgStoragePatch(){
+  SystemSoftwareVersion system{};system.size=sizeof(system);if(sceKernelGetProsperoSystemSwVersion(&system))return "FIRMWARE_UNAVAILABLE";const auto firmware=system.version&0xffff0000u;if(firmware!=0x04500000u&&firmware!=0x04510000u)return "UNSUPPORTED_FIRMWARE";
+  const int pid=processId("SceShellCore");if(pid<=0)return "SHELLCORE_NOT_FOUND";uint32_t handle=0;if(kernel_dynlib_handle(pid,"SceShellCore",&handle)&&kernel_dynlib_handle(pid,"SceShellCore.elf",&handle))return "SHELLCORE_MODULE_NOT_FOUND";const auto base=static_cast<uintptr_t>(kernel_dynlib_mapbase_addr(pid,handle));
+  constexpr uintptr_t contextOffset=0x531280;const std::array<unsigned char,10> expected={0x83,0xf8,0x01,0x0f,0x95,0xc0,0x08,0xd8,0x74,0x52},patched={0x83,0xf8,0x01,0x0f,0x95,0xc0,0x08,0xd8,0x90,0x90};std::array<unsigned char,10> observed{};
+  if(base<0x10000||base>=0x0000800000000000ull-contextOffset-expected.size())return "SHELLCORE_BASE_INVALID";if(kernel_proc_copyout(pid,base+contextOffset,observed.data(),observed.size()))return "SHELLCORE_READ_FAILED";if(observed==patched)return "ALREADY_APPLIED";if(observed!=expected)return "SHELLCORE_CONTEXT_MISMATCH";if(kernel_proc_copyin(pid,patched.data()+8,base+contextOffset+8,2))return "SHELLCORE_WRITE_FAILED";
+  if(kernel_proc_copyout(pid,base+contextOffset,observed.data(),observed.size())||observed!=patched){if(kernel_proc_copyin(pid,expected.data()+8,base+contextOffset+8,2)||kernel_proc_copyout(pid,base+contextOffset,observed.data(),observed.size())||observed!=expected)return "SHELLCORE_ROLLBACK_FAILED";return "SHELLCORE_READBACK_FAILED";}return "APPLIED";
+}
 static std::string mountedString(const char* value,size_t size){return std::string(value,strnlen(value,size));}
-static bool managedUsbMounted(){struct statfs mounted{};if(statfs("/mnt/ext0",&mounted))return false;auto device=mountedString(mounted.f_mntfromname,sizeof(mounted.f_mntfromname)),type=mountedString(mounted.f_fstypename,sizeof(mounted.f_fstypename));return type=="ufs"&&device.size()>=6&&device.compare(device.size()-6,6,".crypt")==0;}
+static bool managedUsbMounted(){struct statfs mounted{};if(statfs("/mnt/ext0",&mounted))return false;auto path=mountedString(mounted.f_mntonname,sizeof(mounted.f_mntonname)),device=mountedString(mounted.f_mntfromname,sizeof(mounted.f_mntfromname)),type=mountedString(mounted.f_fstypename,sizeof(mounted.f_fstypename));return exactStorageMount("/mnt/ext0",path)&&type=="ufs"&&device.size()>=6&&device.compare(device.size()-6,6,".crypt")==0;}
 static uint32_t le32(const unsigned char* value){return static_cast<uint32_t>(value[0])|static_cast<uint32_t>(value[1])<<8|static_cast<uint32_t>(value[2])<<16|static_cast<uint32_t>(value[3])<<24;}
 static uint64_t le64(const unsigned char* value){return static_cast<uint64_t>(le32(value))|static_cast<uint64_t>(le32(value+4))<<32;}
 static void readExact(int fd,unsigned char* value,size_t size){size_t offset=0;while(offset<size){auto count=pread(fd,value+offset,size-offset,static_cast<off_t>(offset));if(count<0&&errno==EINTR)continue;if(count<=0)throw std::runtime_error("STORAGE_FORMAT_BOOT_UNREADABLE");offset+=static_cast<size_t>(count);}}
@@ -96,6 +119,7 @@ static void unmountUsb(const UsbFormatIdentity& identity){
 }
 static int formatUsb(const UsbFormatIdentity& identity){unmountUsb(identity);const auto result=sceShellCoreUtilFormatExternalHdd(identity.wholeDevice.c_str());if(result)return result;for(int i=0;i<600&&!managedUsbMounted();i++)std::this_thread::sleep_for(std::chrono::milliseconds(100));if(!managedUsbMounted())throw std::runtime_error("STORAGE_FORMAT_FINISHED_RECONNECT_USB");return 0;}
 #else
+std::string applyUsbHighSpeedStoragePatch(){return "UNAVAILABLE";}
 static UsbFormatIdentity probeUsb(const std::string&){throw std::runtime_error("STORAGE_FORMAT_UNAVAILABLE");}
 static bool usbBusy(const UsbFormatIdentity&){return true;}
 static int formatUsb(const UsbFormatIdentity&){throw std::runtime_error("STORAGE_FORMAT_UNAVAILABLE");}

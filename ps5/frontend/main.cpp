@@ -181,7 +181,7 @@ class Storefront {
   void appUpdate(bool install=false){
     if(options_.preview||offlineMode_||credential_.empty()||networkPaused_||updateRequest_.valid())return;
 #ifdef PS5LIBRARY_NATIVE
-    if(install){if(!localAgentSeen_){updateStatus_="PS5Library Agent is required to install this update.";return;}updateStatus_="Starting the native PS5 download...";localCommand("/api/v1/agent/app-update/"+std::string(nativeContentVersion),[this](const Json&){updateStatus_="Update started in PS5 Downloads.";});return;}
+    if(install){if(!localAgentSeen_){updateStatus_="PS5Library Agent is required to install this update.";return;}updateStatus_="Starting the native PS5 download...";localCommand("/api/v1/agent/app-update/"+std::string(nativeTitleId)+"/"+nativeContentVersion,[this](const Json&){updateStatus_="Update started in PS5 Downloads.";});return;}
 #endif
     lastUpdateCheck_=SDL_GetTicks();updating_=install;updateStatus_=install?"Downloading verified app update...":"Checking for updates...";updateBytes_=0;updateTotal_=install?updateManifest_["size"].number():0;
     auto configuration=config_.dump(),token=credential_,envelope=updateEnvelope_.dump();auto root=options_.config.parent_path()/"updates";

@@ -5,9 +5,6 @@
 #include <vector>
 #include <cstring>
 #include <sstream>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #ifdef PS5
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -62,17 +59,6 @@ bool shadowMountMoveSupported(const Json& version){
 bool shadowMountRefreshDue(int64_t checkedMs,int64_t nowMs,bool supported){
   return checkedMs<=0||(!supported&&(nowMs<checkedMs||nowMs-checkedMs>=30000));
 }
-bool externalFpkgAttestation(const fs::path& marker,int pid){
-  if(pid<=0)return false;
-  int fd=open(marker.c_str(),O_RDONLY|O_NOFOLLOW);if(fd<0)return false;
-  struct stat info{};bool valid=fstat(fd,&info)==0&&S_ISREG(info.st_mode)&&info.st_nlink==1&&info.st_size>0&&info.st_size<=64&&(info.st_mode&0777)==0600;
-#ifdef PS5
-  valid=valid&&info.st_uid==0;
-#endif
-  char bytes[65]{};auto count=valid?read(fd,bytes,static_cast<size_t>(info.st_size)):-1;close(fd);if(count!=info.st_size)return false;
-  std::istringstream input(std::string(bytes,static_cast<size_t>(count)));std::string magic,extra;long long attested=0;
-  return input>>magic>>attested&&!(input>>extra)&&magic=="PS5LIBRARY-EXTERNAL-FPKG-V1"&&attested==pid;
-}
 Json Agent::discoverDumps(const Json& volumes) {
   Json result=Json::array();std::set<std::string> seen;size_t inspected=0;
   for(size_t v=0;v<volumes.size();v++) {
@@ -113,24 +99,21 @@ Json Agent::discoverDumps(const Json& volumes) {
 }
 Json Agent::runtimeStatus() {
   detectedRuntime_.clear();
-  externalFpkg_=false;
   auto result=Json::object({{"shadowMount","UNKNOWN"},{"kstuff","UNKNOWN"},{"backPork","UNKNOWN"},{"fakelibEnabled",Json()}});
 #ifdef PS5
   int mib[4]={CTL_KERN,KERN_PROC,KERN_PROC_PROC,0};size_t size=0;
   if(sysctl(mib,4,nullptr,&size,nullptr,0)||!size||size>4*1024*1024)return result;
   std::vector<unsigned char> data(size);
   if(sysctl(mib,4,data.data(),&size,nullptr,0))return result;
-  std::set<std::string> names;int kstuffPid=0;
+  std::set<std::string> names;
   for(size_t offset=0;offset<size;) {
     if(size-offset<sizeof(int))return result;int length=0;std::memcpy(&length,data.data()+offset,sizeof(length));
     constexpr size_t end=offsetof(kinfo_proc,ki_comm)+sizeof(kinfo_proc::ki_comm);
     if(length<static_cast<int>(end)||static_cast<size_t>(length)>size-offset)return result;
-    const auto* process=reinterpret_cast<const kinfo_proc*>(data.data()+offset);const char* name=reinterpret_cast<const char*>(data.data()+offset+offsetof(kinfo_proc,ki_comm));auto processName=std::string(name,strnlen(name,sizeof(kinfo_proc::ki_comm)));names.insert(processName);if(processName=="kstuff.elf"||processName=="kstuff-lite.elf")kstuffPid=process->ki_pid;offset+=length;
+    const char* name=reinterpret_cast<const char*>(data.data()+offset+offsetof(kinfo_proc,ki_comm));names.insert(std::string(name,strnlen(name,sizeof(kinfo_proc::ki_comm))));offset+=length;
   }
   bool shadow=names.count("shadowmountplus.elf")>0,backpork=names.count("backpork.elf")||names.count("BackPork.elf");
   if(names.count("kstuff-lite.elf"))detectedRuntime_="kstuff-lite";else if(names.count("kstuff.elf"))detectedRuntime_="kstuff";
-  const auto firmware=state_["firmware"].string();
-  externalFpkg_=(firmware=="4.50"||firmware=="4.51")&&externalFpkgAttestation("/tmp/ps5library-external-fpkg-v1",kstuffPid);
   result.set("shadowMount",shadow?"RUNNING":"NOT_RUNNING");result.set("backPork",backpork?"RUNNING":"NOT_RUNNING");result.set("kstuff",names.count("kstuff.elf")||names.count("kstuff-lite.elf")?"RUNNING":"NOT_RUNNING");
   result.set("externalFpkgPatch",externalFpkg_);
   if(shadow) {
