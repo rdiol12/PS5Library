@@ -232,7 +232,7 @@ std::string Client::nativeDownloadUrl(const std::string& relative) const {
   return base_+relative;
 }
 std::string Client::nativeUpdateUrl(const std::string& relative) const {
-  static const std::regex path(R"(^/api/v1/native-updates/(PPSA99051/([1-9][0-9]*/packages/[0-9a-f]{64}\.pkg|icon\.png)|grants/[0-9a-f]{64}/PPSA99051/(packages/[0-9a-f]{64}\.pkg|icon\.png))$)");
+  static const std::regex path(R"(^/api/v1/native-updates/((PPSA99051|PPSA99783)/([1-9][0-9]*/packages/[0-9a-f]{64}\.pkg|icon\.png)|grants/[0-9a-f]{64}/(PPSA99051|PPSA99783)/(packages/[0-9a-f]{64}\.pkg|icon\.png))$)");
   if(!std::regex_match(relative,path))throw std::runtime_error("Invalid native update path");
   return base_+relative;
 }

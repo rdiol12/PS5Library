@@ -25,6 +25,9 @@ extern "C" int sceAppInstUtilGetInstallStatus(const char*,InstallStatus*);
 extern "C" int sceAppInstUtilAppUnInstall(const char*);
 #endif
 namespace ps5library {
+static std::atomic<bool> updateBridgeAvailable{false};
+bool nativeUpdateBridgeAvailable(){return updateBridgeAvailable.load();}
+void setNativeUpdateBridgeAvailable(bool available){updateBridgeAvailable.store(available);}
 std::mutex& nativeApiMutex(){static std::mutex mutex;return mutex;}
 #ifdef PS5
 struct NativeApiLock {std::unique_lock<std::mutex> lock{nativeApiMutex()};~NativeApiLock(){usleep(200000);}};
@@ -49,12 +52,32 @@ struct NativeMoveApi {
 };
 static NativeMoveApi& nativeMoveApi(){static NativeMoveApi api;return api;}
 static void nativeMoveResult(const char* operation,int result){if(!result)return;char code[80];std::snprintf(code,sizeof(code),"NATIVE_MOVE_%s_%08X",operation,static_cast<unsigned>(result));throw std::runtime_error(code);}
+static int nativeTitleStorageType(NativeMoveApi& api,const std::string& titleId,const std::string& contentId){
+  unsigned char exists=0;nativeMoveResult("EXISTS_REJECTED",api.exists(titleId.c_str(),&exists));if(!exists)return -1;
+  int current=-1;nativeMoveResult("STORAGE_REJECTED",api.getStorage(contentId.c_str(),&current));if(current<1||current>3)throw std::runtime_error("NATIVE_MOVE_SOURCE_MISMATCH");return current-1;
+}
+static int nativeMoveState(NativeMoveApi& api){alignas(8) std::array<unsigned char,0x150> progress{};nativeMoveResult("STATUS_REJECTED",api.progress(progress.data()));int state=0;std::memcpy(&state,progress.data(),sizeof(state));if(state<0||state>4)throw std::runtime_error("NATIVE_MOVE_STATUS_MISMATCH");return state;}
 #endif
 bool nativeMovesAvailable(){
 #ifdef PS5
   return nativeDownloadsAvailable()&&static_cast<bool>(nativeMoveApi());
 #else
   return false;
+#endif
+}
+int nativeTitleStorageType(const std::string& titleId,const std::string& contentId){
+  if(!std::regex_match(titleId,std::regex("(PPSA|CUSA)[0-9]{5}"))||!std::regex_match(contentId,std::regex("[A-Z]{2}[0-9]{4}-"+titleId+"_[0-9]{2}-[A-Z0-9]{16}")))throw std::runtime_error("MOVE_UNAVAILABLE");
+#ifdef PS5
+  if(!nativeDownloadsAvailable())throw std::runtime_error("NATIVE_INSTALLER_UNAVAILABLE");auto& api=nativeMoveApi();if(!api)throw std::runtime_error("NATIVE_MOVE_UNAVAILABLE");NativeApiLock lock;return nativeTitleStorageType(api,titleId,contentId);
+#else
+  return -1;
+#endif
+}
+int nativeMoveState(){
+#ifdef PS5
+  if(!nativeDownloadsAvailable())throw std::runtime_error("NATIVE_INSTALLER_UNAVAILABLE");auto& api=nativeMoveApi();if(!api)throw std::runtime_error("NATIVE_MOVE_UNAVAILABLE");NativeApiLock lock;return nativeMoveState(api);
+#else
+  return -1;
 #endif
 }
 bool nativeMoveTargetAvailable(const Json& volumes,int sourceStorageType){
@@ -75,9 +98,8 @@ Json nativeMoveTitle(const std::string& titleId,const std::string& contentId,int
   if(!std::regex_match(titleId,std::regex("(PPSA|CUSA)[0-9]{5}"))||!std::regex_match(contentId,std::regex("[A-Z]{2}[0-9]{4}-"+titleId+"_[0-9]{2}-[A-Z0-9]{16}"))||sourceStorageType<0||sourceStorageType>2||destinationStorageType<0||destinationStorageType>2||sourceStorageType==destinationStorageType)throw std::runtime_error("MOVE_UNAVAILABLE");
 #ifdef PS5
   if(!nativeDownloadsAvailable())throw std::runtime_error("NATIVE_INSTALLER_UNAVAILABLE");auto& api=nativeMoveApi();if(!api)throw std::runtime_error("NATIVE_MOVE_UNAVAILABLE");NativeApiLock lock;
-  unsigned char exists=0;nativeMoveResult("EXISTS_REJECTED",api.exists(titleId.c_str(),&exists));if(!exists)throw std::runtime_error("NATIVE_MOVE_TITLE_NOT_FOUND");
-  int current=-1;nativeMoveResult("STORAGE_REJECTED",api.getStorage(contentId.c_str(),&current));if(current<1||current>3||current!=sourceStorageType+1)throw std::runtime_error("NATIVE_MOVE_SOURCE_MISMATCH");
-  alignas(8) std::array<unsigned char,0x150> progress{};nativeMoveResult("STATUS_REJECTED",api.progress(progress.data()));int state=0;std::memcpy(&state,progress.data(),sizeof(state));if(state<0||state>4||state==2)throw std::runtime_error(state==2?"NATIVE_MOVE_BUSY":"NATIVE_MOVE_STATUS_MISMATCH");
+  const auto current=nativeTitleStorageType(api,titleId,contentId);if(current<0)throw std::runtime_error("NATIVE_MOVE_TITLE_NOT_FOUND");if(current!=sourceStorageType)throw std::runtime_error("NATIVE_MOVE_SOURCE_MISMATCH");
+  const auto state=nativeMoveState(api);if(state==2)throw std::runtime_error("NATIVE_MOVE_BUSY");
   std::array<char,12> ids{};std::memcpy(ids.data(),titleId.data(),titleId.size());nativeMoveResult("REJECTED",api.request(sourceStorageType,destinationStorageType,ids.data(),1,0));
   return Json::object({{"accepted",true},{"operation","native-move"},{"sourceStorageType",sourceStorageType},{"destinationStorageType",destinationStorageType}});
 #else

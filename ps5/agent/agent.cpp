@@ -20,6 +20,7 @@ extern "C" int sceKernelGetProsperoSystemSwVersion(SystemSoftwareVersion*);
 namespace ps5library {
 bool sameInventoryRelease(const Json& receipt,const Json& installed){return receipt["titleId"].string()==installed["titleId"].string()&&(installed["registrationBlocked"].boolean()||(receipt["contentId"].string()==installed["contentId"].string()&&receipt["version"].string()==installed["version"].string()));}
 static bool numberedMount(const std::string& path,const char* prefix){const auto size=std::strlen(prefix);if(path.size()<=size||path.rfind(prefix,0)!=0)return false;for(size_t i=size;i<path.size();i++)if(path[i]<'0'||path[i]>'9')return false;return true;}
+bool exactStorageMount(const std::string& path,const std::string& mountedAt){return path==mountedAt;}
 bool ps5ManagedUsbStorage(const std::string& path,const std::string& device,const std::string& type){return path=="/mnt/ext0"&&device.size()>=6&&device.compare(device.size()-6,6,".crypt")==0&&type=="ufs";}
 std::string discoveredStorageName(const std::string& path,const std::string& device,const std::string& type){
   if(ps5ManagedUsbStorage(path,device,type))return "USB Extended Storage";
@@ -51,6 +52,9 @@ static Json measureFirmware(const Json& config) {
 Agent::Agent(const fs::path& configPath):config_(readJson(configPath)),statePath_(configPath.parent_path()/"device-state.json"),client(agentClientConfig(config_)) {
   state_=config_["serverUrl"].string().empty()?localAgentState(statePath_):loadDeviceState(configPath,config_);
   if(!state_["firmwareChecked"].boolean()){state_.set("firmware",measureFirmware(config_));state_.set("firmwareChecked",true);}
+#ifdef PS5
+  try{const auto status=readJson(configPath.parent_path()/"external-fpkg-patch.json")["status"].string();externalFpkg_=status=="APPLIED"||status=="ALREADY_APPLIED";}catch(...){externalFpkg_=false;}
+#endif
   client.credential=state_["credential"].string(); atomicJson(statePath_,state_);
 }
 Json Agent::pair() {
@@ -80,8 +84,8 @@ Json Agent::storage() const {
   for(int index=0;index<10;index++) {
     const auto id=index<2?"ext"+std::to_string(index):"usb"+std::to_string(index-2),root="/mnt/"+id;
     bool exists=false;for(size_t i=0;i<configured.size();i++)if(configured[i]["path"].string()==root)exists=true;
-    struct stat device{},parent{};
-    if(!exists&&stat(root.c_str(),&device)==0&&stat("/mnt",&parent)==0&&device.st_dev!=parent.st_dev){struct statfs mounted{};const bool known=statfs(root.c_str(),&mounted)==0;configured.add(Json::object({{"storageId",id},{"displayName",discoveredStorageName(root,known?mounted.f_mntfromname:"",known?mounted.f_fstypename:"")},{"path",root}}));}
+    struct statfs mounted{};
+    if(!exists&&statfs(root.c_str(),&mounted)==0&&exactStorageMount(root,std::string(mounted.f_mntonname,strnlen(mounted.f_mntonname,sizeof(mounted.f_mntonname)))))configured.add(Json::object({{"storageId",id},{"displayName",discoveredStorageName(root,mounted.f_mntfromname,mounted.f_fstypename)},{"path",root}}));
   }
 #endif
   for(size_t i=0;i<configured.size();i++) {
@@ -90,7 +94,7 @@ Json Agent::storage() const {
 #ifdef PS5
     struct statfs mounted{};
     if(statfs(root.c_str(),&mounted)||((numberedMount(root,"/mnt/usb")||numberedMount(root,"/mnt/ext"))&&
-       std::string(mounted.f_mntonname,strnlen(mounted.f_mntonname,sizeof(mounted.f_mntonname)))!=root))continue;
+       !exactStorageMount(root,std::string(mounted.f_mntonname,strnlen(mounted.f_mntonname,sizeof(mounted.f_mntonname))))))continue;
     if(mounted.f_bsize<=0||mounted.f_blocks>UINT64_MAX/static_cast<uint64_t>(mounted.f_bsize))continue;
     const auto capacity=static_cast<uint64_t>(mounted.f_blocks)*static_cast<uint64_t>(mounted.f_bsize);
     const auto freeBlocks=mounted.f_bavail>0?std::min<uint64_t>(mounted.f_blocks,static_cast<uint64_t>(mounted.f_bavail)):0;
@@ -103,7 +107,11 @@ Json Agent::storage() const {
     nativeInstall=root=="/user"&&(config_["nativePackageDownloads"].null()||config_["nativePackageDownloads"].boolean())&&nativeDownloadsAvailable();
     if(root=="/user"||statfs(root.c_str(),&mounted)==0)moveType=nativeMoveStorageType(root,mounted.f_mntfromname,mounted.f_fstypename);nativeMove=moveType>=0&&nativeMovesAvailable();
 #endif
-    auto methods=Json::array();if(!item["inventoryOnly"].boolean())methods.add("HOMEBREW");if(nativeInstall)methods.add("FPKG");
+    bool moveInstall=false;
+#ifdef PS5
+    moveInstall=nativeMove&&(moveType==2||(moveType==1&&externalFpkg_&&ps5ManagedUsbStorage(root,mounted.f_mntfromname,mounted.f_fstypename)));
+#endif
+    auto methods=Json::array();if(!item["inventoryOnly"].boolean())methods.add("HOMEBREW");if(nativeInstall||moveInstall)methods.add("FPKG");
 #ifdef PS5
     if(!item["inventoryOnly"].boolean() && shadowMountSupported(shadowMount_)) methods.add("SHADOWMOUNT");
 #endif
@@ -142,14 +150,14 @@ Json Agent::inventory(const Json& volumes) {
 }
 Json Agent::localSnapshot() {
   auto observed=runtimeStatus();
-  auto capabilities=Json::object({{"homebrew",true},{"storageEnumeration",true},{"inventoryScan",true},{"rangeDownloads",true},{"persistentAgent",false},{"nativeNotifications",false},{"shadowMount",false},{"fpkgInstall",false},{"backportOverlay",false},{"shellIntegration",false},{"remotePlayPairing",false},{"saveBackup",false},{"saveExport",false},{"saveImport",false},{"saveRollback",false}});
+  auto capabilities=Json::object({{"homebrew",true},{"storageEnumeration",true},{"inventoryScan",true},{"rangeDownloads",true},{"persistentAgent",false},{"nativeNotifications",false},{"nativeUpdateBridge",false},{"shadowMount",false},{"fpkgInstall",false},{"backportOverlay",false},{"shellIntegration",false},{"remotePlayPairing",false},{"saveBackup",false},{"saveExport",false},{"saveImport",false},{"saveRollback",false}});
   Json firmware=state_["firmware"];
 #ifdef PS5
   capabilities.set("nativeNotifications",notifications());
   capabilities.set("saveBackup",access("/user/home",R_OK)==0);
   const auto portableSaves=portableSaveAvailable();capabilities.set("saveExport",portableSaves);capabilities.set("saveImport",portableSaves);capabilities.set("saveRollback",portableSaves);
   capabilities.set("remotePlayPairing",remotePlayAvailable());
-  capabilities.set("nativeDownloads",(config_["nativePackageDownloads"].null()||config_["nativePackageDownloads"].boolean())&&nativeDownloadsAvailable());capabilities.set("fpkgInstall",capabilities["nativeDownloads"]);
+  capabilities.set("nativeDownloads",(config_["nativePackageDownloads"].null()||config_["nativePackageDownloads"].boolean())&&nativeDownloadsAvailable());capabilities.set("fpkgInstall",capabilities["nativeDownloads"]);capabilities.set("nativeUpdateBridge",capabilities["nativeDownloads"].boolean()&&nativeUpdateBridgeAvailable());
   capabilities.set("nativeDownloadProgress",capabilities["nativeDownloads"].boolean()&&config_["nativeInstallProgress"].boolean());
   const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
   if(observed["shadowMount"].string()!="RUNNING"){shadowMount_=Json();shadowMountRoots_=Json::array();shadowMountGames_=Json::array();shadowMountPort_=0;shadowMountCheckedMs_=0;}
@@ -291,23 +299,19 @@ void Agent::nativeDownload(const Json& task,const fs::path& root,const fs::path&
     const auto current=std::max<int64_t>(0,task["downloadedBytes"].number());progress("TRANSFERRING",current);
     overlay=prepareBackport(client,root,shadowMountRoots_,task,[&](int64_t bytes,int64_t speed){client.request("POST","/api/v1/device/tasks/"+id+"/progress",Json::object({{"state","TRANSFERRING"},{"downloadedBytes",current},{"sha256",hash},{"backportProfileHash",task["backport"]["profileHash"]},{"backportDownloadedBytes",bytes},{"speedBytesPerSecond",speed}}));});
   }
-  auto marker=beneath(root,".ps5library/staging/"+id+"/native.json");
-  const auto submission=inspectNativeSubmission(marker,hash,state_["serverUrl"].string(),state_["consoleId"].string(),task["state"].string()=="QUEUED_FOR_PS5");
-  if(submission==NativeSubmissionDecision::Uncertain)throw std::runtime_error("NATIVE_SUBMISSION_UNCERTAIN");
-  if(submission==NativeSubmissionDecision::Submit){
-    if(!nativeDownloadsAvailable())throw std::runtime_error("NATIVE_INSTALLER_UNAVAILABLE");
-    const auto grant=client.request("POST","/api/v1/device/tasks/"+id+"/native-download",Json::object());
-    auto url=client.nativeDownloadUrl(grant["url"].string()),icon=grant["iconUrl"].string();if(!icon.empty())icon=client.nativeDownloadUrl(icon);
-    progress("TRANSFERRING",0);
-    // Persist intent first: after a crash, inspect the native result instead of submitting a duplicate install.
-    submitNativeDownload(marker,hash,state_["serverUrl"].string(),state_["consoleId"].string(),url,task["contentId"].string(),task["title"].string(),icon);
-  }
-  auto file=installedNativePackage(task["titleId"].string(),storageRoot);
-  const bool installed=fs::is_regular_file(file)&&static_cast<int64_t>(fs::file_size(file))==installedSize&&nativePackageRegistered(task);
-  if(installed&&!sameStorageDevice(file,storageRoot))throw std::runtime_error("NATIVE_INSTALL_STORAGE_MISMATCH");
-  if(!installed){
+  auto volumes=storage();int targetType=-1;for(size_t i=0;i<volumes.size();i++)if(volumes[i]["path"].string()==storageRoot.string())targetType=static_cast<int>(volumes[i]["nativeMoveStorageType"].number(-1));if(targetType<0||targetType>2)throw std::runtime_error("NATIVE_INSTALL_STORAGE_MISMATCH");
+  const auto titleId=task["titleId"].string(),contentId=task["contentId"].string();const auto sourceType=nativeTitleStorageType(titleId,contentId);fs::path file;
+  if(sourceType>=0&&sourceType<=2&&nativePackageRegistered(task))for(size_t i=0;i<volumes.size();i++)if(volumes[i]["nativeMoveStorageType"].number(-1)==sourceType){auto candidate=installedNativePackage(titleId,volumes[i]["path"].string());if(fs::is_regular_file(candidate)&&sameStorageDevice(candidate,volumes[i]["path"].string())){file=candidate;break;}}
+  if(file.empty()||static_cast<int64_t>(fs::file_size(file))!=installedSize){
+    auto marker=beneath(root,".ps5library/staging/"+id+"/native.json");const auto submission=inspectNativeSubmission(marker,hash,state_["serverUrl"].string(),state_["consoleId"].string(),task["state"].string()=="QUEUED_FOR_PS5");
+    if(submission==NativeSubmissionDecision::Uncertain)throw std::runtime_error("NATIVE_SUBMISSION_UNCERTAIN");
+    if(submission==NativeSubmissionDecision::Submit){
+      if(!nativeDownloadsAvailable())throw std::runtime_error("NATIVE_INSTALLER_UNAVAILABLE");const auto grant=client.request("POST","/api/v1/device/tasks/"+id+"/native-download",Json::object());auto url=client.nativeDownloadUrl(grant["url"].string()),icon=grant["iconUrl"].string();if(!icon.empty())icon=client.nativeDownloadUrl(icon);progress("TRANSFERRING",0);
+      // Persist intent first: after a crash, inspect the native result instead of submitting a duplicate install.
+      submitNativeDownload(marker,hash,state_["serverUrl"].string(),state_["consoleId"].string(),url,contentId,task["title"].string(),icon);
+    }
     if(config_["nativeInstallProgress"].boolean()){
-      auto status=nativeDownloadStatus(task["contentId"].string());
+      auto status=nativeDownloadStatus(contentId);
       if(status["available"].boolean()){
         if(status["errorCode"].number()){char code[64];std::snprintf(code,sizeof(code),"NATIVE_INSTALL_FAILED_%08X",static_cast<unsigned>(status["errorCode"].number()));throw std::runtime_error(code);}
         const auto bytes=std::max<int64_t>(task["downloadedBytes"].number(),std::min<int64_t>(size,std::max<int64_t>(0,status["downloadedBytes"].number())));progress("TRANSFERRING",bytes);
@@ -323,18 +327,27 @@ void Agent::nativeDownload(const Json& task,const fs::path& root,const fs::path&
     verified_[file.string()]={stamp,digest};
   }
   if(verified_[file.string()].second!=installedHash)return; // An incomplete/native-rejected install is never READY.
+  if(sourceType!=targetType){
+    if(task["state"].string()!="REGISTERING"){progress("VERIFYING",size);progress("REGISTERING",size);}
+    auto marker=beneath(root,".ps5library/staging/"+id+"/native-move.json");const auto decision=inspectNativeSubmission(marker,hash,state_["serverUrl"].string(),state_["consoleId"].string(),false);
+    if(decision==NativeSubmissionDecision::Submit){if(nativeMoveState()==2)return;beginNativeSubmission(marker,hash,state_["serverUrl"].string(),state_["consoleId"].string());try{nativeMoveTitle(titleId,contentId,sourceType,targetType);}catch(...){resetNativeSubmission(marker);throw;}acceptNativeSubmission(marker,hash,state_["serverUrl"].string(),state_["consoleId"].string());return;}
+    if(nativeMoveState()==2)return;
+    if(fs::file_time_type::clock::now()-fs::last_write_time(marker)<std::chrono::seconds(30))return;
+    throw std::runtime_error(decision==NativeSubmissionDecision::Uncertain?"NATIVE_MOVE_SUBMISSION_UNCERTAIN":"NATIVE_MOVE_INCOMPLETE");
+  }
+  if(!sameStorageDevice(file,storageRoot))throw std::runtime_error("NATIVE_INSTALL_STORAGE_MISMATCH");
   if(task["state"].string()!="REGISTERING"){progress("VERIFYING",size);progress("REGISTERING",size);}
   auto receipt=Json::object({{"releaseId",task["releaseId"]},{"title",task["title"]},{"titleId",task["titleId"]},{"contentId",task["contentId"]},{"version",task["version"]},{"storageId",task["storageId"]},{"relativePath","app/"+task["titleId"].string()+"/app.pkg"},{"size",installedSize},{"sha256",installedHash},{"registered",true},{"available",true},{"method","FPKG"},{"backportProfileId",task["backport"]["profile"]["id"]},{"backportFiles",!task["backport"].null()},{"serverUrl",state_["serverUrl"]},{"consoleId",state_["consoleId"]}});if(!overlay.null())receipt.set("backport",overlay);
   atomicJson(beneath(root,".ps5library/receipts/"+id+".json"),receipt);heartbeat();progress("READY_ON_PS5",size);
 }
-Json Agent::nativeAppUpdate(const std::string& baseContentVersion){
+Json Agent::nativeAppUpdate(const std::string& titleId,const std::string& baseContentVersion){
   const std::regex version("[0-9]{2}\\.[0-9]{3}\\.[0-9]{3}"),digest("[0-9a-f]{64}");
-  if(!std::regex_match(baseContentVersion,version))throw std::runtime_error("INVALID_NATIVE_UPDATE");
-  auto installed=readJson("/user/appmeta/"+std::string(nativeTitleId)+"/param.json");
-  if(installed["titleId"].string()!=nativeTitleId||installed["contentId"].string()!=nativeContentId||installed["contentVersion"].string()!=baseContentVersion)throw std::runtime_error("NATIVE_UPDATE_BASE_MISMATCH");
-  auto release=client.request("POST","/api/v1/device/native-updates/install",Json::object({{"baseContentVersion",baseContentVersion}}));
+  const auto* identity=nativeUpdateIdentity(titleId);if(!identity||!std::regex_match(baseContentVersion,version))throw std::runtime_error("INVALID_NATIVE_UPDATE");
+  auto installed=readJson("/user/appmeta/"+titleId+"/param.json");
+  if(installed["titleId"].string()!=identity->titleId||installed["contentId"].string()!=identity->contentId||installed["contentVersion"].string()!=baseContentVersion)throw std::runtime_error("NATIVE_UPDATE_BASE_MISMATCH");
+  auto release=client.request("POST","/api/v1/device/native-updates/install",Json::object({{"titleId",titleId},{"baseContentVersion",baseContentVersion}}));
   auto valid=[&](const Json& value,bool assets){
-    if(value["titleId"].string()!=nativeTitleId||value["contentId"].string()!=nativeContentId||value["title"].string()!=nativeTitle||value["baseContentVersion"].string()!=baseContentVersion||!std::regex_match(value["contentVersion"].string(),version)||value["contentVersion"].string()<=baseContentVersion||value["revision"].number()<=0||value["size"].number()<=0||!std::regex_match(value["sha256"].string(),digest))throw std::runtime_error("INVALID_NATIVE_UPDATE");
+    if(value["titleId"].string()!=identity->titleId||value["contentId"].string()!=identity->contentId||value["title"].string()!=identity->name||value["baseContentVersion"].string()!=baseContentVersion||!std::regex_match(value["contentVersion"].string(),version)||value["contentVersion"].string()<=baseContentVersion||value["revision"].number()<=0||value["size"].number()<=0||!std::regex_match(value["sha256"].string(),digest))throw std::runtime_error("INVALID_NATIVE_UPDATE");
     if(assets&&(value["packageUrl"].string().empty()||value["iconUrl"].string().empty()))throw std::runtime_error("INVALID_NATIVE_UPDATE");
   };
   valid(release,false);Json descriptor=release;std::string packageUrl,iconUrl,source=state_["serverUrl"].string();
@@ -342,12 +355,12 @@ Json Agent::nativeAppUpdate(const std::string& baseContentVersion){
     if(!std::regex_match(release["activationToken"].string(),digest))throw std::runtime_error("INVALID_NATIVE_UPDATE");
     Json masterConfig=Json::object({{"serverUrl",release["masterUrl"]},{"allowInsecureLan",false},{"caBundle",config_["caBundle"]}});Client master(masterConfig);master.credential=release["activationToken"].string();descriptor=master.request("POST","/api/v1/native-updates/activate",Json::object());valid(descriptor,true);
     if(descriptor["contentVersion"].string()!=release["contentVersion"].string()||descriptor["revision"].number()!=release["revision"].number()||descriptor["sha256"].string()!=release["sha256"].string())throw std::runtime_error("INVALID_NATIVE_UPDATE");
-    const auto package=descriptor["packageUrl"].string(),icon=descriptor["iconUrl"].string();std::smatch match;const std::regex masterPackage("^/api/v1/native-updates/grants/([0-9a-f]{64})/"+std::string(nativeTitleId)+"/packages/"+descriptor["sha256"].string()+"\\.pkg$");if(!std::regex_match(package,match,masterPackage)||icon!="/api/v1/native-updates/grants/"+match[1].str()+"/"+nativeTitleId+"/icon.png")throw std::runtime_error("INVALID_NATIVE_UPDATE");
+    const auto package=descriptor["packageUrl"].string(),icon=descriptor["iconUrl"].string();std::smatch match;const std::regex masterPackage("^/api/v1/native-updates/grants/([0-9a-f]{64})/"+titleId+"/packages/"+descriptor["sha256"].string()+"\\.pkg$");if(!std::regex_match(package,match,masterPackage)||icon!="/api/v1/native-updates/grants/"+match[1].str()+"/"+titleId+"/icon.png")throw std::runtime_error("INVALID_NATIVE_UPDATE");
     packageUrl=master.nativeUpdateUrl(package);iconUrl=master.nativeUpdateUrl(icon);source=release["masterUrl"].string();
-  }else{valid(descriptor,true);const auto package=descriptor["packageUrl"].string(),icon=descriptor["iconUrl"].string();if(package!="/api/v1/native-updates/"+std::string(nativeTitleId)+"/"+std::to_string(descriptor["revision"].number())+"/packages/"+descriptor["sha256"].string()+".pkg"||icon!="/api/v1/native-updates/"+std::string(nativeTitleId)+"/icon.png")throw std::runtime_error("INVALID_NATIVE_UPDATE");packageUrl=client.nativeUpdateUrl(package);iconUrl=client.nativeUpdateUrl(icon);}
+  }else{valid(descriptor,true);const auto package=descriptor["packageUrl"].string(),icon=descriptor["iconUrl"].string();if(package!="/api/v1/native-updates/"+titleId+"/"+std::to_string(descriptor["revision"].number())+"/packages/"+descriptor["sha256"].string()+".pkg"||icon!="/api/v1/native-updates/"+titleId+"/icon.png")throw std::runtime_error("INVALID_NATIVE_UPDATE");packageUrl=client.nativeUpdateUrl(package);iconUrl=client.nativeUpdateUrl(icon);}
   auto marker=beneath("/data",".ps5library/staging/app-update-"+descriptor["sha256"].string()+"/native.json");auto decision=inspectNativeSubmission(marker,descriptor["sha256"].string(),source,state_["consoleId"].string(),false);
   if(decision==NativeSubmissionDecision::Uncertain)throw std::runtime_error("NATIVE_SUBMISSION_UNCERTAIN");
-  if(decision==NativeSubmissionDecision::Submit)submitNativeDownload(marker,descriptor["sha256"].string(),source,state_["consoleId"].string(),packageUrl,nativeContentId,nativeTitle,iconUrl);
-  notify("Update "+descriptor["contentVersion"].string()+" started in Downloads");return Json::object({{"accepted",true},{"contentVersion",descriptor["contentVersion"]}});
+  if(decision==NativeSubmissionDecision::Submit)submitNativeDownload(marker,descriptor["sha256"].string(),source,state_["consoleId"].string(),packageUrl,identity->contentId,identity->name,iconUrl);
+  notify(std::string(identity->name)+" "+descriptor["contentVersion"].string()+" started in Downloads");return Json::object({{"accepted",true},{"titleId",titleId},{"contentVersion",descriptor["contentVersion"]}});
 }
 }

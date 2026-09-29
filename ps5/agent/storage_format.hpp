@@ -29,4 +29,6 @@ private:
   struct Shared;std::shared_ptr<Shared> shared_;Probe probe_;Busy busy_;Format format_;Progress progress_;Notice notice_;
 };
 StorageFormatCoordinator& storageFormatCoordinator();
+std::string applyUsbHighSpeedStoragePatch();
+std::string applyExternalFpkgStoragePatch();
 }

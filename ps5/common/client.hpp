@@ -10,6 +10,7 @@
 
 namespace ps5library {
 inline constexpr uint16_t localAgentPort=37951;
+inline constexpr uint16_t nativeUpdateBridgePort=37952;
 inline constexpr const char* localAgentCredential="ps5library-local-v1";
 inline constexpr const char* localAgentFrontendSocket="/download0/ps5library/agent.sock";
 inline std::string localHex(std::string_view value){static constexpr char digits[]="0123456789abcdef";std::string result;result.reserve(value.size()*2);for(unsigned char c:value){result+=digits[c>>4];result+=digits[c&15];}return result;}
@@ -38,14 +39,16 @@ bool shadowMountPkgBackportSupported(const Json& version);
 bool shadowMountDeletionSupported(const Json& version);
 bool shadowMountMoveSupported(const Json& version);
 bool shadowMountRefreshDue(int64_t checkedMs,int64_t nowMs,bool supported);
-bool externalFpkgAttestation(const fs::path& marker,int pid);
 std::string discoveredStorageName(const std::string& path,const std::string& device,const std::string& type);
 bool ps5ManagedUsbStorage(const std::string& path,const std::string& device,const std::string& type);
+bool exactStorageMount(const std::string& path,const std::string& mountedAt);
 Json shadowMountRequest(unsigned port,const std::string& route,const Json& body=Json::object(),const std::function<bool()>& cancelled={});
 Json shadowMountScanRoots(const Json& settings,const Json& version);
 bool verifyBackport(const fs::path& folder,const Json& backport);
 Json prepareBackport(class Client& client,const fs::path& root,const Json& scanRoots,const Json& task,const std::function<void(int64_t,int64_t)>& progress);
 bool nativeDownloadsAvailable();
+bool nativeUpdateBridgeAvailable();
+void setNativeUpdateBridgeAvailable(bool available);
 std::mutex& nativeApiMutex();
 bool nativeMovesAvailable();
 class NativeSubmissionRejected final:public std::runtime_error {public:using std::runtime_error::runtime_error;};
@@ -62,6 +65,8 @@ bool sameStorageDevice(const fs::path& path,const fs::path& storageRoot);
 bool nativePackageRegistered(const Json& task);
 void uninstallNativeTitle(const std::string& titleId);
 int nativeMoveStorageType(const std::string& path,const std::string& device,const std::string& filesystem);
+int nativeTitleStorageType(const std::string& titleId,const std::string& contentId);
+int nativeMoveState();
 bool nativeMoveTargetAvailable(const Json& volumes,int sourceStorageType);
 fs::path observedNativePackage(const Json& installed,const Json& volumes);
 bool verifiedReceiptFile(const fs::path& file,const Json& receipt,std::unordered_map<std::string,std::pair<fs::file_time_type,std::string>>& cache,const std::function<bool()>& cancelled);
@@ -146,7 +151,7 @@ public:
   Json localSnapshot();
   Json localDelete(const std::string& titleId,const std::string& storageId);
   Json localMove(const std::string& titleId,const std::string& sourceStorageId,const std::string& storageId);
-  Json nativeAppUpdate(const std::string& baseContentVersion);
+  Json nativeAppUpdate(const std::string& titleId,const std::string& baseContentVersion);
   Json heartbeat();
   Json tick();
   Json status() const { return state_; }

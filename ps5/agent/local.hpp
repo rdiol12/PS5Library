@@ -1,5 +1,6 @@
 #pragma once
 #include "../common/client.hpp"
+#include "../common/version.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
@@ -29,6 +30,7 @@ template<class Send> inline void notifyLocalAgentConnection(bool& notified,Send 
 inline bool localUnhex(std::string_view value,std::string& result){if(value.empty()||value.size()>4096||value.size()%2)return false;result.clear();result.reserve(value.size()/2);auto digit=[](char c)->int{if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f')return c-'a'+10;return -1;};for(size_t i=0;i<value.size();i+=2){auto high=digit(value[i]),low=digit(value[i+1]);if(high<0||low<0)return false;auto c=static_cast<char>((high<<4)|low);if(static_cast<unsigned char>(c)<0x20||c==0x7f)return false;result+=c;}return true;}
 
 inline bool localTitleId(std::string_view value){return value.size()==9&&(value.substr(0,4)=="PPSA"||value.substr(0,4)=="CUSA")&&std::all_of(value.begin()+4,value.end(),[](char c){return c>='0'&&c<='9';});}
+inline bool localContentVersion(std::string_view value){if(value.size()!=10)return false;for(size_t i=0;i<value.size();i++)if(i==2||i==6?value[i]!='.':value[i]<'0'||value[i]>'9')return false;return true;}
 inline bool localFrontendActive(const fs::path& shared){
   int fd=open((shared/"frontend.lock").c_str(),O_RDONLY|O_NOFOLLOW|O_NONBLOCK);if(fd<0)return false;struct File {int fd;~File(){close(fd);}} file{fd};struct stat status{};if(fstat(fd,&status)!=0||!S_ISREG(status.st_mode))return false;
   if(flock(fd,LOCK_EX|LOCK_NB)==0){flock(fd,LOCK_UN);return false;}return errno==EWOULDBLOCK||errno==EAGAIN;
@@ -39,12 +41,19 @@ inline fs::path localAgentSharedPath(const fs::path& sandboxRoot="/mnt/sandbox")
   return selected;
 }
 inline fs::path localAgentBackingSocketPath(const fs::path& sandboxRoot="/mnt/sandbox"){auto shared=localAgentSharedPath(sandboxRoot);return shared.empty()?fs::path():shared/"agent.sock";}
+inline LocalAgentRequest parseNativeUpdateBridgeRequest(std::string_view request){
+  LocalAgentRequest result;const auto headersEnd=request.find("\r\n\r\n"),lineEnd=request.find("\r\n");if(headersEnd==std::string_view::npos||lineEnd==std::string_view::npos)return result;
+  const auto line=request.substr(0,lineEnd),prefix=std::string_view("GET /api/v1/agent/home-update/");if(line.rfind(prefix,0)!=0||line.size()!=prefix.size()+9+1+10+9||line.substr(line.size()-9)!=" HTTP/1.1")return result;
+  const auto title=line.substr(prefix.size(),9),version=line.substr(prefix.size()+10,10);if(line[prefix.size()+9]!='/'||!nativeUpdateIdentity(title)||!localContentVersion(version))return result;
+  result.action=LocalAgentAction::AppUpdate;result.titleId=title;result.version=version;return result;
+}
+inline std::string nativeNoUpdateXml(std::string_view titleId){const auto* identity=nativeUpdateIdentity(titleId);if(!identity)return {};return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><title_patch ac_set_rev=\"0\" nptitleid=\""+std::string(identity->titleId)+"_00\" schema_ver=\"1.0\"><app_tag content_id=\""+identity->contentId+"\" name=\""+identity->name+"\" revision=\"0\"></app_tag></title_patch>";}
 inline LocalAgentRequest parseLocalAgentRequest(std::string_view request) {
   LocalAgentRequest result;const auto headersEnd=request.find("\r\n\r\n"),lineEnd=request.find("\r\n");
   if(headersEnd==std::string_view::npos||lineEnd==std::string_view::npos||request.find("\r\nAuthorization: Bearer "+std::string(localAgentCredential)+"\r\n")==std::string_view::npos)return result;
   const auto line=request.substr(0,lineEnd);const auto space=line.find(' '),last=line.rfind(' ');if(space==std::string_view::npos||last==space||line.substr(last)!=" HTTP/1.1")return result;
   const auto method=line.substr(0,space);auto path=line.substr(space+1,last-space-1);if(path=="/api/v1/agent/snapshot"&&method=="GET")result.action=LocalAgentAction::Snapshot;else if(path=="/api/v1/agent/online"&&method=="POST")result.action=LocalAgentAction::Online;else if(path=="/api/v1/agent/disconnect"&&method=="POST")result.action=LocalAgentAction::Disconnect;else if(path=="/api/v1/agent/close"&&method=="POST")result.action=LocalAgentAction::Close;
-  else if(method=="POST"&&path.rfind("/api/v1/agent/app-update/",0)==0){auto value=path.substr(25);bool valid=value.size()==10;for(size_t i=0;valid&&i<value.size();i++)valid=i==2||i==6?value[i]=='.':value[i]>='0'&&value[i]<='9';if(valid){result.action=LocalAgentAction::AppUpdate;result.version=value;}}
+  else if(method=="POST"&&path.rfind("/api/v1/agent/app-update/",0)==0){auto value=path.substr(25);const auto slash=value.find('/');auto title=value.substr(0,slash);if(slash!=std::string_view::npos)value=value.substr(slash+1);if(slash==9&&nativeUpdateIdentity(title)&&localContentVersion(value)){result.action=LocalAgentAction::AppUpdate;result.titleId=title;result.version=value;}}
   else if(method=="POST"&&(path.rfind("/api/v1/agent/connect/",0)==0||path.rfind("/api/v1/agent/offline/",0)==0)){const bool offline=path.rfind("/api/v1/agent/offline/",0)==0;auto rest=path.substr(22);if(rest.size()>2&&rest[1]=='/'&&(rest[0]=='0'||rest[0]=='1')&&localUnhex(rest.substr(2),result.serverUrl)){result.action=offline?LocalAgentAction::Offline:LocalAgentAction::Connect;result.allowInsecureLan=rest[0]=='1';}}
   else {
     const std::string_view media="/api/v1/agent/media/",titles="/api/v1/agent/titles/",storage="/api/v1/agent/storage/";
@@ -71,7 +80,7 @@ inline void addLocalMedia(Json snapshot,std::unordered_map<std::string,std::pair
 }
 
 class LocalAgentServer {
-  int listener_=-1;uint16_t port_=0;in_addr_t boundAddress_=0;fs::path socketPath_;dev_t socketDevice_=0;ino_t socketInode_=0;
+  int listener_=-1;uint16_t port_=0;in_addr_t boundAddress_=0;bool fixedAddress_=false;fs::path socketPath_;dev_t socketDevice_=0;ino_t socketInode_=0;
   void ready(){if(listen(listener_,4)!=0){close(listener_);listener_=-1;throw std::runtime_error("Local agent listen failed");}auto flags=fcntl(listener_,F_GETFL,0);if(flags<0||fcntl(listener_,F_SETFL,flags|O_NONBLOCK)!=0){close(listener_);listener_=-1;throw std::runtime_error("Local agent socket setup failed");}}
   static bool sendAll(int peer,const char* value,size_t size){size_t offset=0;while(offset<size){
 #ifdef MSG_NOSIGNAL
@@ -88,8 +97,8 @@ class LocalAgentServer {
     char buffer[64*1024];int64_t remaining=count;while(remaining>0){auto readBytes=read(fd,buffer,static_cast<size_t>(std::min<int64_t>(sizeof(buffer),remaining)));if(readBytes<=0)return;if(!sendAll(peer,buffer,static_cast<size_t>(readBytes)))return;remaining-=readBytes;}
   }
 public:
-  explicit LocalAgentServer(uint16_t port=localAgentPort){
-    listener_=socket(AF_INET,SOCK_STREAM,0);if(listener_<0)throw std::runtime_error("Local agent socket unavailable");int reuse=1;setsockopt(listener_,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));sockaddr_in address{};address.sin_family=AF_INET;address.sin_port=htons(port);auto host=localAgentAddress();if(inet_pton(AF_INET,host.c_str(),&address.sin_addr)!=1){close(listener_);listener_=-1;throw std::runtime_error("Local agent address unavailable");}
+  explicit LocalAgentServer(uint16_t port=localAgentPort,const char* fixedHost=nullptr){
+    listener_=socket(AF_INET,SOCK_STREAM,0);if(listener_<0)throw std::runtime_error("Local agent socket unavailable");int reuse=1;setsockopt(listener_,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));sockaddr_in address{};address.sin_family=AF_INET;address.sin_port=htons(port);fixedAddress_=fixedHost!=nullptr;auto host=fixedAddress_?std::string(fixedHost):localAgentAddress();if(inet_pton(AF_INET,host.c_str(),&address.sin_addr)!=1){close(listener_);listener_=-1;throw std::runtime_error("Local agent address unavailable");}
 #ifdef PS5
     address.sin_len=sizeof(address);
 #endif
@@ -101,11 +110,13 @@ public:
     address.sun_len=static_cast<unsigned char>(size);
 #endif
     if(bind(listener_,reinterpret_cast<sockaddr*>(&address),size)!=0||chmod(value.c_str(),0666)!=0||lstat(value.c_str(),&existing)!=0){close(listener_);listener_=-1;unlink(value.c_str());throw std::runtime_error("Local agent socket unavailable");}socketDevice_=existing.st_dev;socketInode_=existing.st_ino;try{ready();}catch(...){unlink(value.c_str());throw;}}
-  bool available()const{if(socketPath_.empty()){try{in_addr address{};return listener_>=0&&inet_pton(AF_INET,localAgentAddress().c_str(),&address)==1&&address.s_addr==boundAddress_;}catch(...){return false;}}struct stat status{};return listener_>=0&&lstat(socketPath_.c_str(),&status)==0&&S_ISSOCK(status.st_mode)&&status.st_dev==socketDevice_&&status.st_ino==socketInode_;}
+  bool available()const{if(socketPath_.empty()){if(fixedAddress_)return listener_>=0;try{in_addr address{};return listener_>=0&&inet_pton(AF_INET,localAgentAddress().c_str(),&address)==1&&address.s_addr==boundAddress_;}catch(...){return false;}}struct stat status{};return listener_>=0&&lstat(socketPath_.c_str(),&status)==0&&S_ISSOCK(status.st_mode)&&status.st_dev==socketDevice_&&status.st_ino==socketInode_;}
   ~LocalAgentServer(){if(listener_>=0)close(listener_);if(available())unlink(socketPath_.c_str());}LocalAgentServer(const LocalAgentServer&)=delete;LocalAgentServer& operator=(const LocalAgentServer&)=delete;uint16_t port()const{return port_;}
-  bool poll(const std::function<Json(const LocalAgentRequest&)>& handle,const std::function<fs::path(const LocalAgentRequest&)>& file={},const std::function<void()>& connected={}){
+  bool poll(const std::function<Json(const LocalAgentRequest&)>& handle,const std::function<fs::path(const LocalAgentRequest&)>& file={},const std::function<void()>& connected={},const std::function<void(const LocalAgentRequest&)>& nativeUpdate={}){
     sockaddr_in peerAddress{};socklen_t peerSize=sizeof(peerAddress);int peer=socketPath_.empty()?accept(listener_,reinterpret_cast<sockaddr*>(&peerAddress),&peerSize):accept(listener_,nullptr,nullptr);if(peer<0){if(errno==EAGAIN||errno==EWOULDBLOCK)return false;throw std::runtime_error("Local agent accept failed");}struct Peer {int fd;~Peer(){close(fd);}} guard{peer};if(socketPath_.empty()&&(peerAddress.sin_family!=AF_INET||peerAddress.sin_addr.s_addr!=boundAddress_))return true;auto flags=fcntl(peer,F_GETFL,0);if(flags<0||fcntl(peer,F_SETFL,flags&~O_NONBLOCK)!=0)return true;timeval timeout{10,0};setsockopt(peer,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(peer,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
-    constexpr size_t requestLimit=8192;std::string request;char bytes[1024];while(request.size()<requestLimit&&request.find("\r\n\r\n")==std::string::npos){auto count=recv(peer,bytes,std::min(sizeof(bytes),requestLimit-request.size()),0);if(count<=0)break;request.append(bytes,static_cast<size_t>(count));}const auto parsed=parseLocalAgentRequest(request);
+    constexpr size_t requestLimit=8192;std::string request;char bytes[1024];while(request.size()<requestLimit&&request.find("\r\n\r\n")==std::string::npos){auto count=recv(peer,bytes,std::min(sizeof(bytes),requestLimit-request.size()),0);if(count<=0)break;request.append(bytes,static_cast<size_t>(count));}
+    if(nativeUpdate){auto update=parseNativeUpdateBridgeRequest(request);if(update.action!=LocalAgentAction::AppUpdate){sendAll(peer,"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");return true;}auto payload=nativeNoUpdateXml(update.titleId);auto response="HTTP/1.1 200 OK\r\nContent-Type: application/xml; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: "+std::to_string(payload.size())+"\r\n\r\n"+payload;if(sendAll(peer,response))nativeUpdate(update);return true;}
+    const auto parsed=parseLocalAgentRequest(request);
     if(parsed.action==LocalAgentAction::Media&&file)try{sendFile(peer,file(parsed),parsed);return true;}catch(...){sendAll(peer,"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");return true;}
     int status=parsed.action==LocalAgentAction::Invalid?404:200;Json body;try{body=status==200?handle(parsed):Json::object({{"error","Not found"}});}catch(const std::exception& e){status=409;body=Json::object({{"error",e.what()}});}catch(...){status=503;body=Json::object({{"error","Local action unavailable"}});}auto payload=body.dump();if(payload.size()>12*1024*1024){status=503;payload=Json::object({{"error","Local scan too large"}}).dump();}const char* reason=status==200?"OK":status==404?"Not Found":status==409?"Conflict":"Service Unavailable";if(sendAll(peer,"HTTP/1.1 "+std::to_string(status)+" "+reason+"\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: "+std::to_string(payload.size())+"\r\n\r\n"+payload)&&status==200&&connected)connected();return true;
   }

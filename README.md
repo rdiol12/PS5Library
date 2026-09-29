@@ -11,18 +11,18 @@ PS5Library is a controller-first native PS5 storefront for locally available tit
 
 ## Release files
 
-Version 0.2.54 provides:
+Version 0.2.55 provides:
 
-- `PS5Library-0.2.54.pkg` — complete native storefront package, content version `01.043.000`.
-- `ps5library-agent-0.2.54.elf` — matching console agent.
+- `PS5Library-0.2.55.pkg` — complete native storefront package, content version `01.044.000`.
+- `ps5library-agent-0.2.55.elf` — matching console agent.
 
-The PKG is a complete base package and does not require an earlier PS5Library installation. It passed structural, metadata, and package-integrity checks. This exact base build still needs a physical-console install and launch test, so the release remains an engineering preview.
+The PKG is a complete base package and does not require an earlier PS5Library installation. Its title/content metadata and package integrity are verified. It is a homebrew FPKG rather than a Sony submission-format package, and this exact base build still needs a physical-console install and launch test, so the release remains an engineering preview.
 
 ## Offline installation
 
 1. Start your jailbreak and the compatible FPKG runtime for your firmware.
-2. Install `PS5Library-0.2.54.pkg` with your runtime's package installer.
-3. Load `ps5library-agent-0.2.54.elf` with Payload Manager or another compatible ELF loader.
+2. Install `PS5Library-0.2.55.pkg` with your runtime's package installer.
+3. Load `ps5library-agent-0.2.55.elf` with Payload Manager or another compatible ELF loader.
 4. Open PS5Library from the Home screen.
 5. Open Settings and turn **Offline mode** on.
 6. Leave PS5Library open until the native notification says **PS5Library Agent connected**.
