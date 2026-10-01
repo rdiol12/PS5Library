@@ -1,5 +1,10 @@
 import Foundation
 
+let libraryNode=try JSONDecoder().decode(LibraryNodeServiceInfo.self,from:Data(#"{"service":"ps5library-node","apiVersion":1}"#.utf8))
+assert(libraryNode.compatible)
+let wrongService=try JSONDecoder().decode(LibraryNodeServiceInfo.self,from:Data(#"{"service":"ps5library-community-master","apiVersion":1}"#.utf8))
+assert(!wrongService.compatible)
+
 func game(_ id: String, _ extra: String = "", releases: String = "[]") throws -> Game {
     try JSONDecoder().decode(Game.self, from: Data("""
     {"id":"\(id)","title":"\(id)","titleId":"BREW05002","coverUrl":"/api/v1/artwork/a/cover","heroUrl":"/api/v1/artwork/a/hero","releases":\(releases)\(extra)}
@@ -11,20 +16,34 @@ let older = try game("older", ",\"saved\":true,\"addedAt\":\"2026-09-01\",\"genr
 let newer = try game("newer", ",\"addedAt\":\"2026-09-17\",\"recentlyUpdated\":true", releases: """
 [{"id":"dlc","version":"1","kind":"DLC","sources":[{"id":"source","name":"Local","format":"folder"}],"artifacts":[{"id":"artifact"}]}]
 """)
+let dump = try game("dump", releases: """
+[{"id":"dump","version":"1","kind":"BASE","sources":[{"id":"source","name":"Local","format":"folder"}],"artifacts":[]}]
+""")
 let legacy = try game("legacy")
-let games = [older, legacy, newer]
+let games = [older, legacy, newer, dump]
 assert(GameCollection.saved.select(games).map(\.id) == ["older"])
-assert(GameCollection.server.select(games).map(\.id) == ["older"])
-assert(GameCollection.recent.select(games).map(\.id) == ["newer", "older"])
+assert(GameCollection.server.rawValue == "Server Library")
+assert(GameCollection.server.select(games).map(\.id) == ["dump", "older"])
+assert(dump.serverAvailable && !dump.serverCached)
+assert(GameCollection.recent.select(games).map(\.id) == ["newer", "older", "dump"])
 assert(GameCollection.updated.select(games).map(\.id) == ["newer"])
 assert(GameCollection.all.select(games, query: "brew05002", genre: "Action").map(\.id) == ["older"])
-assert(legacy.saved == nil && !legacy.serverReady)
+assert(legacy.saved == nil && !legacy.serverAvailable && !legacy.serverCached)
 let inventory = try JSONDecoder().decode([LibraryEntry].self, from: Data(#"[{"releaseId":"base","storageId":"usb0","state":"READY_ON_PS5","registered":true},{"releaseId":"dlc","storageId":"internal","state":"MISSING","registered":false}]"#.utf8))
 assert(older.ready(in:inventory, storageId:"usb0"))
 assert(!older.ready(in:inventory, storageId:"internal"))
 assert(!newer.ready(in:inventory))
 let progress = try JSONDecoder().decode(BuildProgress.self, from: Data(#"{"package":{"state":"BUILDING"}}"#.utf8))
 assert(progress.stage == nil)
+let extracting = try JSONDecoder().decode(BuildProgress.self, from: Data(#"{"stage":"Extracting archive","completedStages":0,"totalStages":7,"extraction":{"completedBytes":25,"totalBytes":100},"package":{"method":"FPKG","state":"EXTRACTING"},"fakelib":{"state":"WAITING"}}"#.utf8))
+assert(extracting.bytes?.completedBytes == 25 && extracting.fraction == 0.25)
+assert(extracting.package?.method == "FPKG" && extracting.fakelib?.state == "WAITING")
+let staging = try JSONDecoder().decode(BuildProgress.self, from: Data(#"{"stage":"Copying to staging","staging":{"completedBytes":75,"totalBytes":100}}"#.utf8))
+assert(staging.bytes?.completedBytes == 75 && staging.fraction == 0.75)
+let package = try JSONDecoder().decode(BuildProgress.self, from: Data(#"{"stage":"Building package","completedStages":3,"totalStages":7,"operation":{"completedBytes":50,"totalBytes":200},"package":{"method":"FPKG","state":"BUILDING"}}"#.utf8))
+assert(package.bytes?.completedBytes == 50 && package.fraction == 0.25)
+let failedBuild = Job(id:"failed",title:"Game",releaseId:"release",kind:"BUILD",state:"ERROR",consoleId:nil,storageId:nil,downloadedBytes:0,totalBytes:nil,speedBytesPerSecond:0,etaSeconds:nil,error:"BUILD_FAILED",queuePosition:nil,location:nil,progress:package)
+assert(failedBuild.displayStage == "Preparation failed")
 let profile = try JSONDecoder().decode(Profile.self, from: Data(#"{"username":"Owner","role":"MEMBER","avatarUrl":null,"consoles":[{"id":"one","name":"PS5","trophySummary":null,"trophySyncedAt":null,"games":[]}]}"#.utf8))
 assert(profile.consoles[0].trophySummary == nil)
 let saveProfile = try JSONDecoder().decode(Profile.self,from:Data(#"{"username":"Owner","role":"MEMBER","avatarUrl":null,"consoles":[{"id":"one","name":"PS5","trophySummary":null,"trophySyncedAt":null,"games":[],"saveData":[{"localUserId":"12345678","platform":"PS5","gameTitleId":"PPSA10001","saveTitleId":"PPSA10000","directory":"autosave","title":"Current Game","subtitle":"Autosave","detail":"Mission 7","sizeBytes":4194304,"modifiedAt":1789237800}]}]}"#.utf8))
@@ -37,22 +56,28 @@ let saveRequest=try JSONSerialization.jsonObject(with:JSONEncoder().encode(SaveB
 assert(saveRequest["localUserId"] as? String == "12345678" && saveRequest["platform"] as? String == "PS5" && saveRequest["directory"] as? String == "autosave")
 let summary = try JSONDecoder().decode(TrophySummary.self, from: Data(#"{"modifiedAt":1741335221,"earnedTrophies":{"platinum":0,"gold":1,"silver":2,"bronze":4}}"#.utf8))
 assert(summary.earnedTrophies.bronze == 4)
-let snapshot = Snapshot(games:games,consoles:[],jobs:[],featured:nil,library:inventory,consoleId:"console")
+let snapshot = Snapshot(games:games,consoles:[],jobs:[],library:inventory,consoleId:"console")
 let restored = try JSONDecoder().decode(Snapshot.self,from:JSONEncoder().encode(snapshot))
 assert(GameCollection.saved.select(restored.games).map(\.id) == ["older"])
 assert(restored.games[0].ready(in:restored.library))
-let partialRefresh=RefreshBatch(games:nil,consoles:nil,jobs:[],featured:nil,installations:nil)
+let partialRefresh=RefreshBatch(games:nil,consoles:nil,jobs:[],installations:nil)
 assert(partialRefresh.reachable)
 let partiallyUpdated=partialRefresh.applying(to:snapshot)
 assert(partiallyUpdated.games.map(\.id)==snapshot.games.map(\.id) && partiallyUpdated.jobs.isEmpty)
-assert(!RefreshBatch(games:nil,consoles:nil,jobs:nil,featured:nil,installations:nil).reachable)
+assert(!RefreshBatch(games:nil,consoles:nil,jobs:nil,installations:nil).reachable)
 let job = try JSONDecoder().decode(Job.self,from:Data(#"{"id":"job","title":"Build","releaseId":"base","kind":"BUILD","state":"BUILDING","consoleId":null,"storageId":null,"downloadedBytes":0,"totalBytes":null,"speedBytesPerSecond":0,"etaSeconds":null,"error":null,"progress":{"package":{"state":"BUILDING"},"fakelib":{"state":"SEPARATED"}}}"#.utf8))
 assert(job.progress != nil && job.progress?.stage == nil)
+assert(job.displayStage == "Preparing package")
+let events = try JSONDecoder().decode(Events.self,from:Data(#"{"type":"events","events":[{"id":1,"jobId":"job","state":"BUILDING","progress":{"downloadedBytes":25,"totalBytes":100,"speedBytesPerSecond":5,"etaSeconds":15,"conversion":{"stage":"Extracting archive","extraction":{"completedBytes":25,"totalBytes":100}}},"createdAt":"2026-10-01T00:00:00Z"}]}"#.utf8))
+let updatedJob=job.applying(events.events[0])
+assert(updatedJob.downloadedBytes == 25 && updatedJob.totalBytes == 100 && updatedJob.speedBytesPerSecond == 5 && updatedJob.etaSeconds == 15)
+assert(updatedJob.progress?.stage == "Extracting archive" && updatedJob.progress?.fraction == 0.25)
+assert(updatedJob.displayStage == "Extracting archive")
 let failedJob = try JSONDecoder().decode(Job.self,from:Data(#"{"id":"failed","title":"Build","releaseId":"base","kind":"BUILD","state":"ERROR","consoleId":null,"storageId":null,"downloadedBytes":0,"totalBytes":null,"speedBytesPerSecond":0,"etaSeconds":null,"error":"CORRUPT_INPUT","location":"Server cache / artifacts/game.pkg","progress":null}"#.utf8))
 assert(failedJob.retryable && failedJob.dismissible && failedJob.location?.hasSuffix("game.pkg")==true)
 let notice = try JSONDecoder().decode(Notice.self,from:Data(#"{"id":"notice","consoleId":null,"code":"TEST_NOTICE","message":"Waiting for console","createdAt":"2026-09-17T12:00:00.000Z"}"#.utf8))
 assert(notice.message == "Waiting for console")
-let community = try JSONDecoder().decode(CommunityStatus.self,from:Data(#"{"configured":true,"masterUrl":"https://community.example","displayName":"Family Library","serverId":"srv_1234567890abcdef","state":"BANNED","userCode":null,"verificationUri":null,"verificationUriComplete":null,"expiresAt":null,"banReason":"Operator test","error":null,"updatedAt":"2026-09-21T12:00:00Z"}"#.utf8))
+let community = try JSONDecoder().decode(CommunityStatus.self,from:Data(#"{"configured":true,"displayName":"Family Library","serverId":"srv_1234567890abcdef","state":"BANNED","userCode":null,"verificationUriComplete":null,"expiresAt":null,"banReason":"Operator test","error":null,"updatedAt":"2026-09-21T12:00:00Z"}"#.utf8))
 assert(community.state == "BANNED" && community.serverId == "srv_1234567890abcdef" && community.banReason == "Operator test")
 let communityRequest = try JSONSerialization.jsonObject(with:JSONEncoder().encode(CommunityRequest(displayName:"Family Library"))) as! [String:Any]
 assert(communityRequest["displayName"] as? String == "Family Library")

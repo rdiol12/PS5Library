@@ -15,8 +15,7 @@ private struct CinematicBackdrop:View {
     var body:some View {
         ZStack {
             appBackground
-            RadialGradient(colors:[accent.opacity(0.14),.clear],center:.topTrailing,startRadius:20,endRadius:430)
-            LinearGradient(colors:[.clear,.black.opacity(0.22)],startPoint:.top,endPoint:.bottom)
+            LinearGradient(colors:[Color(red:0.035,green:0.061,blue:0.094),appBackground,.black.opacity(0.2)],startPoint:.topTrailing,endPoint:.bottomLeading)
         }.ignoresSafeArea()
     }
 }
@@ -85,13 +84,7 @@ struct ArtworkView:View {
 }
 struct RootView:View {
     @EnvironmentObject var store:Store
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var query=""
     @State private var addAccount=false
-    @State private var collection=GameCollection.recent
-    @State private var genre=""
-    private var genres:[String]{Array(Set(store.data.games.flatMap{$0.genres ?? []})).sorted()}
-    private var visibleGames:[Game]{(query.isEmpty ? collection:GameCollection.all).select(store.data.games,query:query,genre:genre)}
     var body:some View {
         Group {if store.account==nil{SignIn()}else{tabs}}
             .sheet(isPresented:$addAccount){SignIn()}
@@ -99,71 +92,14 @@ struct RootView:View {
     }
     private var tabs:some View {
         TabView {
-            discover.tabItem{Label("Discover",systemImage:"sparkles")}
-            NavigationStack{LibraryView()}.tabItem{Label("Library",systemImage:"square.grid.2x2")}
+            NavigationStack{LibraryView()}.tabItem{Label("Library",systemImage:"rectangle.stack.fill")}
             NavigationStack{DownloadsView()}.tabItem{Label("Downloads",systemImage:"arrow.down.circle")}
-            NavigationStack{ConsolesView().navigationTitle("My PS5s")}.tabItem{Label("My PS5",systemImage:"gamecontroller")}
+            NavigationStack{ProfileView()}.tabItem{Label("My PS5",systemImage:"gamecontroller")}
             settings.tabItem{Label("Settings",systemImage:"gearshape")}
         }.background(CinematicBackdrop())
             .toolbarBackground(appBackground.opacity(0.98),for:.tabBar)
             .toolbarBackground(.visible,for:.tabBar)
             .toolbarColorScheme(.dark,for:.tabBar)
-    }
-    private var discover:some View {
-        NavigationStack {
-            ScrollView {
-                LazyVStack(alignment:.leading,spacing:24) {
-                    BrandMark()
-                    if store.offline{OfflineBanner(text:"Server offline - showing the last synced catalog")}
-                    if query.isEmpty,let hero=store.data.featured,let game=store.data.games.first(where:{$0.id==hero.gameId}) {
-                        NavigationLink(value:game) {
-                            ZStack(alignment:.bottomLeading) {
-                                ArtworkView(path:hero.heroUrl ?? game.heroUrl)
-                                LinearGradient(colors:[.clear,appBackground.opacity(0.24),appBackground.opacity(0.98)],startPoint:.top,endPoint:.bottom)
-                                LinearGradient(colors:[appBackground.opacity(0.62),.clear],startPoint:.leading,endPoint:.trailing)
-                                VStack(alignment:.leading,spacing:8) {
-                                    Text("FEATURED").font(.caption2.weight(.bold)).tracking(2.4).foregroundStyle(accent)
-                                    Text(game.title).font(.title.bold()).lineLimit(dynamicTypeSize.isAccessibilitySize ? 3:2)
-                                    Text(game.description ?? "").lineLimit(dynamicTypeSize.isAccessibilitySize ? 3:2).font(.footnote).foregroundStyle(secondaryText)
-                                    Label("View Game",systemImage:"arrow.right").font(.subheadline.weight(.bold))
-                                        .padding(.horizontal,14).frame(minHeight:40).foregroundStyle(appBackground).background(.white,in:Capsule())
-                                }.padding(18).padding(.top,dynamicTypeSize.isAccessibilitySize ? 140:110)
-                            }.frame(maxWidth:.infinity,minHeight:dynamicTypeSize.isAccessibilitySize ? 420:300)
-                                .clipShape(RoundedRectangle(cornerRadius:22,style:.continuous))
-                                .overlay{RoundedRectangle(cornerRadius:22,style:.continuous).stroke(.white.opacity(0.12))}
-                                .contentShape(RoundedRectangle(cornerRadius:22,style:.continuous))
-                        }.buttonStyle(PressableCardStyle()).accessibilityLabel("Featured: \(game.title). View game")
-                    }
-                    ScrollView(.horizontal,showsIndicators:false) {
-                        HStack(spacing:10) {
-                            ForEach(GameCollection.allCases) { item in
-                                Button(item.rawValue){collection=item}
-                                    .font(.subheadline.weight(.semibold)).padding(.horizontal,15).frame(minHeight:44)
-                                    .background(collection==item ? accent:.white.opacity(0.08),in:Capsule())
-                                    .foregroundStyle(collection==item ? appBackground:Color.primary)
-                                    .accessibilityAddTraits(collection==item ? .isSelected:[])
-                            }
-                            Menu(genre.isEmpty ? "All Categories":genre) {
-                                Button("All Categories"){genre=""}
-                                ForEach(genres,id:\.self){value in Button(value){genre=value}}
-                            }.font(.subheadline.weight(.semibold)).padding(.horizontal,14).frame(minHeight:44)
-                                .background(.white.opacity(0.08),in:Capsule())
-                        }
-                    }.scrollClipDisabled().buttonStyle(.plain)
-                    SectionHeading(title:query.isEmpty ? collection.rawValue:"Search Results",detail:"\(visibleGames.count) games")
-                    if visibleGames.isEmpty && !store.loading {
-                        ContentUnavailableView("No games found",systemImage:"rectangle.stack.badge.play",description:Text(query.isEmpty ? "Try another collection or category.":"Try a different title, publisher, or genre."))
-                            .frame(maxWidth:.infinity).cinematicCard()
-                    }
-                    GameGrid(games:visibleGames)
-                    if store.loading{ProgressView("Loading your library...").frame(maxWidth:.infinity,minHeight:88)}
-                }.padding(.horizontal,18).padding(.top,12).padding(.bottom,28)
-            }
-            .background(CinematicBackdrop()).navigationBarTitleDisplayMode(.inline)
-            .searchable(text:$query,prompt:"Games, publishers, genres")
-            .navigationDestination(for:Game.self){GameDetails(game:$0)}
-            .refreshable{await store.refresh()}
-        }
     }
     private var settings:some View {
         NavigationStack {
@@ -174,42 +110,82 @@ struct RootView:View {
                     Button("Sign out",role:.destructive){store.signOut()}
                 }
                 Section {
+                    NavigationLink("Console setup"){ConsolesView().navigationTitle("My PS5s")}
                     NavigationLink("Content Sources"){SourcesView().id(store.account?.id)}
-                    NavigationLink("My Profile & Trophies"){ProfileView().id(store.account?.id)}
                     NavigationLink("Notifications"){NotificationsView().id(store.account?.id)}
                     NavigationLink("Prepared packages on this server"){CacheView()}
-                    if store.account?.role=="ADMIN"{NavigationLink("Community Master"){CommunityMasterView()};InvitationView()}
+                    if store.account?.role=="ADMIN"{NavigationLink("Community Services"){CommunityConnectionView()};InvitationView()}
                 }
                 Section{Text("Independent homebrew library. Sony/PSN credentials are never required.").font(.footnote).foregroundStyle(secondaryText)}
             }.cinematicList().navigationTitle("Settings")
         }
     }
 }
-struct GameGrid:View {
+struct LibraryGameRow:View {
     @EnvironmentObject var store:Store
-    let games:[Game]
-    private let columns=[GridItem(.adaptive(minimum:148,maximum:220),spacing:14)]
-    var body:some View {
-        LazyVGrid(columns:columns,alignment:.leading,spacing:22) {
-            ForEach(games) { game in
-                NavigationLink(value:game) {
-                    VStack(alignment:.leading,spacing:9) {
-                        Color.clear.aspectRatio(3/4,contentMode:.fit)
-                            .overlay{ArtworkView(path:game.coverUrl)}
-                            .clipShape(RoundedRectangle(cornerRadius:16,style:.continuous))
-                            .overlay(alignment:.topTrailing){
-                                if store.ready(game){StatusPill(text:"On PS5",color:success,icon:"checkmark").padding(8)}
-                                else if game.serverReady{StatusPill(text:"Prepared",icon:"shippingbox.fill").padding(8)}
-                            }
-                            .overlay{RoundedRectangle(cornerRadius:16,style:.continuous).stroke(.white.opacity(0.1))}
-                            .shadow(color:.black.opacity(0.3),radius:12,y:7)
-                        Text(game.title).font(.subheadline.weight(.semibold)).lineLimit(2)
-                            .frame(maxWidth:.infinity,minHeight:40,alignment:.topLeading)
-                    }.contentShape(Rectangle())
-                }.buttonStyle(PressableCardStyle())
-                    .accessibilityLabel(game.title+(store.ready(game) ? ", available on PS5":game.serverReady ? ", prepared on server":""))
-            }
+    @Environment(\.dynamicTypeSize) private var typeSize
+    let game:Game;let scope:String;let selected:Bool
+    private var tileWidth:CGFloat{typeSize.isAccessibilitySize ? 220:164}
+    private var release:Release?{game.releases.first(where:{$0.kind=="BASE"}) ?? game.releases.first(where:{$0.kind != "DLC"}) ?? game.releases.first}
+    private var entry:LibraryEntry? {
+        let ids=Set(game.releases.map(\.id))
+        return store.data.library.first{ids.contains($0.releaseId)&&$0.state=="READY_ON_PS5"}
+    }
+    private var job:Job? {
+        let ids=Set(game.releases.map(\.id))
+        return store.data.jobs.first{ids.contains($0.releaseId)&&!["COMPLETED","READY_ON_PS5","CANCELLED"].contains($0.state)}
+    }
+    private var location:String {
+        if let job{return job.displayStage}
+        if scope=="console" {
+            return store.data.consoles.first(where:{$0.id==store.data.consoleId})?.storage.first(where:{$0.id==entry?.storageId})?.displayName ?? "This PS5"
         }
+        return game.serverCached ? "Prepared on server":"Available on server"
+    }
+    private var state:(String,Color) {
+        if let job{return (readable(job.state),job.state=="ERROR" ? danger:accent)}
+        if scope=="console" {return ("Ready",success)}
+        if game.serverCached{return ("Prepared",success)}
+        return ("Available",accent)
+    }
+    var body:some View {
+        VStack(alignment:.leading,spacing:7) {
+            ArtworkView(path:game.coverUrl).frame(width:tileWidth,height:typeSize.isAccessibilitySize ? 150:126)
+                .clipShape(RoundedRectangle(cornerRadius:12,style:.continuous))
+                .overlay{RoundedRectangle(cornerRadius:12,style:.continuous).stroke(selected ? accent:.white.opacity(0.08),lineWidth:selected ? 2:1)}
+                .shadow(color:.black.opacity(selected ? 0.34:0),radius:12,y:7)
+            Text(game.title).font(.subheadline.weight(.semibold)).lineLimit(typeSize.isAccessibilitySize ? 2:1)
+            HStack(spacing:6){Circle().fill(state.1).frame(width:6,height:6);Text(location).font(.caption2).foregroundStyle(secondaryText).lineLimit(1)}
+        }.frame(width:tileWidth,alignment:.leading).padding(.vertical,4)
+            .contentShape(Rectangle())
+            .accessibilityElement(children:.ignore)
+            .accessibilityLabel("\(game.title), version \(release?.version ?? "unknown"), \(location), \(state.0)")
+            .accessibilityAddTraits(selected ? .isSelected:[])
+    }
+}
+private struct LibraryStage:View {
+    @EnvironmentObject var store:Store;@Environment(\.dynamicTypeSize) private var typeSize
+    let game:Game;let scope:String
+    private var release:Release?{game.releases.first(where:{$0.kind=="UPDATE"}) ?? game.releases.first(where:{$0.kind=="BASE"}) ?? game.releases.first}
+    private var ready:Bool{game.ready(in:store.data.library)}
+    private var status:String{ready ? "Available on this PS5":game.serverCached ? "Ready on your Library Server":"Available on your Library Server"}
+    var body:some View {
+        ZStack(alignment:.bottomLeading) {
+            ArtworkView(path:game.heroUrl).frame(maxWidth:.infinity,minHeight:typeSize.isAccessibilitySize ? 520:430)
+            LinearGradient(colors:[.clear,appBackground.opacity(0.72),appBackground],startPoint:.top,endPoint:.bottom)
+            LinearGradient(colors:[appBackground.opacity(0.88),.clear],startPoint:.leading,endPoint:.trailing)
+            VStack(alignment:.leading,spacing:13) {
+                HStack(spacing:8){Circle().fill(ready ? success:accent).frame(width:7,height:7);Text(status).font(.subheadline.weight(.semibold)).foregroundStyle(ready ? success:accent)}
+                Text(game.title).font(.largeTitle.bold()).tracking(-0.7).lineLimit(typeSize.isAccessibilitySize ? nil:3)
+                if let description=game.description,!description.isEmpty {Text(description).font(.body).foregroundStyle(.white.opacity(0.86)).lineLimit(typeSize.isAccessibilitySize ? 5:3)}
+                HStack(spacing:10) {
+                    if let version=release?.version{Text("Version \(version)")}
+                    Text(scope=="console" ? "PS5":"Library Server")
+                }.font(.caption).foregroundStyle(secondaryText)
+                NavigationLink(value:game){Text("Open game").font(.headline).frame(minWidth:126,minHeight:48)}
+                    .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
+            }.padding(.horizontal,20).padding(.bottom,24).frame(maxWidth:560,alignment:.leading)
+        }.clipped().accessibilityElement(children:.contain)
     }
 }
 struct GameDetails:View {
@@ -224,7 +200,7 @@ struct GameDetails:View {
                     LinearGradient(colors:[.clear,appBackground.opacity(0.35),appBackground],startPoint:.top,endPoint:.bottom)
                     VStack(alignment:.leading,spacing:9) {
                         if store.ready(game){StatusPill(text:"Ready on PS5",color:success,icon:"checkmark.circle.fill")}
-                        else if game.serverReady{StatusPill(text:"Prepared on server",icon:"shippingbox.fill")}
+                        else if game.serverCached{StatusPill(text:"Cached on server",icon:"shippingbox.fill")}
                         Text(game.title).font(.largeTitle.bold()).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil:3)
                         if let genres=game.genres,!genres.isEmpty {
                             Text(genres.prefix(3).joined(separator:" | ")).font(.subheadline.weight(.semibold)).foregroundStyle(secondaryText)
@@ -390,12 +366,25 @@ struct InstallationView:View {
 }
 struct DownloadsView:View {
     @EnvironmentObject var store:Store
+    private var activeJobs:[Job]{store.data.jobs.filter{!["COMPLETED","READY_ON_PS5","ERROR","CANCELLED"].contains($0.state)}}
+    private var activeSpeed:Int64{activeJobs.reduce(0){$0+$1.speedBytesPerSecond}}
     var body:some View {
         ScrollView {
-            LazyVStack(alignment:.leading,spacing:18) {
+            LazyVStack(alignment:.leading,spacing:0) {
                 if store.offline{OfflineBanner(text:"Server offline - progress is from the last sync")}
+                VStack(alignment:.leading,spacing:8) {
+                    Text("Preparation and transfer continue safely on your server.").font(.subheadline).foregroundStyle(secondaryText)
+                    if !activeJobs.isEmpty {
+                        HStack(alignment:.firstTextBaseline) {
+                            Text(activeSpeed>0 ? bytes(activeSpeed)+"/s":"Working").font(.title2.bold().monospacedDigit())
+                            Spacer()
+                            Text("\(activeJobs.count) active").font(.caption.weight(.semibold)).foregroundStyle(secondaryText)
+                        }.padding(.top,12)
+                    }
+                }.padding(.vertical,18)
                 if let installations=store.data.installations,!installations.isEmpty {
                     SectionHeading(title:"Installations",detail:"\(installations.count)")
+                        .padding(.top,18).padding(.bottom,8)
                     ForEach(installations){item in
                         VStack(alignment:.leading,spacing:10) {
                             HStack(alignment:.top) {
@@ -410,24 +399,26 @@ struct DownloadsView:View {
                             }
                             Label(item.method=="SHADOWMOUNT" ? "ShadowMountPlus":readable(item.method),systemImage:"shippingbox.fill").font(.caption).foregroundStyle(secondaryText)
                             if let error=item.error{Label(readable(error),systemImage:"exclamationmark.triangle.fill").font(.footnote).foregroundStyle(danger)}
-                        }.cinematicCard()
+                        }.padding(.vertical,18).overlay(alignment:.bottom){Divider().overlay(.white.opacity(0.1))}
                     }
                 }
-                if !store.data.jobs.isEmpty{SectionHeading(title:"Server jobs",detail:"\(store.data.jobs.count)")}
+                if !store.data.jobs.isEmpty{SectionHeading(title:"Server jobs",detail:"\(store.data.jobs.count)").padding(.top,24).padding(.bottom,8)}
                 ForEach(store.data.jobs){JobCard(job:$0)}
                 if store.data.jobs.isEmpty && (store.data.installations ?? []).isEmpty {
                     ContentUnavailableView("No active downloads",systemImage:"checkmark.circle",description:Text("Downloads keep running on your server when you close the companion."))
                         .frame(maxWidth:.infinity,minHeight:320).cinematicCard()
                 }
-            }.padding(.horizontal,18).padding(.vertical,14)
+            }.padding(.horizontal,20).padding(.bottom,24)
         }.background(CinematicBackdrop()).navigationTitle("Downloads").refreshable{await store.refresh()}
     }
 }
 struct JobCard:View {
     @EnvironmentObject var store:Store;let job:Job
+    private var accessibilityTitle:String{job.title ?? "Selected release"}
     private var game:Game?{store.data.games.first(where:{$0.releases.contains(where:{$0.id==job.releaseId})})}
     private var stateColor:Color{job.state=="ERROR" ? danger:["COMPLETED","READY_ON_PS5"].contains(job.state) ? success:accent}
     private var byteProgress:Double?{guard let total=job.totalBytes,total>0 else{return nil};return min(1,max(0,Double(job.downloadedBytes)/Double(total)))}
+    private var shownProgress:Double?{job.kind=="BUILD" ? job.progress?.fraction:byteProgress}
     var body:some View {
         VStack(alignment:.leading,spacing:14) {
             HStack(alignment:.top,spacing:14) {
@@ -446,13 +437,23 @@ struct JobCard:View {
                     }
                 }
                 Spacer(minLength:0)
+                if let shownProgress{Text("\(Int(shownProgress*100))%").font(.title2.bold().monospacedDigit()).foregroundStyle(.white)}
             }
             if job.kind=="BUILD" && job.state != "DOWNLOADING" {
                 if job.state=="COMPLETED"{Label("Prepared and verified",systemImage:"checkmark.circle.fill").foregroundStyle(success)}
-                else if job.state != "ERROR"{ProgressView().tint(accent)}
-                Text(job.progress?.stage ?? readable(job.state)).font(.caption).foregroundStyle(secondaryText)
+                else if let progress=job.progress?.fraction,let detail=job.progress?.bytes {
+                    ProgressView(value:progress).tint(stateColor).accessibilityLabel("\(accessibilityTitle), \(job.displayStage)").accessibilityValue("\(Int(progress*100)) percent, \(bytes(detail.completedBytes)) of \(bytes(detail.totalBytes))")
+                    Text(bytes(detail.completedBytes)+" / "+bytes(detail.totalBytes)).font(.caption.monospacedDigit()).foregroundStyle(secondaryText)
+                } else if job.state != "ERROR"{ProgressView().tint(accent)}
+                Text(job.displayStage).font(.caption).foregroundStyle(secondaryText)
+                if store.account?.role=="ADMIN",let detail=job.progress {
+                    HStack(spacing:14) {
+                        if let package=detail.package?.state{Label((detail.package?.method.map{readable($0)+" "} ?? "Package ")+readable(package),systemImage:"shippingbox.fill")}
+                        if let fakelib=detail.fakelib?.state,!(["UNKNOWN","NOT_REQUIRED"].contains(fakelib)){Label("Backport "+readable(fakelib),systemImage:"puzzlepiece.extension.fill")}
+                    }.font(.caption2).foregroundStyle(secondaryText)
+                }
             } else if let progress=byteProgress {
-                ProgressView(value:progress).tint(stateColor).accessibilityValue("\(Int(progress*100)) percent")
+                ProgressView(value:progress).tint(stateColor).accessibilityLabel("\(accessibilityTitle), \(job.displayStage)").accessibilityValue("\(Int(progress*100)) percent, \(bytes(job.downloadedBytes)) of \(bytes(job.totalBytes ?? 0))")
                 HStack {
                     Text(bytes(job.downloadedBytes)+" / "+bytes(job.totalBytes ?? 0))
                     Spacer()
@@ -464,15 +465,15 @@ struct JobCard:View {
             }
             if let error=job.error{Label(readable(error),systemImage:"exclamationmark.triangle.fill").font(.footnote.weight(.semibold)).foregroundStyle(danger)}
             if let location=job.location{Label(location,systemImage:"folder").font(.caption).foregroundStyle(secondaryText).textSelection(.enabled)}
-            if job.retryable{Button("Retry",systemImage:"arrow.clockwise"){control("retry")}.buttonStyle(.borderedProminent)}
+            if job.retryable{Button("Retry",systemImage:"arrow.clockwise"){control("retry")}.buttonStyle(.borderedProminent).controlSize(.large)}
             else if job.kind=="DOWNLOAD" && !["COMPLETED","CANCELLED"].contains(job.state){
                 HStack {
-                    Button(job.state=="PAUSED" ? "Resume":"Pause",systemImage:job.state=="PAUSED" ? "play.fill":"pause.fill"){control(job.state=="PAUSED" ? "resume":"pause")}.buttonStyle(.bordered)
-                    Button("Cancel",role:.destructive){control("cancel")}.buttonStyle(.bordered)
+                    Button(job.state=="PAUSED" ? "Resume":"Pause",systemImage:job.state=="PAUSED" ? "play.fill":"pause.fill"){control(job.state=="PAUSED" ? "resume":"pause")}.buttonStyle(.bordered).controlSize(.large)
+                    Button("Cancel",role:.destructive){control("cancel")}.buttonStyle(.bordered).controlSize(.large)
                 }
             }
-            if job.dismissible{Button("Remove from Downloads",role:.destructive){dismiss()}.font(.footnote.weight(.semibold))}
-        }.cinematicCard(padding:18)
+            if job.dismissible{Button("Remove from Downloads",role:.destructive){dismiss()}.font(.footnote.weight(.semibold)).frame(minHeight:44)}
+        }.padding(.vertical,20).overlay(alignment:.bottom){Divider().overlay(.white.opacity(0.1))}
     }
     func control(_ action:String){store.perform{api in let _:Acknowledgement=try await api.request("/jobs/\(job.id)/control",method:"POST",json:["action":action])}}
     func dismiss(){store.perform{api in let _:Acknowledgement=try await api.request("/jobs/\(job.id)",method:"DELETE")}}
@@ -586,6 +587,7 @@ struct ConsoleCard:View {
                 VStack(alignment:.leading,spacing:7) {
                     HStack{Text(storage.displayName).font(.subheadline.weight(.semibold));Spacer();Text(bytes(storage.freeBytes)+" free").font(.caption.monospacedDigit()).foregroundStyle(secondaryText)}
                     ProgressView(value:storage.totalBytes>0 ? min(1,max(0,1-Double(storage.freeBytes)/Double(storage.totalBytes))):0).tint(accent)
+                        .accessibilityLabel("\(storage.displayName) storage used").accessibilityValue("\(bytes(max(0,storage.totalBytes-storage.freeBytes))) used, \(bytes(storage.freeBytes)) free")
                 }.padding(12).background(.white.opacity(0.05),in:RoundedRectangle(cornerRadius:12,style:.continuous))
             }
             if console.capabilities?.remotePlayPairing == true {
@@ -687,40 +689,89 @@ struct RemotePlayPairingView:View {
 struct CacheView:View{@EnvironmentObject var store:Store;@State private var artifacts:[Artifact]=[];var body:some View{List{Section{Text("Verified packages stay on your PC for reuse. Deleting a cached copy keeps the original source and your console's copy.").font(.footnote)};ForEach(artifacts){artifact in VStack(alignment:.leading){Text(artifact.title).font(.headline);Text(artifact.version+" · "+bytes(artifact.size)).font(.caption)}.swipeActions{Button("Delete PC copy",role:.destructive){store.perform{api in let _:Acknowledgement=try await api.request("/artifacts/\(artifact.id)",method:"DELETE");artifacts=try await api.request("/artifacts")}}}}}.cinematicList().navigationTitle("Server cache").task{guard let api=store.api else{return};do{artifacts=try await api.request("/artifacts")}catch{store.error=error.localizedDescription}}}}
 struct LibraryView:View {
     @EnvironmentObject var store:Store
-    @State private var section="console"
+    @State private var scope="server"
     @State private var storageId=""
+    @State private var query=""
+    @State private var savedOnly=false
+    @State private var selectedGameId:String?
     var games:[Game] {
-        if section=="server" { return GameCollection.server.select(store.data.games) }
-        if section=="saved" { return GameCollection.saved.select(store.data.games) }
-        return store.data.games.filter{$0.ready(in:store.data.library,storageId:storageId)}
+        let available = scope=="server" ? GameCollection.server.select(store.data.games) : store.data.games.filter{$0.ready(in:store.data.library,storageId:storageId)}
+        return available.filter { game in
+            (!savedOnly || game.saved==true) && (query.isEmpty || ([game.title,game.titleId,game.publisher ?? ""]+(game.genres ?? [])).joined(separator:" ").localizedCaseInsensitiveContains(query))
+        }.sorted{$0.title.localizedStandardCompare($1.title)==.orderedAscending}
     }
+    private var storageName:String {
+        guard !storageId.isEmpty else{return "All storage"}
+        return store.data.consoles.first(where:{$0.id==store.data.consoleId})?.storage.first(where:{$0.id==storageId})?.displayName ?? "Storage"
+    }
+    private var selectedGame:Game?{games.first(where:{$0.id==selectedGameId}) ?? games.first}
     var body:some View {
         ScrollView {
-            LazyVStack(alignment:.leading,spacing:18) {
-                VStack(alignment:.leading,spacing:14) {
-                    Picker("Library",selection:$section) {
-                        Text("On PS5").tag("console");Text("On Server").tag("server");Text("Saved").tag("saved")
+            LazyVStack(alignment:.leading,spacing:0) {
+                VStack(alignment:.leading,spacing:12) {
+                    Picker("Location",selection:$scope) {
+                        Label("This PS5",systemImage:"gamecontroller.fill").tag("console")
+                        Label("Server",systemImage:"server.rack").tag("server")
                     }.pickerStyle(.segmented)
-                    if section=="console" {
-                        ConsolePicker()
-                        Picker("Storage",selection:$storageId) {
-                            Text("All Storage").tag("")
-                            ForEach(store.data.consoles.first(where:{$0.id==store.data.consoleId})?.storage ?? []) { Text($0.displayName).tag($0.id) }
+                    if scope=="console",!store.data.consoles.isEmpty {
+                        HStack(spacing:8) {
+                            ConsolePicker().pickerStyle(.menu).frame(maxWidth:.infinity,alignment:.leading)
+                            Menu {
+                                Button("All storage"){storageId=""}
+                                ForEach(store.data.consoles.first(where:{$0.id==store.data.consoleId})?.storage ?? []) { storage in
+                                    Button(storage.displayName){storageId=storage.id}
+                                }
+                            } label: {
+                                Label(storageName,systemImage:"externaldrive.fill").font(.subheadline.weight(.semibold))
+                                    .padding(.horizontal,12).frame(minHeight:44).background(.white.opacity(0.07),in:Capsule())
+                            }
                         }
                     }
-                }.cinematicCard()
-                if store.offline { OfflineBanner(text:"Server offline - showing the last synced library") }
-                SectionHeading(title:section=="console" ? "On your PS5":section=="server" ? "Prepared on server":"Saved games",detail:"\(games.count)")
-                if games.isEmpty {
-                    ContentUnavailableView("No games here yet",systemImage:"gamecontroller",description:Text("Choose another collection or save a game from Discover."))
-                        .frame(maxWidth:.infinity,minHeight:260).cinematicCard()
+                    if store.offline { OfflineBanner(text:"Server offline - showing the last synced library") }
+                }.padding(.horizontal,18).padding(.vertical,12)
+                if store.loading && store.data.games.isEmpty {
+                    ProgressView("Syncing library...").frame(maxWidth:.infinity,minHeight:220)
+                } else if games.isEmpty {
+                    ContentUnavailableView(query.isEmpty ? (savedOnly ? "No saved games here":"No games here yet"):"No matches",systemImage:savedOnly ? "heart":"rectangle.stack",description:Text(query.isEmpty ? (scope=="console" ? "Sync this console's inventory, or switch to Server to see available games.":"Add authorized content to your Library Server to see it here."):"Try another title, publisher, or genre."))
+                        .frame(maxWidth:.infinity,minHeight:300).padding(.horizontal,18)
+                } else if let selectedGame {
+                    LibraryStage(game:selectedGame,scope:scope)
+                    VStack(alignment:.leading,spacing:14) {
+                        HStack(alignment:.firstTextBaseline) {
+                            VStack(alignment:.leading,spacing:3) {
+                                Text(scope=="console" ? "On this PS5":"On this server").font(.title2.bold())
+                                Text(scope=="console" ? "Installed games reported by your console":"Authorized content available from your Library Server").font(.caption).foregroundStyle(secondaryText)
+                            }
+                            Spacer()
+                            Text("\(games.count) \(games.count==1 ? "game":"games")").font(.caption.weight(.semibold)).foregroundStyle(secondaryText)
+                        }
+                        ScrollView(.horizontal,showsIndicators:false) {
+                            LazyHStack(alignment:.top,spacing:14) {
+                                ForEach(games) { game in
+                                    Button{withAnimation(.easeOut(duration:0.18)){selectedGameId=game.id}}label:{LibraryGameRow(game:game,scope:scope,selected:game.id==selectedGame.id)}
+                                        .buttonStyle(PressableCardStyle())
+                                }
+                            }.scrollTargetLayout()
+                        }.scrollTargetBehavior(.viewAligned).contentMargins(.horizontal,1,for:.scrollContent)
+                    }
+                    .padding(.horizontal,18).padding(.top,24).padding(.bottom,30)
                 }
-                GameGrid(games:games)
-            }.padding(.horizontal,18).padding(.vertical,14)
+            }
         }
-        .background(CinematicBackdrop()).navigationTitle("My Library")
+        .background(CinematicBackdrop()).navigationTitle("Library")
+        .searchable(text:$query,prompt:"Search games")
+        .toolbar {
+            ToolbarItem(placement:.topBarTrailing) {
+                Button{savedOnly.toggle()}label:{Image(systemName:savedOnly ? "heart.fill":"heart")}
+                    .foregroundStyle(savedOnly ? accent:Color.primary)
+                    .accessibilityLabel(savedOnly ? "Show all games":"Show saved games only")
+                    .accessibilityAddTraits(savedOnly ? .isSelected:[])
+            }
+        }
         .navigationDestination(for:Game.self){GameDetails(game:$0)}
-        .onChange(of:store.data.consoleId){_,_ in storageId=""}
+        .onChange(of:store.data.consoleId){_,_ in storageId="";selectedGameId=nil}
+        .onChange(of:scope){_,_ in storageId="";selectedGameId=nil}
+        .onChange(of:games.map(\.id)){_,ids in if !ids.contains(selectedGameId ?? ""){selectedGameId=ids.first}}
         .refreshable{await store.refresh()}
     }
 }
@@ -737,41 +788,70 @@ private struct TrophyTile:View {
 }
 struct ProfileView:View {
     @EnvironmentObject var store:Store
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var profile:Profile?
     @State private var failure:String?
     @State private var busy=false
     private let trophyColumns=[GridItem(.adaptive(minimum:64),spacing:8)]
     var body:some View {
         ScrollView {
-            LazyVStack(alignment:.leading,spacing:18) {
+            LazyVStack(alignment:.leading,spacing:0) {
                 if let profile {
-                    VStack(alignment:.leading,spacing:16) {
-                    HStack(spacing:16) {
-                        Group {
-                            if let path=profile.avatarUrl { ArtworkView(path:path) }
-                            else {Image(systemName:"person.fill").font(.title).foregroundStyle(accent)}
-                        }.frame(width:76,height:76).background(accent.opacity(0.14)).clipShape(Circle()).overlay{Circle().stroke(accent.opacity(0.45),lineWidth:2)}
-                        VStack(alignment:.leading,spacing:4) {
-                            Text(profile.username).font(.title.bold()).lineLimit(1)
-                            StatusPill(text:readable(profile.role),color:secondaryText)
+                    let selected=selectedConsole(in:profile)
+                    let hero=selected?.games.compactMap{profileGame in store.data.games.first(where:{$0.id==profileGame.gameId})?.heroUrl}.first
+                    ZStack(alignment:.bottomLeading) {
+                        if let hero{ArtworkView(path:hero).opacity(0.42)}
+                        LinearGradient(colors:[.clear,appBackground.opacity(0.76),appBackground],startPoint:.top,endPoint:.bottom)
+                        HStack(spacing:18) {
+                            Group {
+                                if let path=profile.avatarUrl { ArtworkView(path:path) }
+                                else {Image(systemName:"person.fill").font(.title).foregroundStyle(accent)}
+                            }.frame(width:84,height:84).background(raisedSurface).clipShape(Circle()).overlay{Circle().stroke(.white.opacity(0.86),lineWidth:2)}
+                            VStack(alignment:.leading,spacing:6) {
+                                Text(profile.username).font(.largeTitle.bold()).tracking(-0.6)
+                                if let console=selected,let live=store.data.consoles.first(where:{$0.id==console.id}) {
+                                    HStack(spacing:8){Circle().fill(live.presence=="ONLINE" ? success:Color.secondary).frame(width:7,height:7);Text(console.name+" · "+readable(live.presence)).font(.subheadline).foregroundStyle(secondaryText)}
+                                } else {Text(readable(profile.role)).font(.subheadline).foregroundStyle(secondaryText)}
+                            }
+                            Spacer(minLength:0)
                         }
-                        Spacer(minLength:0)
+                        .padding(.horizontal,20).padding(.bottom,24)
+                    }.frame(maxWidth:.infinity,minHeight:220).clipped()
+                    HStack(spacing:10) {
+                        Menu("Edit profile",systemImage:"camera.fill") {
+                            Button("Use default",role:.destructive){changeAvatar(nil)}
+                            ForEach(store.data.games){game in Button(game.title){changeAvatar(game.coverUrl)}}
+                        }.buttonStyle(.bordered).controlSize(.large).disabled(busy||store.offline)
+                        NavigationLink { CommunityFriendsView() } label: {Label("Friends",systemImage:"person.2.fill").frame(maxWidth:.infinity,minHeight:44)}.buttonStyle(.borderedProminent)
+                    }.padding(.horizontal,20).padding(.bottom,22)
+                    if profile.consoles.count>1 {
+                        Picker("Console",selection:$store.data.consoleId){ForEach(profile.consoles){Text($0.name).tag($0.id)}}
+                            .pickerStyle(.menu).controlSize(.large).padding(.horizontal,20).padding(.bottom,12)
                     }
-                    Menu("Change profile picture",systemImage:"camera.fill") {
-                        Button("Use default",role:.destructive){changeAvatar(nil)}
-                        ForEach(store.data.games){game in Button(game.title){changeAvatar(game.coverUrl)}}
-                    }.buttonStyle(.bordered).disabled(busy||store.offline)
-                    NavigationLink { CommunityFriendsView() } label: {
-                        Label("Community friends",systemImage:"person.2.fill").font(.headline).frame(maxWidth:.infinity,minHeight:48)
-                    }.buttonStyle(.borderedProminent)
-                    }.cinematicCard()
-                if profile.consoles.isEmpty {
-                    ContentUnavailableView("No consoles on this profile",systemImage:"gamecontroller",description:Text("Pair a PS5 to see its games, trophies, and saves."))
-                        .frame(maxWidth:.infinity,minHeight:240).cinematicCard()
-                }
-                ForEach(profile.consoles){console in
-                    VStack(alignment:.leading,spacing:16) {
-                        HStack{Image(systemName:"gamecontroller.fill").foregroundStyle(accent);Text(console.name).font(.title3.bold());Spacer();StatusPill(text:"\(console.games.count) games",color:secondaryText)}
+                    if selected==nil {
+                        ContentUnavailableView("No consoles on this profile",systemImage:"gamecontroller",description:Text("Pair a PS5 to see its games, trophies, and saves."))
+                            .frame(maxWidth:.infinity,minHeight:260).padding(.horizontal,20)
+                    }
+                    if let console=selected {
+                        let live=store.data.consoles.first(where:{$0.id==console.id})
+                        VStack(alignment:.leading,spacing:20) {
+                            HStack{Image(systemName:"gamecontroller.fill").foregroundStyle(accent);Text(console.name).font(.title2.bold());Spacer();StatusPill(text:readable(live?.presence ?? "OFFLINE"),color:live?.presence=="ONLINE" ? success:secondaryText)}
+                            LazyVGrid(columns:[GridItem(.flexible()),GridItem(.flexible())],spacing:0) {
+                                profileFact("Status",live?.presence=="ONLINE" ? "Connected":readable(live?.presence ?? "OFFLINE"))
+                                profileFact("Firmware",live?.firmware ?? "Not reported")
+                                profileFact("Library","\(live?.games ?? console.games.filter(\.available).count) games")
+                                profileFact("Runtime",live?.runtime ?? "Not reported")
+                            }.overlay{Rectangle().stroke(.white.opacity(0.1),lineWidth:1)}
+                            if let storage=live?.storage,!storage.isEmpty {
+                                SectionHeading(title:"Storage")
+                                ForEach(storage){volume in
+                                    VStack(alignment:.leading,spacing:9) {
+                                        HStack{Text(volume.displayName).font(.headline);Spacer();Text(bytes(volume.freeBytes)+" free").font(.caption.monospacedDigit()).foregroundStyle(secondaryText)}
+                                        ProgressView(value:volume.totalBytes>0 ? min(1,max(0,1-Double(volume.freeBytes)/Double(volume.totalBytes))):0).tint(accent)
+                                            .accessibilityLabel("\(volume.displayName) storage used").accessibilityValue("\(bytes(max(0,volume.totalBytes-volume.freeBytes))) used, \(bytes(volume.freeBytes)) free")
+                                    }.padding(16).background(raisedSurface.opacity(0.76),in:RoundedRectangle(cornerRadius:14,style:.continuous))
+                                }
+                            }
                         if let summary=console.trophySummary {
                             SectionHeading(title:"Trophies")
                             LazyVGrid(columns:trophyColumns,spacing:8) {
@@ -789,32 +869,45 @@ struct ProfileView:View {
                         }.buttonStyle(.bordered)
                         if !console.games.isEmpty {
                             SectionHeading(title:"Games",detail:"\(console.games.filter(\.available).count) available")
-                            ForEach(console.games){game in
-                                HStack(spacing:12) {
-                                    ArtworkView(path:game.coverUrl).frame(width:48,height:64).clipShape(RoundedRectangle(cornerRadius:8))
-                                    VStack(alignment:.leading,spacing:4){Text(game.title).font(.subheadline.weight(.semibold)).lineLimit(2);Text(game.platform+" | "+(game.available ? "Available on PS5":"Not currently available")).font(.caption).foregroundStyle(secondaryText)}
-                                    Spacer()
-                                    Image(systemName:game.available ? "checkmark.circle.fill":"circle").foregroundStyle(game.available ? success:Color.secondary)
+                            ScrollView(.horizontal,showsIndicators:false) {
+                                LazyHStack(alignment:.top,spacing:12) {
+                                    ForEach(console.games){game in
+                                        Group {
+                                            if let catalog=store.data.games.first(where:{$0.id==game.gameId}) {NavigationLink{GameDetails(game:catalog)}label:{profileGameTile(game)}}
+                                            else {profileGameTile(game)}
+                                        }.buttonStyle(PressableCardStyle())
+                                    }
                                 }
-                            }
+                            }.scrollTargetBehavior(.viewAligned)
                         }
-                    }.cinematicCard()
-                }
+                        }.padding(.horizontal,20).padding(.vertical,26).overlay(alignment:.bottom){Divider().overlay(.white.opacity(0.1))}
+                    }
                 } else if failure==nil {
                     ProgressView("Loading profile...").frame(maxWidth:.infinity,minHeight:300)
                 }
                 if let failure {
                     VStack(spacing:12){Label(failure,systemImage:"exclamationmark.triangle.fill").foregroundStyle(warning);Button("Retry"){Task{await load()}}.buttonStyle(.borderedProminent)}.frame(maxWidth:.infinity).cinematicCard()
                 }
-            }.padding(.horizontal,18).padding(.vertical,14)
+            }.padding(.bottom,24)
         }.background(CinematicBackdrop()).navigationTitle("My Profile").task{await load()}.refreshable{await load()}
+    }
+    private func selectedConsole(in profile:Profile)->ProfileConsole? {
+        profile.consoles.first(where:{$0.id==store.data.consoleId}) ?? profile.consoles.first
+    }
+    private func profileFact(_ label:String,_ value:String)->some View {
+        VStack(alignment:.leading,spacing:7){Text(label).font(.caption).foregroundStyle(secondaryText);Text(value).font(.subheadline.weight(.semibold)).lineLimit(2)}
+            .frame(maxWidth:.infinity,minHeight:76,alignment:.leading).padding(.horizontal,14).overlay(alignment:.trailing){Divider().overlay(.white.opacity(0.08))}.overlay(alignment:.bottom){Divider().overlay(.white.opacity(0.08))}
+    }
+    private func profileGameTile(_ game:ProfileGame)->some View {
+        let width:CGFloat=typeSize.isAccessibilitySize ? 210:148
+        return VStack(alignment:.leading,spacing:7){ArtworkView(path:game.coverUrl).frame(width:width,height:typeSize.isAccessibilitySize ? 132:96).clipShape(RoundedRectangle(cornerRadius:10,style:.continuous));Text(game.title).font(.caption.weight(.semibold)).lineLimit(typeSize.isAccessibilitySize ? 2:1);Text(game.available ? "Available":"Missing").font(.caption2).foregroundStyle(game.available ? success:secondaryText)}.frame(width:width,alignment:.leading)
     }
     func load() async {
         guard let api=store.api else{return};let owner=store.account?.id
         do {
             let result:Profile=try await api.request("/profile")
             guard !Task.isCancelled,store.account?.id==owner else{return}
-            profile=result;failure=nil
+            profile=result;if !result.consoles.contains(where:{$0.id==store.data.consoleId}){store.data.consoleId=result.consoles.first?.id ?? ""};failure=nil
         } catch { if !Task.isCancelled,store.account?.id==owner { failure=error.localizedDescription } }
     }
     func changeAvatar(_ path:String?) {
@@ -842,17 +935,17 @@ struct CommunityFriendsView:View {
     @State private var failure:String?
     var body:some View {
         List {
-            Section("Master account") {
+            Section("Community account") {
                 if let account=status?.account {LabeledContent("Connected as",value:"@"+account.handle);Text(account.displayName).foregroundStyle(.secondary)}
                 else {LabeledContent("State",value:readable(status?.state ?? "DISCONNECTED"))}
-                if status?.configured==false {Text("The Library Node has no Community Master URL configured.").foregroundStyle(.secondary)}
-                else if status?.state=="DISCONNECTED" {Button("Connect Master account"){connect()}.disabled(busy||store.offline)}
+                if status?.configured==false {Text("Community services are not configured on this Library Node.").foregroundStyle(.secondary)}
+                else if status?.state=="DISCONNECTED" {Button("Connect Community account"){connect()}.disabled(busy||store.offline)}
                 else if status?.state=="AWAITING_OWNER" {
                     if let code=status?.userCode {Text(code).font(.system(.title2,design:.monospaced).weight(.bold)).tracking(3).textSelection(.enabled)}
                     if let location=status?.verificationUriComplete,let url=URL(string:location){Link("Sign in with passkey and authorize",destination:url)}
                     Button("Check authorization"){Task{await refreshLink()}}.disabled(busy)
                 }
-                if ["CONNECTED","DISCONNECT_PENDING"].contains(status?.state ?? "") {Button(status?.state=="DISCONNECT_PENDING" ? "Retry disconnect":"Disconnect Master account",role:.destructive){disconnect()}.disabled(busy)}
+                if ["CONNECTED","DISCONNECT_PENDING"].contains(status?.state ?? "") {Button(status?.state=="DISCONNECT_PENDING" ? "Retry disconnect":"Disconnect Community account",role:.destructive){disconnect()}.disabled(busy)}
                 if let error=status?.error {Text(readable(error)).foregroundStyle(warning)}
             }
             if status?.state=="CONNECTED" {
@@ -865,7 +958,7 @@ struct CommunityFriendsView:View {
                 }
             }
             if let failure {Section{Text(failure).foregroundStyle(warning);Button("Retry"){Task{await load()}}}}
-            Section {Text("Community accounts, friends and presence use PS5Library infrastructure. Sony credentials are never requested.").font(.footnote).foregroundStyle(.secondary)}
+            Section {Text("Your Library Node relays Community account, friend and presence requests. Sony credentials are never requested.").font(.footnote).foregroundStyle(.secondary)}
         }.cinematicList().navigationTitle("Community Friends").task{await monitor()}.refreshable{await load()}.disabled(busy)
     }
     func monitor() async {await load();while !Task.isCancelled,status?.state=="AWAITING_OWNER"{try? await Task.sleep(nanoseconds:5_000_000_000);await refreshLink()}}
@@ -909,7 +1002,7 @@ struct SaveBackupsView:View {
                     VStack(alignment:.leading,spacing:8) {
                         Text(backup.saveTitleId+" | "+backup.directory).font(.headline)
                         Text(readable(backup.state)+(backup.totalBytes.map{" | "+bytes(backup.uploadedBytes)+" / "+bytes($0)} ?? " | Waiting for console")).font(.caption).foregroundStyle(.secondary)
-                        if let progress=backup.progress,!backup.downloadable { ProgressView(value:progress) }
+                        if let progress=backup.progress,!backup.downloadable { ProgressView(value:progress).accessibilityLabel("\(backup.saveTitleId) backup upload").accessibilityValue("\(bytes(backup.uploadedBytes)) of \(bytes(backup.totalBytes ?? 0))") }
                         if let error=backup.error { Text(readable(error)).font(.caption).foregroundStyle(warning) }
                         HStack {
                             if exported?.id==backup.id,let file=exported?.url { ShareLink(item:file){Label("Save to Files",systemImage:"square.and.arrow.up")} }
@@ -930,7 +1023,7 @@ struct SaveBackupsView:View {
                         VStack(alignment:.leading,spacing:6) {
                             Text(save.displayName ?? save.saveTitleId).font(.headline)
                             Text(readable(save.origin)+" | "+save.gameVersion+" | "+readable(save.state)).font(.caption).foregroundStyle(.secondary)
-                            if let progress=save.progress,save.state != "READY" { ProgressView(value:progress) }
+                            if let progress=save.progress,save.state != "READY" { ProgressView(value:progress).accessibilityLabel("\(save.displayName ?? save.saveTitleId) save transfer").accessibilityValue("\(bytes(save.uploadedBytes)) of \(bytes(save.totalBytes ?? 0))") }
                             if let error=save.error { Text(readable(error)).font(.caption).foregroundStyle(warning) }
                             if save.origin=="EXPORT" && save.state=="READY" && save.masterPublicationId==nil { Button("Submit for community review"){publish(save)}.disabled(!busy.isEmpty) }
                             if save.origin=="COMMUNITY" && save.state=="READY" { Button("Import with rollback"){importSave(save)}.disabled(!portableEnabled || !busy.isEmpty || !(console.saveData ?? []).contains(where:{$0.saveTitleId==save.saveTitleId && $0.directory==save.directory})) }
@@ -993,7 +1086,7 @@ struct NotificationsView:View {
     }
 }
 struct InvitationView:View{@EnvironmentObject var store:Store;@State private var invitation="";var body:some View{Button("Create invitation for a friend"){store.perform{api in let response:Invitation=try await api.request("/admin/invites",method:"POST");invitation=response.token}};if !invitation.isEmpty{Text("Single use · expires in 7 days").font(.caption);Text(invitation).font(.caption.monospaced()).textSelection(.enabled)}}}
-struct CommunityMasterView:View {
+struct CommunityConnectionView:View {
     @EnvironmentObject var store:Store
     @State private var status:CommunityStatus?
     @State private var name="Family Library"
@@ -1010,25 +1103,25 @@ struct CommunityMasterView:View {
                 } else { ProgressView("Loading community status…") }
             }
             if status?.configured==false {
-                Section { Text("Set COMMUNITY_MASTER_URL to the exact HTTPS Master origin on your server, then restart it.").foregroundStyle(.secondary) }
+                Section { Text("Configure Community services on this Library Node, then restart the Node.").foregroundStyle(.secondary) }
             } else if status?.state=="DISCONNECTED" {
                 Section("Request access") {
                     TextField("Server name",text:$name)
-                    Button("Request Master access"){requestAccess()}.disabled(busy||name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                    Button("Request Community access"){requestAccess()}.disabled(busy||name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                 }
             } else if status?.state=="AWAITING_OWNER" {
                 Section("Authorize this server") {
                     if let code=status?.userCode{Text(code).font(.system(.title2,design:.monospaced).weight(.bold)).tracking(3).textSelection(.enabled)}
                     if let value=status?.verificationUriComplete,let url=URL(string:value){Link("Sign in with passkey and authorize",destination:url)}
-                    Text("Master administrator approval is required after you authorize the server.").font(.footnote).foregroundStyle(.secondary)
+                    Text("A Community administrator must approve this Library Node after you authorize it.").font(.footnote).foregroundStyle(.secondary)
                 }
             }
             if let status,status.state != "DISCONNECTED" {
-                Section { Button("Refresh status"){refresh()}.disabled(busy);Button("Disconnect from Master",role:.destructive){disconnect()}.disabled(busy) }
+                Section { Button("Refresh status"){refresh()}.disabled(busy);Button("Disconnect Community services",role:.destructive){disconnect()}.disabled(busy) }
             }
-            Section { Text("The Master carries community saves and social state only. Dumps, packages, backports, source credentials and console credentials remain on this Library Node.").font(.footnote).foregroundStyle(.secondary) }
+            Section { Text("This companion only contacts the Library Node. The Node relays approved Community requests; games, packages and console credentials stay local.").font(.footnote).foregroundStyle(.secondary) }
             if let failure{Section{Text(failure).foregroundStyle(warning)}}
-        }.cinematicList().navigationTitle("Community Master").task{await monitor()}.refreshable{await load()}.disabled(busy)
+        }.cinematicList().navigationTitle("Community Services").task{await monitor()}.refreshable{await load()}.disabled(busy)
     }
     func monitor() async { await load();while !Task.isCancelled,["AWAITING_OWNER","PENDING"].contains(status?.state ?? ""){try? await Task.sleep(nanoseconds:5_000_000_000);await load()} }
     @MainActor func load() async {guard let api=store.api else{return};do{status=try await api.request("/admin/community");failure=nil}catch{failure=error.localizedDescription}}
@@ -1235,9 +1328,9 @@ struct GameMediaView:View {
     var body:some View {
         VStack(alignment:.leading,spacing:12) {
             SectionHeading(title:"Media")
-            if game.trailer != nil{Button("Watch trailer",systemImage:"play.rectangle.fill"){selection="trailers"}.buttonStyle(.borderedProminent).disabled(store.offline)}
+            if game.trailer != nil{Button("Watch trailer",systemImage:"play.rectangle.fill"){selection="trailers"}.buttonStyle(.borderedProminent).controlSize(.large).disabled(store.offline)}
             else if let state=game.trailerState{Text("Trailer: "+readable(state)).font(.caption).foregroundStyle(.secondary)}
-            if game.music != nil{Button("Play game music",systemImage:"music.note"){selection="music"}.buttonStyle(.bordered).disabled(store.offline)}
+            if game.music != nil{Button("Play game music",systemImage:"music.note"){selection="music"}.buttonStyle(.bordered).controlSize(.large).disabled(store.offline)}
             else if let state=game.musicState{Text("Music: "+readable(state)).font(.caption).foregroundStyle(.secondary)}
             if game.trailer==nil && game.music==nil && game.trailerState==nil && game.musicState==nil{Text("No media is available for this title.").font(.footnote).foregroundStyle(secondaryText)}
         }

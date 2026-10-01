@@ -52,7 +52,8 @@ struct Game: Codable, Identifiable, Hashable {
     let trailer: MediaAsset?; let music: MediaAsset?
     let trailerState: String?; let musicState: String?
     let saved: Bool?; let addedAt: String?; let releaseDate: String?; let recentlyUpdated: Bool?
-    var serverReady: Bool { releases.contains { $0.kind != "DLC" && !($0.artifacts ?? []).isEmpty } }
+    var serverAvailable: Bool { releases.contains { $0.kind != "DLC" && (!$0.sources.isEmpty || !($0.artifacts ?? []).isEmpty) } }
+    var serverCached: Bool { releases.contains { $0.kind != "DLC" && !($0.artifacts ?? []).isEmpty } }
     func ready(in library: [LibraryEntry], storageId: String = "") -> Bool {
         releases.contains { release in library.contains {
             $0.releaseId == release.id && $0.state == "READY_ON_PS5" && (storageId.isEmpty || $0.storageId == storageId)
@@ -148,9 +149,33 @@ struct Job: Codable, Identifiable {
     let speedBytesPerSecond: Int64; let etaSeconds: Int?; let error: String?; let queuePosition: Int?; let location: String?; let progress: BuildProgress?
     var retryable: Bool { state == "ERROR" }
     var dismissible: Bool { ["COMPLETED","READY_ON_PS5","ERROR","CANCELLED"].contains(state) }
+    var displayStage:String {
+        if state == "COMPLETED" { return "Prepared and verified" }
+        if state == "ERROR" { return "Preparation failed" }
+        if state == "CANCELLED" { return "Preparation cancelled" }
+        if let stage=progress?.stage,!stage.isEmpty{return stage}
+        if kind != "BUILD"{return readable(state)}
+        return ["QUEUED":"Waiting in build queue","DOWNLOADING":"Downloading source","EXTRACTING":"Extracting source","BUILDING":"Preparing package","VERIFYING":"Verifying package","RETRYING":"Retrying preparation"][state] ?? readable(state)
+    }
+    func applying(_ event:Events.Event)->Job {
+        Job(id:id,title:title,releaseId:releaseId,kind:kind,state:event.state,consoleId:consoleId,storageId:storageId,
+            downloadedBytes:event.progress.downloadedBytes,totalBytes:event.progress.totalBytes,
+            speedBytesPerSecond:event.progress.speedBytesPerSecond,etaSeconds:event.progress.etaSeconds,error:error,
+            queuePosition:queuePosition,location:location,progress:event.progress.conversion ?? progress)
+    }
 }
-struct BuildProgress: Codable { let stage: String?; let completedStages: Int?; let totalStages: Int? }
-struct Featured: Codable { let gameId: String?; let heroUrl: String?; let state: String; let nextRotationAt: String }
+struct BuildByteProgress:Codable {
+    let completedBytes:Int64;let totalBytes:Int64
+    var fraction:Double?{totalBytes>0 ? min(1,max(0,Double(completedBytes)/Double(totalBytes))):nil}
+}
+struct BuildComponentProgress:Codable {let method:String?;let state:String?;let size:Int64?}
+struct BuildProgress: Codable {
+    let stage:String?;let completedStages:Int?;let totalStages:Int?
+    let operation:BuildByteProgress?;let extraction:BuildByteProgress?;let staging:BuildByteProgress?
+    let package:BuildComponentProgress?;let fakelib:BuildComponentProgress?
+    var bytes:BuildByteProgress?{operation ?? extraction ?? staging}
+    var fraction:Double?{bytes?.fraction}
+}
 struct Plan: Decodable {
     struct Compatibility: Decodable { let status: String; let method: String? }
     struct Destination: Decodable, Identifiable {
@@ -184,14 +209,15 @@ struct ReviewedInstallation {
 struct Artifact: Decodable, Identifiable { let id: String; let title: String; let version: String; let format: String; let size: Int64; let verified: Bool }
 struct Acknowledgement: Decodable { let id: String?; let ok: Bool?; let consoleId: String? }
 struct Invitation: Decodable { let token: String }
+struct LibraryNodeServiceInfo:Decodable {let service:String;let apiVersion:Int;var compatible:Bool{service=="ps5library-node"&&apiVersion==1}}
 struct CommunityStatus: Decodable {
-    let configured:Bool;let masterUrl:String?;let displayName:String?;let serverId:String?;let state:String
-    let userCode:String?;let verificationUri:String?;let verificationUriComplete:String?;let expiresAt:String?;let banReason:String?;let error:String?;let updatedAt:String?
+    let configured:Bool;let displayName:String?;let serverId:String?;let state:String
+    let userCode:String?;let verificationUriComplete:String?;let expiresAt:String?;let banReason:String?;let error:String?;let updatedAt:String?
 }
 struct CommunityRequest: Encodable { let displayName:String }
 struct CommunityIdentity:Decodable {let id:String;let handle:String;let displayName:String}
 struct CommunityAccountStatus:Decodable {
-    let configured:Bool;let state:String;let userCode:String?;let verificationUri:String?;let verificationUriComplete:String?;let expiresAt:String?;let account:CommunityIdentity?;let error:String?;let updatedAt:String?
+    let configured:Bool;let state:String;let userCode:String?;let verificationUriComplete:String?;let expiresAt:String?;let account:CommunityIdentity?;let error:String?;let updatedAt:String?
 }
 struct CommunityIdentityRequest:Encodable {let deviceName:String}
 struct CommunityGameSessionSummary:Decodable {let id:String;let adapterId:String;let gameTitleId:String;let gameVersion:String;let playerCount:Int;let maxPlayers:Int;let expiresAt:String}
@@ -199,15 +225,24 @@ struct CommunityFriend:Decodable,Identifiable {let id:String;let handle:String;l
 struct CommunityFriendRequest:Decodable,Identifiable {let id:String;let createdAt:String;let from:CommunityIdentity?;let to:CommunityIdentity?}
 struct CommunityFriendRequests:Decodable {let incoming:[CommunityFriendRequest];let outgoing:[CommunityFriendRequest]}
 struct CommunityFriendRequestBody:Encodable {let handle:String}
-struct Events: Decodable { struct Event: Decodable { let id: Int64 }; let events: [Event] }
-struct Snapshot: Codable { var games: [Game]; var consoles: [Console]; var jobs: [Job]; var featured: Featured?; var library: [LibraryEntry]; var consoleId: String; var installations: [InstallationStatus]? = nil }
+struct Events:Decodable {
+    struct Event:Decodable {
+        struct Progress:Decodable {
+            let downloadedBytes:Int64;let totalBytes:Int64?;let speedBytesPerSecond:Int64;let etaSeconds:Int?;let conversion:BuildProgress?
+        }
+        let id:Int64;let jobId:String;let state:String;let progress:Progress;let createdAt:String
+        var terminal:Bool{["COMPLETED","READY_ON_PS5","ERROR","CANCELLED"].contains(state)}
+    }
+    let events:[Event]
+}
+struct Snapshot: Codable { var games: [Game]; var consoles: [Console]; var jobs: [Job]; var library: [LibraryEntry]; var consoleId: String; var installations: [InstallationStatus]? = nil }
 struct RefreshBatch {
-    let games:[Game]?;let consoles:[Console]?;let jobs:[Job]?;let featured:Featured?;let installations:[InstallationStatus]?
-    var reachable:Bool { games != nil || consoles != nil || jobs != nil || featured != nil || installations != nil }
+    let games:[Game]?;let consoles:[Console]?;let jobs:[Job]?;let installations:[InstallationStatus]?
+    var reachable:Bool { games != nil || consoles != nil || jobs != nil || installations != nil }
     func applying(to current:Snapshot)->Snapshot {
         var next=current
         if let games{next.games=games};if let consoles{next.consoles=consoles};if let jobs{next.jobs=jobs}
-        if let featured{next.featured=featured};if let installations{next.installations=installations}
+        if let installations{next.installations=installations}
         return next
     }
 }
@@ -258,7 +293,7 @@ struct Notice: Decodable, Identifiable {
 }
 enum GameCollection: String, CaseIterable, Identifiable {
     case all = "All Games", recent = "Recently Added", updated = "Recently Updated"
-    case releases = "New Releases", saved = "Saved Games", server = "Ready on Server"
+    case releases = "New Releases", saved = "Saved Games", server = "Server Library"
     var id: String { rawValue }
     func select(_ games: [Game], query: String = "", genre: String = "") -> [Game] {
         let result = games.filter { game in
@@ -266,7 +301,7 @@ enum GameCollection: String, CaseIterable, Identifiable {
             guard matches else { return false }
             switch self {
             case .saved: return game.saved == true
-            case .server: return game.serverReady
+            case .server: return game.serverAvailable
             case .updated: return game.recentlyUpdated == true
             case .recent: return game.releases.contains { !$0.sources.isEmpty }
             default: return true
