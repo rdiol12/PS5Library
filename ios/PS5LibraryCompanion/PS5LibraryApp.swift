@@ -133,7 +133,7 @@ struct LibraryGameRow:View {
     }
     private var job:Job? {
         let ids=Set(game.releases.map(\.id))
-        return store.data.jobs.first{ids.contains($0.releaseId)&&!["COMPLETED","READY_ON_PS5","CANCELLED"].contains($0.state)}
+        return store.data.jobs.first{ids.contains($0.releaseId) && !["COMPLETED","READY_ON_PS5","CANCELLED"].contains($0.state)}
     }
     private var location:String {
         if let job{return job.displayStage}
@@ -698,7 +698,7 @@ struct LibraryView:View {
         let available = scope=="server" ? GameCollection.server.select(store.data.games) : store.data.games.filter{$0.ready(in:store.data.library,storageId:storageId)}
         return available.filter { game in
             (!savedOnly || game.saved==true) && (query.isEmpty || ([game.title,game.titleId,game.publisher ?? ""]+(game.genres ?? [])).joined(separator:" ").localizedCaseInsensitiveContains(query))
-        }.sorted{$0.title.localizedStandardCompare($1.title)==.orderedAscending}
+        }.sorted{$0.title.localizedStandardCompare($1.title) == .orderedAscending}
     }
     private var storageName:String {
         guard !storageId.isEmpty else{return "All storage"}

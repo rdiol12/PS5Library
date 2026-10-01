@@ -15,6 +15,7 @@ grep -q 'private struct LibraryStage' PS5LibraryCompanion/PS5LibraryApp.swift
 grep -q 'NavigationStack{ProfileView()}.tabItem' PS5LibraryCompanion/PS5LibraryApp.swift
 grep -q 'let operation:BuildByteProgress?' PS5LibraryCompanion/Models.swift
 test "$(grep -c 'INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES' PS5LibraryCompanion.xcodeproj/project.pbxproj)" -eq 2
+! grep -Eq '&&!|==\.' PS5LibraryCompanion/*.swift
 if command -v swiftc >/dev/null 2>&1; then
   swiftc PS5LibraryCompanion/Models.swift Checks/main.swift -o "$checks/models"
   "$checks/models"
