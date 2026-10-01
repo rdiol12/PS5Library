@@ -21,7 +21,7 @@ enum Credentials {
     static func remove(_ id: String) { SecItemDelete(query(id) as CFDictionary) }
 }
 actor API {
-    let base: URL; let token: String; let session: URLSession
+    let base: URL; let token: String; let session: URLSession;private var verified=false
     init(server: URL, token: String = "") throws {
         guard serverAddressAllowed(server) else{throw StoreError.message("Use HTTPS, or HTTP only for a private LAN server such as http://192.168.1.20:3150.")}
         base=server;self.token=token
@@ -33,6 +33,18 @@ actor API {
         guard path.hasPrefix("/api/v1/"),!path.contains(".."),let url=URL(string:path,relativeTo:base)?.absoluteURL,url.host==base.host,url.port==base.port,url.scheme==base.scheme else{throw StoreError.message("Invalid server resource.")};return url
     }
     func makeRequest(_ path: String) throws -> URLRequest { var request=URLRequest(url:try url(path));request.setValue("companion",forHTTPHeaderField:"X-PS5Library-Client");if !token.isEmpty{request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")};return request }
+    private func verifyLibraryNode() async throws {
+        if verified{return}
+        var request=URLRequest(url:try url("/api/v1/service-info"));request.setValue("companion",forHTTPHeaderField:"X-PS5Library-Client")
+        let result:(Data,URLResponse)
+        do{result=try await session.data(for:request)}catch{if let message=serverConnectionMessage(error,server:base){throw StoreError.message(message)};throw error}
+        let(data,response)=result
+        guard let response=response as? HTTPURLResponse,response.statusCode==200,data.count<=1024,
+              let marker=try? JSONDecoder().decode(LibraryNodeServiceInfo.self,from:data),marker.compatible else {
+            throw StoreError.message("This address is not a compatible PS5Library Server.")
+        }
+        verified=true
+    }
     func request<T:Decodable>(_ path: String, method: String = "GET", json: [String:String] = [:]) async throws -> T {
         try await request(path, method:method, body:json)
     }
@@ -41,6 +53,7 @@ actor API {
     }
     func send<Body:Encodable>(_ path:String,method:String,body:Body) async throws {_ = try await response(path,method:method,body:JSONEncoder().encode(body))}
     private func response(_ path:String,method:String,body:Data?) async throws -> Data {
+        try await verifyLibraryNode()
         var request=try makeRequest("/api/v1"+path);request.httpMethod=method
         if let body {request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=body}
         let result:(Data,URLResponse)
@@ -50,8 +63,9 @@ actor API {
         guard data.count<=12*1024*1024 else{throw StoreError.message("Server response is too large.")}
         return data
     }
-    func artwork(_ path:String) async throws -> Data { let(data,response)=try await session.data(for:makeRequest(path));guard (response as? HTTPURLResponse)?.statusCode==200,data.count<=12*1024*1024 else{throw StoreError.message("Artwork unavailable")};return data }
+    func artwork(_ path:String) async throws -> Data {try await verifyLibraryNode();let(data,response)=try await session.data(for:makeRequest(path));guard (response as? HTTPURLResponse)?.statusCode==200,data.count<=12*1024*1024 else{throw StoreError.message("Artwork unavailable")};return data }
     func media(_ asset:MediaAsset,kind:String) async throws -> URL {
+        try await verifyLibraryNode()
         guard asset.valid(for:kind) else{throw StoreError.message("Invalid media metadata.")}
         let config=URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies=false;config.urlCache=nil;config.timeoutIntervalForRequest=30;config.timeoutIntervalForResource=300
@@ -84,6 +98,7 @@ actor API {
         keep=true;return file
     }
     func downloadSave(_ backup:SaveBackup) async throws -> URL {
+        try await verifyLibraryNode()
         guard backup.downloadable,let location=backup.downloadUrl,let size=backup.totalBytes,let expected=backup.sha256 else{throw StoreError.message("This backup is not ready to download.")}
         let config=URLSessionConfiguration.ephemeral;config.httpShouldSetCookies=false;config.urlCache=nil;config.timeoutIntervalForRequest=30;config.timeoutIntervalForResource=1800
         let download=URLSession(configuration:config,delegate:NoRedirectPolicy(),delegateQueue:nil);defer{download.invalidateAndCancel()}
@@ -97,28 +112,32 @@ actor API {
         do{try FileManager.default.moveItem(at:source,to:destination);try FileManager.default.setAttributes([.protectionKey:FileProtectionType.complete],ofItemAtPath:destination.path);return destination}
         catch{try? FileManager.default.removeItem(at:destination);throw error}
     }
-    func events(after:Int64) throws -> URLSessionWebSocketTask { var request=try makeRequest("/api/v1/events/live?after=\(after)");var url=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!;url.scheme=webSocketScheme(for:base.scheme);request.url=url.url;let socket=session.webSocketTask(with:request);socket.resume();return socket }
+    func events(after:Int64) async throws -> URLSessionWebSocketTask {try await verifyLibraryNode();var request=try makeRequest("/api/v1/events/live?after=\(after)");var url=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!;url.scheme=webSocketScheme(for:base.scheme);request.url=url.url;let socket=session.webSocketTask(with:request);socket.resume();return socket }
 }
 @MainActor final class Store: ObservableObject {
-    @Published var accounts:[Account]=[];@Published var account:Account?;@Published var data=Snapshot(games:[],consoles:[],jobs:[],featured:nil,library:[],consoleId:"")
+    @Published var accounts:[Account]=[];@Published var account:Account?;@Published var data=Snapshot(games:[],consoles:[],jobs:[],library:[],consoleId:"")
     @Published var error:String?;@Published var offline=false;@Published var loading=false
     var api:API?;private var poll:Task<Void,Never>?;private var live:Task<Void,Never>?;private var socket:URLSessionWebSocketTask?;private var refreshing=false
     init(){if let saved=UserDefaults.standard.data(forKey:"accounts"){accounts=(try? JSONDecoder().decode([Account].self,from:saved)) ?? []};if let id=UserDefaults.standard.string(forKey:"activeAccount"),let selected=accounts.first(where:{$0.id==id}){activate(selected)}}
     func cache(_ id:String) throws -> URL { let folder=try FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true).appendingPathComponent("PS5Library",isDirectory:true);try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true);return folder.appendingPathComponent(id+".json") }
-    func activate(_ selected:Account){poll?.cancel();live?.cancel();socket?.cancel(with:.goingAway,reason:nil);account=selected;api=nil;refreshing=false;data=Snapshot(games:[],consoles:[],jobs:[],featured:nil,library:[],consoleId:"");offline=true
+    func activate(_ selected:Account){poll?.cancel();live?.cancel();socket?.cancel(with:.goingAway,reason:nil);account=selected;api=nil;refreshing=false;data=Snapshot(games:[],consoles:[],jobs:[],library:[],consoleId:"");offline=true
         if let file=try? cache(selected.id),let saved=try? Data(contentsOf:file),let value=try? JSONDecoder().decode(Snapshot.self,from:saved){data=value}
         guard let token=Credentials.read(selected.id) else{error="Sign in to this account again.";account=nil;return}
         do{api=try API(server:selected.server,token:token)}catch{self.error=error.localizedDescription;return}
         UserDefaults.standard.set(selected.id,forKey:"activeAccount");poll=Task{while !Task.isCancelled{await refresh();try? await Task.sleep(nanoseconds:10_000_000_000)}}
         live=Task{var cursor:Int64=0;while !Task.isCancelled{do{guard let api=self.api else{return};let connection=try await api.events(after:cursor);socket=connection
-            while !Task.isCancelled{let message=try await connection.receive();let bytes:Data;switch message{case .data(let value):bytes=value;case .string(let value):bytes=Data(value.utf8);@unknown default:continue};if let events=try? JSONDecoder().decode(Events.self,from:bytes){cursor=events.events.last?.id ?? cursor};await refresh()}
+            while !Task.isCancelled{let message=try await connection.receive();let bytes:Data;switch message{case .data(let value):bytes=value;case .string(let value):bytes=Data(value.utf8);@unknown default:continue};guard let batch=try? JSONDecoder().decode(Events.self,from:bytes) else{continue};cursor=batch.events.last?.id ?? cursor
+                var refreshRequired=false
+                for event in batch.events {if let index=data.jobs.firstIndex(where:{$0.id==event.jobId}){data.jobs[index]=data.jobs[index].applying(event)}else{refreshRequired=true};refreshRequired = refreshRequired || event.terminal}
+                if !batch.events.isEmpty{offline=false};if refreshRequired{await refresh()}
+            }
         }catch{if Task.isCancelled{return};try? await Task.sleep(nanoseconds:5_000_000_000)}}}
     }
     func refresh() async { guard !refreshing,let api=api,let selected=account else{return};refreshing=true;loading=data.games.isEmpty;defer{if account?.id==selected.id{refreshing=false;loading=false}}
-        async let games:([Game]?,String?)=capture{try await api.request("/catalog")};async let consoles:([Console]?,String?)=capture{try await api.request("/consoles")};async let jobs:([Job]?,String?)=capture{try await api.request("/jobs")};async let featured:(Featured?,String?)=capture{try await api.request("/featured")};async let installations:([InstallationStatus]?,String?)=capture{try await api.request("/installations")}
-        let fetched=await(games,consoles,jobs,featured,installations);let batch=RefreshBatch(games:fetched.0.0,consoles:fetched.1.0,jobs:fetched.2.0,featured:fetched.3.0,installations:fetched.4.0)
+        async let games:([Game]?,String?)=capture{try await api.request("/catalog")};async let consoles:([Console]?,String?)=capture{try await api.request("/consoles")};async let jobs:([Job]?,String?)=capture{try await api.request("/jobs")};async let installations:([InstallationStatus]?,String?)=capture{try await api.request("/installations")}
+        let fetched=await(games,consoles,jobs,installations);let batch=RefreshBatch(games:fetched.0.0,consoles:fetched.1.0,jobs:fetched.2.0,installations:fetched.3.0)
         guard account?.id==selected.id,!Task.isCancelled else{return}
-        guard batch.reachable else{offline=true;error=fetched.0.1 ?? fetched.1.1 ?? fetched.2.1 ?? fetched.3.1 ?? fetched.4.1 ?? "Cannot reach PS5Library.";return}
+        guard batch.reachable else{offline=true;error=fetched.0.1 ?? fetched.1.1 ?? fetched.2.1 ?? fetched.3.1 ?? "Cannot reach PS5Library.";return}
         var next=batch.applying(to:data);let id=next.consoleId.isEmpty ? (next.consoles.first(where:{$0.isDefault})?.id ?? next.consoles.first?.id ?? "") : next.consoleId
         if !id.isEmpty,let library:[LibraryEntry]=try? await api.request("/consoles/\(id)/library"){next.library=library}else if id != data.consoleId{next.library=[]}
         guard account?.id==selected.id,!Task.isCancelled else{return};next.consoleId=id;data=next;offline=false;error=nil
@@ -129,5 +148,5 @@ actor API {
     }
     func perform(_ action: @escaping (API) async throws -> Void) { guard let api=api else{return};let owner=account?.id;Task{do{try await action(api);if account?.id==owner{await refresh()}}catch{if account?.id==owner{self.error=error.localizedDescription}}} }
     func ready(_ game:Game)->Bool { game.ready(in:data.library) }
-    func signOut(){let old=api,profile=account;poll?.cancel();live?.cancel();socket?.cancel(with:.goingAway,reason:nil);api=nil;account=nil;data=Snapshot(games:[],consoles:[],jobs:[],featured:nil,library:[],consoleId:"");if let profile=profile{Credentials.remove(profile.id);accounts.removeAll{$0.id==profile.id};if let file=try? cache(profile.id){try? FileManager.default.removeItem(at:file)}};UserDefaults.standard.set(try? JSONEncoder().encode(accounts),forKey:"accounts");Task{let _:Acknowledgement?=try? await old?.request("/auth/logout",method:"POST")} }
+    func signOut(){let old=api,profile=account;poll?.cancel();live?.cancel();socket?.cancel(with:.goingAway,reason:nil);api=nil;account=nil;data=Snapshot(games:[],consoles:[],jobs:[],library:[],consoleId:"");if let profile=profile{Credentials.remove(profile.id);accounts.removeAll{$0.id==profile.id};if let file=try? cache(profile.id){try? FileManager.default.removeItem(at:file)}};UserDefaults.standard.set(try? JSONEncoder().encode(accounts),forKey:"accounts");Task{let _:Acknowledgement?=try? await old?.request("/auth/logout",method:"POST")} }
 }

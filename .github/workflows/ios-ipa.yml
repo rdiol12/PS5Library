@@ -1,6 +1,11 @@
 name: Build iOS IPA
 
 on:
+  push:
+    branches: [phone-test]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-ipa.yml"
   workflow_dispatch:
 
 permissions:
