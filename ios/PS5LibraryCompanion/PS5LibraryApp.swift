@@ -417,8 +417,8 @@ struct JobCard:View {
     private var accessibilityTitle:String{job.title ?? "Selected release"}
     private var game:Game?{store.data.games.first(where:{$0.releases.contains(where:{$0.id==job.releaseId})})}
     private var stateColor:Color{job.state=="ERROR" ? danger:["COMPLETED","READY_ON_PS5"].contains(job.state) ? success:accent}
-    private var byteProgress:Double?{guard let total=job.totalBytes,total>0 else{return nil};return min(1,max(0,Double(job.downloadedBytes)/Double(total)))}
-    private var shownProgress:Double?{job.kind=="BUILD" ? job.progress?.fraction:byteProgress}
+    private var measuredBytes:BuildByteProgress?{job.measuredBytes}
+    private var shownProgress:Double?{measuredBytes?.fraction}
     var body:some View {
         VStack(alignment:.leading,spacing:14) {
             HStack(alignment:.top,spacing:14) {
@@ -441,7 +441,7 @@ struct JobCard:View {
             }
             if job.kind=="BUILD" && job.state != "DOWNLOADING" {
                 if job.state=="COMPLETED"{Label("Prepared and verified",systemImage:"checkmark.circle.fill").foregroundStyle(success)}
-                else if let progress=job.progress?.fraction,let detail=job.progress?.bytes {
+                else if let detail=measuredBytes,let progress=detail.fraction {
                     ProgressView(value:progress).tint(stateColor).accessibilityLabel("\(accessibilityTitle), \(job.displayStage)").accessibilityValue("\(Int(progress*100)) percent, \(bytes(detail.completedBytes)) of \(bytes(detail.totalBytes))")
                     Text(bytes(detail.completedBytes)+" / "+bytes(detail.totalBytes)).font(.caption.monospacedDigit()).foregroundStyle(secondaryText)
                 } else if job.state != "ERROR"{ProgressView().tint(accent)}
@@ -452,10 +452,10 @@ struct JobCard:View {
                         if let fakelib=detail.fakelib?.state,!(["UNKNOWN","NOT_REQUIRED"].contains(fakelib)){Label("Backport "+readable(fakelib),systemImage:"puzzlepiece.extension.fill")}
                     }.font(.caption2).foregroundStyle(secondaryText)
                 }
-            } else if let progress=byteProgress {
-                ProgressView(value:progress).tint(stateColor).accessibilityLabel("\(accessibilityTitle), \(job.displayStage)").accessibilityValue("\(Int(progress*100)) percent, \(bytes(job.downloadedBytes)) of \(bytes(job.totalBytes ?? 0))")
+            } else if let detail=measuredBytes,let progress=detail.fraction {
+                ProgressView(value:progress).tint(stateColor).accessibilityLabel("\(accessibilityTitle), \(job.displayStage)").accessibilityValue("\(Int(progress*100)) percent, \(bytes(detail.completedBytes)) of \(bytes(detail.totalBytes))")
                 HStack {
-                    Text(bytes(job.downloadedBytes)+" / "+bytes(job.totalBytes ?? 0))
+                    Text(bytes(detail.completedBytes)+" / "+bytes(detail.totalBytes))
                     Spacer()
                     if job.speedBytesPerSecond>0{Text(bytes(job.speedBytesPerSecond)+"/s")}
                 }.font(.caption.monospacedDigit()).foregroundStyle(secondaryText)
@@ -510,7 +510,7 @@ struct PairingView:View {
                 Image(systemName:"link.circle.fill").font(.title2).foregroundStyle(accent)
                 VStack(alignment:.leading,spacing:2){Text("Connect a PS5").font(.headline);Text("Use the code shown by PS5Library").font(.caption).foregroundStyle(secondaryText)}
             }
-            TextField("10-character pairing code",text:$code).textInputAutocapitalization(.characters).autocorrectionDisabled()
+            TextField("5-character pairing code",text:$code).textInputAutocapitalization(.characters).autocorrectionDisabled()
                 .font(.body.monospaced()).padding(.horizontal,14).frame(minHeight:48).background(.white.opacity(0.07),in:RoundedRectangle(cornerRadius:12))
                 .accessibilityHint("Enter the pairing code displayed on your PS5")
             Button("Scan pairing QR code",systemImage:"qrcode.viewfinder"){scanning=true}.buttonStyle(.bordered).disabled(store.offline)
@@ -988,8 +988,8 @@ struct SaveBackupsView:View {
                         Text(save.platform+" | "+save.saveTitleId+" | "+bytes(save.sizeBytes)).font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button("Back up to server",systemImage:"arrow.up.doc"){request(save)}.buttonStyle(.borderedProminent).disabled(!enabled || !busy.isEmpty || active(save))
-                            if terms?.accepted==true,portableEnabled,let game=console.games.first(where:{$0.titleId==save.gameTitleId}) {
-                                Menu("Share save",systemImage:"person.2") { ForEach(game.versions,id:\.self){version in Button("Version "+version){preparePortable(save,version)}} }.disabled(!busy.isEmpty)
+                            if portableEnabled,let game=console.games.first(where:{$0.titleId==save.gameTitleId}) {
+                                Menu("Prepare portable save",systemImage:"person.2") { ForEach(game.versions,id:\.self){version in Button("Version "+version){preparePortable(save,version)}} }.disabled(!busy.isEmpty)
                             }
                         }
                     }.padding(.vertical,4)
@@ -1026,7 +1026,7 @@ struct SaveBackupsView:View {
                             if let progress=save.progress,save.state != "READY" { ProgressView(value:progress).accessibilityLabel("\(save.displayName ?? save.saveTitleId) save transfer").accessibilityValue("\(bytes(save.uploadedBytes)) of \(bytes(save.totalBytes ?? 0))") }
                             if let error=save.error { Text(readable(error)).font(.caption).foregroundStyle(warning) }
                             if save.origin=="EXPORT" && save.state=="READY" && save.masterPublicationId==nil { Button("Submit for community review"){publish(save)}.disabled(!busy.isEmpty) }
-                            if save.origin=="COMMUNITY" && save.state=="READY" { Button("Import with rollback"){importSave(save)}.disabled(!portableEnabled || !busy.isEmpty || !(console.saveData ?? []).contains(where:{$0.saveTitleId==save.saveTitleId && $0.directory==save.directory})) }
+                            if save.origin=="COMMUNITY" && save.state=="READY" { Button("Import with safety backup"){importSave(save)}.disabled(!portableEnabled || !busy.isEmpty || (console.saveData ?? []).filter{$0.platform==save.platform && $0.gameTitleId==save.gameTitleId && $0.saveTitleId==save.saveTitleId && $0.directory==save.directory}.count != 1) }
                         }.padding(.vertical,3)
                     }
                     Menu("Find compatible saves",systemImage:"magnifyingglass") { ForEach(console.games.filter(\.available)){game in ForEach(game.versions,id:\.self){version in Button(game.title+" | "+version){find(game,version)}}} }.disabled(!portableEnabled || !busy.isEmpty)
@@ -1048,15 +1048,15 @@ struct SaveBackupsView:View {
     }
     func active(_ save:SaveSlot)->Bool{backups.contains{$0.consoleId==console.id && $0.localUserId==save.localUserId && $0.platform==save.platform && $0.saveTitleId==save.saveTitleId && $0.directory==save.directory && ["REQUESTED","UPLOADING","VERIFYING"].contains($0.state)}}
     func load() async {guard !loading,let api=store.api else{return};loading=true;defer{loading=false};do{let all:[SaveBackup]=try await api.request("/save-backups");if !Task.isCancelled{backups=all.filter{$0.consoleId==console.id};failure=nil}}catch{if !Task.isCancelled{failure=error.localizedDescription};return};async let allPortable:[PortableSave]?=try? api.request("/portable-saves");async let allImports:[SaveImport]?=try? api.request("/save-imports");async let currentTerms:CommunityTerms?=try? api.request("/community/terms");let result=await(allPortable,allImports,currentTerms);if !Task.isCancelled{if let values=result.0{portable=values.filter{$0.consoleId==nil || $0.consoleId==console.id}};if let values=result.1{imports=values.filter{$0.consoleId==console.id}};terms=result.2;communityUnavailable=result.2==nil}}
-    func request(_ save:SaveSlot){run(save.id){api in let _:Acknowledgement=try await api.request("/consoles/\(console.id)/saves/backups",method:"POST",body:SaveBackupRequest(localUserId:save.localUserId,platform:save.platform,saveTitleId:save.saveTitleId,directory:save.directory))}}
+    func request(_ save:SaveSlot){run(save.id){api in let _:Acknowledgement=try await api.request("/consoles/\(console.id)/saves/backups",method:"POST",body:SaveBackupRequest(localUserId:save.localUserId,platform:save.platform,gameTitleId:save.gameTitleId,saveTitleId:save.saveTitleId,directory:save.directory))}}
     func download(_ backup:SaveBackup){run(backup.id){api in let file=try await api.downloadSave(backup);if let old=exported?.url{try? FileManager.default.removeItem(at:old)};exported=(backup.id,file)}}
     func remove(_ backup:SaveBackup){run(backup.id){api in let _:Acknowledgement=try await api.request("/save-backups/\(backup.id)",method:"DELETE");if exported?.id==backup.id,let file=exported?.url{try? FileManager.default.removeItem(at:file);exported=nil}}}
     func acceptTerms(_ value:CommunityTerms){run("terms"){api in let _:Acknowledgement=try await api.request("/community/terms/accept",method:"POST",body:CommunityConsent(accepted:true,termsVersion:value.version,termsSha256:value.sha256));acceptedRisk=false}}
-    func preparePortable(_ save:SaveSlot,_ version:String){run(save.id){api in let _:SaveTaskCreated=try await api.request("/consoles/\(console.id)/saves/exports",method:"POST",body:SaveExportRequest(localUserId:save.localUserId,platform:save.platform,saveTitleId:save.saveTitleId,directory:save.directory,gameVersion:version))}}
+    func preparePortable(_ save:SaveSlot,_ version:String){run(save.id){api in let _:SaveTaskCreated=try await api.request("/consoles/\(console.id)/saves/exports",method:"POST",body:SaveExportRequest(localUserId:save.localUserId,platform:save.platform,gameTitleId:save.gameTitleId,saveTitleId:save.saveTitleId,directory:save.directory,gameVersion:version))}}
     func publish(_ save:PortableSave){run(save.id){api in let _:SaveTaskCreated=try await api.request("/portable-saves/\(save.id)/publish",method:"POST",body:PortablePublication(displayName:save.displayName ?? save.saveTitleId,description:"Shared from "+console.name))}}
     func find(_ game:ProfileGame,_ version:String){guard let api=store.api else{return};busy=game.id;Task{@MainActor in defer{busy=""};do{let value:CommunitySaveCatalog=try await api.request("/community/saves?consoleId=\(console.id)&gameTitleId=\(game.titleId)&gameVersion=\(version)");community=value.versions.flatMap(\.saves);failure=nil}catch{failure=error.localizedDescription}}}
     func downloadCommunity(_ save:CommunitySave){run(save.id){api in let _:SaveTaskCreated=try await api.request("/community/saves/\(save.id)/download",method:"POST",body:CommunityDownloadRequest(consoleId:console.id,gameTitleId:save.gameTitleId,gameVersion:save.gameVersion))}}
-    func importSave(_ save:PortableSave){guard let slot=(console.saveData ?? []).first(where:{$0.saveTitleId==save.saveTitleId && $0.directory==save.directory}) else{failure="Create the matching save slot in the game first.";return};run(save.id){api in let _:SaveTaskCreated=try await api.request("/portable-saves/\(save.id)/import",method:"POST",body:SaveImportRequest(consoleId:console.id,localUserId:slot.localUserId))}}
+    func importSave(_ save:PortableSave){let slots=(console.saveData ?? []).filter{$0.platform==save.platform && $0.gameTitleId==save.gameTitleId && $0.saveTitleId==save.saveTitleId && $0.directory==save.directory};guard slots.count==1,let slot=slots.first else{failure=slots.isEmpty ? "Create the matching save slot in the game first.":"Open PS5Library with the receiving console account and try again.";return};run(save.id){api in let _:SaveTaskCreated=try await api.request("/portable-saves/\(save.id)/import",method:"POST",body:SaveImportRequest(consoleId:console.id,localUserId:slot.localUserId))}}
     func run(_ id:String,_ action:@escaping(API) async throws->Void){guard busy.isEmpty,let api=store.api else{return};let owner=store.account?.id;busy=id;failure=nil;Task{@MainActor in defer{busy=""};do{try await action(api);if store.account?.id==owner{await load()}}catch{if store.account?.id==owner{failure=error.localizedDescription}}}}
 }
 struct NotificationsView:View {
