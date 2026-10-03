@@ -52,7 +52,7 @@ let requestedBackup=try JSONDecoder().decode(SaveBackup.self,from:Data(#"{"id":"
 assert(requestedBackup.progress == nil && !requestedBackup.downloadable)
 let readyBackup=try JSONDecoder().decode(SaveBackup.self,from:Data(#"{"id":"backup","consoleId":"one","localUserId":"12345678","platform":"PS5","gameTitleId":"PPSA10001","saveTitleId":"PPSA10000","directory":"autosave","sourceModifiedAt":1789237800,"format":"RAW_CONSOLE_V1","state":"READY","totalBytes":100,"uploadedBytes":100,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","manifest":{},"error":null,"createdAt":"2026-09-21T12:00:00Z","updatedAt":"2026-09-21T12:00:00Z","downloadUrl":"/api/v1/save-backups/backup/download"}"#.utf8))
 assert(readyBackup.progress == 1 && readyBackup.downloadable)
-let saveRequest=try JSONSerialization.jsonObject(with:JSONEncoder().encode(SaveBackupRequest(localUserId:"12345678",platform:"PS5",saveTitleId:"PPSA10000",directory:"autosave"))) as! [String:Any]
+let saveRequest=try JSONSerialization.jsonObject(with:JSONEncoder().encode(SaveBackupRequest(localUserId:"12345678",platform:"PS5",gameTitleId:"PPSA10001",saveTitleId:"PPSA10000",directory:"autosave"))) as! [String:Any]
 assert(saveRequest["localUserId"] as? String == "12345678" && saveRequest["platform"] as? String == "PS5" && saveRequest["directory"] as? String == "autosave")
 let summary = try JSONDecoder().decode(TrophySummary.self, from: Data(#"{"modifiedAt":1741335221,"earnedTrophies":{"platinum":0,"gold":1,"silver":2,"bronze":4}}"#.utf8))
 assert(summary.earnedTrophies.bronze == 4)
@@ -68,10 +68,13 @@ assert(!RefreshBatch(games:nil,consoles:nil,jobs:nil,installations:nil).reachabl
 let job = try JSONDecoder().decode(Job.self,from:Data(#"{"id":"job","title":"Build","releaseId":"base","kind":"BUILD","state":"BUILDING","consoleId":null,"storageId":null,"downloadedBytes":0,"totalBytes":null,"speedBytesPerSecond":0,"etaSeconds":null,"error":null,"progress":{"package":{"state":"BUILDING"},"fakelib":{"state":"SEPARATED"}}}"#.utf8))
 assert(job.progress != nil && job.progress?.stage == nil)
 assert(job.displayStage == "Preparing package")
+let downloadingBuild = try JSONDecoder().decode(Job.self,from:Data(#"{"id":"download","title":"Build","releaseId":"base","kind":"BUILD","state":"DOWNLOADING","consoleId":null,"storageId":null,"downloadedBytes":25,"totalBytes":100,"speedBytesPerSecond":5,"etaSeconds":15,"error":null,"progress":{"stage":"DOWNLOADING"}}"#.utf8))
+assert(downloadingBuild.measuredBytes?.completedBytes == 25 && downloadingBuild.measuredBytes?.totalBytes == 100 && downloadingBuild.measuredBytes?.fraction == 0.25)
 let events = try JSONDecoder().decode(Events.self,from:Data(#"{"type":"events","events":[{"id":1,"jobId":"job","state":"BUILDING","progress":{"downloadedBytes":25,"totalBytes":100,"speedBytesPerSecond":5,"etaSeconds":15,"conversion":{"stage":"Extracting archive","extraction":{"completedBytes":25,"totalBytes":100}}},"createdAt":"2026-10-01T00:00:00Z"}]}"#.utf8))
 let updatedJob=job.applying(events.events[0])
 assert(updatedJob.downloadedBytes == 25 && updatedJob.totalBytes == 100 && updatedJob.speedBytesPerSecond == 5 && updatedJob.etaSeconds == 15)
 assert(updatedJob.progress?.stage == "Extracting archive" && updatedJob.progress?.fraction == 0.25)
+assert(updatedJob.measuredBytes?.completedBytes == 25 && updatedJob.measuredBytes?.totalBytes == 100 && updatedJob.measuredBytes?.fraction == 0.25)
 assert(updatedJob.displayStage == "Extracting archive")
 let failedJob = try JSONDecoder().decode(Job.self,from:Data(#"{"id":"failed","title":"Build","releaseId":"base","kind":"BUILD","state":"ERROR","consoleId":null,"storageId":null,"downloadedBytes":0,"totalBytes":null,"speedBytesPerSecond":0,"etaSeconds":null,"error":"CORRUPT_INPUT","location":"Server cache / artifacts/game.pkg","progress":null}"#.utf8))
 assert(failedJob.retryable && failedJob.dismissible && failedJob.location?.hasSuffix("game.pkg")==true)
@@ -84,10 +87,11 @@ assert(communityRequest["displayName"] as? String == "Family Library")
 let dlc = try JSONDecoder().decode(Release.self,from:Data(#"{"id":"dlc","kind":"DLC","version":"1","title":"Expansion","sources":[]}"#.utf8))
 assert(dlc.label == "DLC: Expansion · 1")
 print("iOS model and collection checks passed")
-assert(pairingCode("  ab12cd34ef\n") == "AB12CD34EF")
-assert(pairingCode("abcdefghij") == nil)
-assert(pairingCode("ABC123") == nil)
-assert(pairingCode("AB12 CD34EF") == nil)
+assert(pairingCode("  a2b3c\n") == "A2B3C")
+assert(pairingCode("A2B3") == nil)
+assert(pairingCode("A2B3C4") == nil)
+assert(pairingCode("A01IO") == nil)
+assert(pairingCode("A2 B3") == nil)
 let update = try JSONSerialization.jsonObject(with:JSONEncoder().encode(ConsoleUpdate(isDefault:true))) as! [String:Any]
 assert(update["isDefault"] as? Bool == true && update["name"] == nil)
 assert(consoleName("  Living Room  ") == "Living Room")
@@ -147,24 +151,24 @@ assert(!serverAddressAllowed(URL(string:"ftp://192.168.1.20")!))
 assert(webSocketScheme(for:"https") == "wss")
 assert(webSocketScheme(for:"http") == "ws")
 let pairingServer=URL(string:"https://library.example:443")!
-let scanned=PairingQR("https://library.example/pair?code=ab12cd34ef&kind=frontend",server:pairingServer)
-assert(scanned?.code == "AB12CD34EF" && scanned?.frontend == true)
-assert(PairingQR("https://library.example/pair?code=AB12CD34EF",server:pairingServer)?.frontend == false)
+let scanned=PairingQR("https://library.example/pair?code=a2b3c&kind=frontend",server:pairingServer)
+assert(scanned?.code == "A2B3C" && scanned?.frontend == true)
+assert(PairingQR("https://library.example/pair?code=A2B3C",server:pairingServer)?.frontend == false)
 for invalid in [
-    "https://other.example/pair?code=AB12CD34EF",
-    "http://library.example/pair?code=AB12CD34EF",
-    "https://library.example:444/pair?code=AB12CD34EF",
-    "https://user@library.example/pair?code=AB12CD34EF",
-    "https://library.example/other?code=AB12CD34EF",
-    "https://library.example/pair?code=AB12CD34EF&code=1234567890",
-    "https://library.example/pair?code=AB12CD34EF&kind=unknown",
-    "https://library.example/pair?code=AB12CD34EF#ignored",
-    "https://library.example/pair?code=AB12CD34EF&next=https://other.example",
-    "AB12CD34EF"
+    "https://other.example/pair?code=A2B3C",
+    "http://library.example/pair?code=A2B3C",
+    "https://library.example:444/pair?code=A2B3C",
+    "https://user@library.example/pair?code=A2B3C",
+    "https://library.example/other?code=A2B3C",
+    "https://library.example/pair?code=A2B3C&code=Z9Y8X",
+    "https://library.example/pair?code=A2B3C&kind=unknown",
+    "https://library.example/pair?code=A2B3C#ignored",
+    "https://library.example/pair?code=A2B3C&next=https://other.example",
+    "A2B3C"
 ] { assert(PairingQR(invalid,server:pairingServer)==nil,invalid) }
 let localPairingServer=URL(string:"http://192.168.1.20:3150")!
-assert(PairingQR("http://192.168.1.20:3150/pair?code=AB12CD34EF",server:localPairingServer)?.code == "AB12CD34EF")
-assert(PairingQR("https://192.168.1.20:3150/pair?code=AB12CD34EF",server:localPairingServer) == nil)
+assert(PairingQR("http://192.168.1.20:3150/pair?code=A2B3C",server:localPairingServer)?.code == "A2B3C")
+assert(PairingQR("https://192.168.1.20:3150/pair?code=A2B3C",server:localPairingServer) == nil)
 print("iOS QR pairing checks passed")
 let unsupported=try JSONDecoder().decode(Plan.self,from:Data(#"{"method":null,"methods":[],"compatibility":{"status":"UNSUPPORTED_METHOD","method":null},"storage":[],"allowed":false,"reason":"UNSUPPORTED_METHOD","message":"No supported method","estimated":false}"#.utf8))
 assert(unsupported.method == nil && unsupported.online == nil)

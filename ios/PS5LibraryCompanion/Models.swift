@@ -134,7 +134,7 @@ struct PairingQR {
 }
 func pairingCode(_ input: String) -> String? {
     let value=input.trimmingCharacters(in:.whitespacesAndNewlines).uppercased()
-    return value.count == 10 && value.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) } ? value : nil
+    return value.range(of:"^[2-9A-HJ-NP-Z]{5}$",options:.regularExpression) != nil ? value : nil
 }
 func consoleName(_ input: String) -> String? {
     let value=input.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -149,6 +149,11 @@ struct Job: Codable, Identifiable {
     let speedBytesPerSecond: Int64; let etaSeconds: Int?; let error: String?; let queuePosition: Int?; let location: String?; let progress: BuildProgress?
     var retryable: Bool { state == "ERROR" }
     var dismissible: Bool { ["COMPLETED","READY_ON_PS5","ERROR","CANCELLED"].contains(state) }
+    var measuredBytes:BuildByteProgress? {
+        if kind=="BUILD",state != "DOWNLOADING"{return progress?.bytes}
+        guard let totalBytes,totalBytes>0 else{return nil}
+        return BuildByteProgress(completedBytes:downloadedBytes,totalBytes:totalBytes)
+    }
     var displayStage:String {
         if state == "COMPLETED" { return "Prepared and verified" }
         if state == "ERROR" { return "Preparation failed" }
@@ -258,7 +263,7 @@ struct SaveSlot: Decodable, Identifiable {
     let localUserId:String;let platform:String; let gameTitleId:String; let saveTitleId:String; let directory:String
     let title:String; let subtitle:String; let detail:String; let sizeBytes:Int64; let modifiedAt:Double
 }
-struct SaveBackupRequest: Encodable { let localUserId:String; let platform:String; let saveTitleId:String; let directory:String }
+struct SaveBackupRequest: Encodable { let localUserId:String; let platform:String; let gameTitleId:String; let saveTitleId:String; let directory:String }
 struct SaveBackup: Decodable, Identifiable {
     let id:String; let consoleId:String; let localUserId:String; let platform:String; let gameTitleId:String; let saveTitleId:String; let directory:String
     let sourceModifiedAt:Int64; let format:String; let state:String; let totalBytes:Int64?; let uploadedBytes:Int64; let sha256:String?; let error:String?
@@ -274,7 +279,7 @@ struct PortableSave:Decodable,Identifiable {
 struct SaveImport:Decodable,Identifiable {let id:String;let archiveId:String;let consoleId:String;let localUserId:String;let rollbackBackupId:String;let state:String;let rollbackState:String;let displayName:String?;let gameTitleId:String;let gameVersion:String;let saveTitleId:String;let directory:String;let downloadedBytes:Int64;let totalBytes:Int64;let speedBytesPerSecond:Int64;let error:String?;var progress:Double{totalBytes>0 ? min(1,max(0,Double(downloadedBytes)/Double(totalBytes))):0}}
 struct CommunitySaveCatalog:Decodable {struct Version:Decodable {let gameVersion:String;let saves:[CommunitySave]};let gameTitleId:String;let versions:[Version]}
 struct CommunitySave:Decodable,Identifiable {let id:String;let platform:String;let gameTitleId:String;let saveTitleId:String;let gameVersion:String;let region:String?;let displayName:String;let description:String;let size:Int64;let publisher:String}
-struct SaveExportRequest:Encodable {let localUserId:String;let platform:String;let saveTitleId:String;let directory:String;let gameVersion:String}
+struct SaveExportRequest:Encodable {let localUserId:String;let platform:String;let gameTitleId:String;let saveTitleId:String;let directory:String;let gameVersion:String}
 struct CommunityConsent:Encodable {let accepted:Bool;let termsVersion:String;let termsSha256:String}
 struct PortablePublication:Encodable {let displayName:String;let description:String}
 struct CommunityDownloadRequest:Encodable {let consoleId:String;let gameTitleId:String;let gameVersion:String}
