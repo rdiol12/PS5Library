@@ -77,8 +77,8 @@ private extension View {
     var body:some Scene{WindowGroup{RootView().environmentObject(store).preferredColorScheme(.dark).tint(accent)}}
 }
 struct ArtworkView:View {
-    @EnvironmentObject var store:Store;@Environment(\.accessibilityReduceMotion) private var reduceMotion;let path:String;@State private var image:UIImage?
-    var body:some View{ZStack{LinearGradient(colors:[raisedSurface,appBackground],startPoint:.topLeading,endPoint:.bottomTrailing);Image(systemName:"gamecontroller.fill").font(.largeTitle).foregroundStyle(accent.opacity(0.3));if let image{Image(uiImage:image).resizable().scaledToFill().frame(maxWidth:.infinity,maxHeight:.infinity).transition(.opacity)}}
+    @EnvironmentObject var store:Store;@Environment(\.accessibilityReduceMotion) private var reduceMotion;let path:String;var contentMode:ContentMode = .fill;@State private var image:UIImage?
+    var body:some View{ZStack{LinearGradient(colors:[raisedSurface,appBackground],startPoint:.topLeading,endPoint:.bottomTrailing);Image(systemName:"gamecontroller.fill").font(.largeTitle).foregroundStyle(accent.opacity(0.3));if let image{Image(uiImage:image).resizable().aspectRatio(contentMode:contentMode).frame(maxWidth:.infinity,maxHeight:.infinity).transition(.opacity)}}
         .clipped().allowsHitTesting(false).accessibilityHidden(true).task(id:(store.account?.id ?? "")+path){image=nil;guard !path.isEmpty,let api=store.api else{return};do{let data=try await api.artwork(path);let decoded=await Task.detached(priority:.utility){UIImage(data:data)?.preparingForDisplay()}.value;if !Task.isCancelled{withAnimation(reduceMotion ? nil:.easeOut(duration:0.2)){image=decoded}}}catch{}}
     }
 }
@@ -171,7 +171,7 @@ private struct LibraryStage:View {
     private var status:String{ready ? "Available on this PS5":game.serverCached ? "Ready on your Library Server":"Available on your Library Server"}
     var body:some View {
         ZStack(alignment:.bottomLeading) {
-            ArtworkView(path:game.heroUrl).frame(maxWidth:.infinity,minHeight:typeSize.isAccessibilitySize ? 520:430)
+            ArtworkView(path:game.heroUrl,contentMode:.fit).frame(maxWidth:.infinity,minHeight:typeSize.isAccessibilitySize ? 520:430)
             LinearGradient(colors:[.clear,appBackground.opacity(0.72),appBackground],startPoint:.top,endPoint:.bottom)
             LinearGradient(colors:[appBackground.opacity(0.88),.clear],startPoint:.leading,endPoint:.trailing)
             VStack(alignment:.leading,spacing:13) {
@@ -196,7 +196,7 @@ struct GameDetails:View {
         ScrollView {
             LazyVStack(alignment:.leading,spacing:24) {
                 ZStack(alignment:.bottomLeading) {
-                    ArtworkView(path:game.heroUrl)
+                    ArtworkView(path:game.heroUrl,contentMode:.fit)
                     LinearGradient(colors:[.clear,appBackground.opacity(0.35),appBackground],startPoint:.top,endPoint:.bottom)
                     VStack(alignment:.leading,spacing:9) {
                         if store.ready(game){StatusPill(text:"Ready on PS5",color:success,icon:"checkmark.circle.fill")}
