@@ -110,6 +110,7 @@ struct RootView:View {
                     Button("Sign out",role:.destructive){store.signOut()}
                 }
                 Section {
+                    NavigationLink("Server connection"){ServerConnectionView()}
                     NavigationLink("Console setup"){ConsolesView().navigationTitle("My PS5s")}
                     NavigationLink("Content Sources"){SourcesView().id(store.account?.id)}
                     NavigationLink("Notifications"){NotificationsView().id(store.account?.id)}
@@ -1264,10 +1265,28 @@ struct AddSourceView:View {
         }
     }
 }
+struct ServerConnectionView:View {
+    @EnvironmentObject var store:Store
+    @Environment(\.dismiss) var dismiss
+    @State private var fallback=""
+    @State private var failure:String?
+    var body:some View {
+        Form {
+            Section("Primary server") {Text(store.account?.server.absoluteString ?? "").textSelection(.enabled)}
+            Section("Tailscale fallback") {
+                TextField("100.x.x.x:3150 or https://name.ts.net",text:$fallback).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.URL)
+                Text("PS5Library always tries the primary server first. This address is used only when the primary connection cannot be reached.").font(.caption).foregroundStyle(secondaryText)
+                if let failure{Text(failure).font(.footnote).foregroundStyle(warning)}
+            }
+            Button("Save"){do{try store.updateFallback(fallback);dismiss()}catch{failure=error.localizedDescription}}
+        }.cinematicList().navigationTitle("Server Connection").onAppear{fallback=store.account?.fallbackServer?.absoluteString ?? ""}
+    }
+}
 struct SignIn:View {
     @EnvironmentObject var store:Store
     @Environment(\.dismiss) var dismiss
     @State private var server=""
+    @State private var fallbackServer=""
     @State private var username=""
     @State private var password=""
     @State private var invite=""
@@ -1290,6 +1309,11 @@ struct SignIn:View {
                             TextField("https://library.example or 192.168.1.20:3150",text:$server)
                                 .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.URL)
                                 .padding(.horizontal,14).frame(minHeight:50).background(.white.opacity(0.07),in:RoundedRectangle(cornerRadius:12))
+                            fieldLabel("TAILSCALE FALLBACK (OPTIONAL)")
+                            TextField("100.x.x.x:3150 or https://name.ts.net",text:$fallbackServer)
+                                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.URL)
+                                .padding(.horizontal,14).frame(minHeight:50).background(.white.opacity(0.07),in:RoundedRectangle(cornerRadius:12))
+                            Text("Used only when the primary server cannot be reached.").font(.caption).foregroundStyle(secondaryText)
                             fieldLabel("ACCOUNT")
                             TextField("Username",text:$username).textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.username)
                                 .padding(.horizontal,14).frame(minHeight:50).background(.white.opacity(0.07),in:RoundedRectangle(cornerRadius:12))
@@ -1302,7 +1326,7 @@ struct SignIn:View {
                             if let failure{Label(failure,systemImage:"exclamationmark.triangle.fill").font(.footnote).foregroundStyle(warning)}
                             Button(register ? "Create account":"Sign in",systemImage:"arrow.right"){
                                 busy=true
-                                Task{do{try await store.login(server:server,username:username,password:password,invite:invite,register:register);dismiss()}catch{failure=error.localizedDescription};password="";busy=false}
+                                Task{do{try await store.login(server:server,fallbackServer:fallbackServer,username:username,password:password,invite:invite,register:register);dismiss()}catch{failure=error.localizedDescription};password="";busy=false}
                             }.buttonStyle(.borderedProminent).controlSize(.large).frame(maxWidth:.infinity,minHeight:50)
                                 .disabled(busy||username.isEmpty||password.isEmpty)
                             Button(register ? "I already have an account":"Use a friend's invitation"){withAnimation(.easeOut(duration:0.18)){register.toggle();failure=nil}}

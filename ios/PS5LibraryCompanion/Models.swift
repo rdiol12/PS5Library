@@ -8,7 +8,7 @@ func serverAddressAllowed(_ url: URL) -> Bool {
     let host=rawHost.trimmingCharacters(in:CharacterSet(charactersIn:"[]")),plain=host.split(separator:"%",maxSplits:1).first.map(String.init) ?? host
     if plain=="localhost" || plain.hasSuffix(".local") { return true }
     let parts=plain.split(separator:".",omittingEmptySubsequences:false)
-    if parts.count==4,parts.allSatisfy({!$0.isEmpty&&$0.allSatisfy(\.isNumber)}),parts.allSatisfy({Int($0).map{(0...255).contains($0)}==true}) {
+    if parts.count==4,parts.allSatisfy({!$0.isEmpty&&($0=="0" || !$0.hasPrefix("0"))&&$0.utf8.allSatisfy{(48...57).contains($0)}&&Int($0).map{(0...255).contains($0)}==true}) {
         let a=Int(parts[0])!,b=Int(parts[1])!
         return a==10 || a==127 || (a==172&&(16...31).contains(b)) || (a==192&&b==168) || (a==169&&b==254) || (a==100&&(64...127).contains(b))
     }
@@ -22,6 +22,10 @@ func normalizedServerAddress(_ input: String) -> URL? {
     guard let url=URL(string:candidate),serverAddressAllowed(url) else{return nil}
     return url
 }
+func serverTransportFailure(_ error: Error) -> Bool {
+    guard let failure=error as? URLError else{return false}
+    return [.notConnectedToInternet,.cannotConnectToHost,.cannotFindHost,.dnsLookupFailed,.timedOut,.networkConnectionLost].contains(failure.code)
+}
 func serverConnectionMessage(_ error: Error, server: URL) -> String? {
     guard let failure=error as? URLError else{return nil}
     if failure.code == .secureConnectionFailed || failure.code == .serverCertificateUntrusted {
@@ -31,7 +35,7 @@ func serverConnectionMessage(_ error: Error, server: URL) -> String? {
             return "Secure connection failed. This private server is not serving trusted HTTPS. Enter \(local.absoluteString) to use it on your local network."
         }
     }
-    if [.notConnectedToInternet,.cannotConnectToHost,.cannotFindHost,.timedOut,.networkConnectionLost].contains(failure.code) {
+    if serverTransportFailure(error) {
         return "Cannot reach PS5Library. Connect the iPhone to the server's Wi-Fi and enable PS5Library under Settings > Privacy & Security > Local Network."
     }
     return nil
@@ -40,7 +44,7 @@ func webSocketScheme(for scheme: String?) -> String { scheme?.lowercased()=="htt
 private func defaultPort(for scheme: String?) -> Int { scheme?.lowercased()=="http" ? 80:443 }
 
 struct Account: Codable, Identifiable, Equatable {
-    var id: String; var server: URL; var username: String; var role: String
+    var id: String; var server: URL; var fallbackServer: URL?; var username: String; var role: String
 }
 struct User: Decodable { let id: String; let username: String; let role: String }
 struct Login: Decodable { let user: User; let token: String }

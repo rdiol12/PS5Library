@@ -21,29 +21,31 @@ enum Credentials {
     static func remove(_ id: String) { SecItemDelete(query(id) as CFDictionary) }
 }
 actor API {
-    let base: URL; let token: String; let session: URLSession;private var verified=false
-    init(server: URL, token: String = "") throws {
-        guard serverAddressAllowed(server) else{throw StoreError.message("Use HTTPS, or HTTP only for a private LAN server such as http://192.168.1.20:3150.")}
-        base=server;self.token=token
+    let base:URL;let fallback:URL?;let token:String;let session:URLSession;private var verified=Set<URL>()
+    init(server:URL,fallback:URL?=nil,token:String="") throws {
+        guard serverAddressAllowed(server),fallback.map(serverAddressAllowed) != false else{throw StoreError.message("Use HTTPS, or HTTP only for a private LAN or Tailscale address.")}
+        base=server;self.fallback=fallback==server ? nil:fallback;self.token=token
         let config=URLSessionConfiguration.ephemeral;config.httpShouldSetCookies=false;config.waitsForConnectivity=true;config.timeoutIntervalForRequest=20
         config.urlCache=URLCache(memoryCapacity:32*1024*1024,diskCapacity:128*1024*1024,diskPath:"PS5Library-"+server.host!)
         session=URLSession(configuration:config,delegate:NoRedirectPolicy(),delegateQueue:nil)
     }
-    func url(_ path: String) throws -> URL {
-        guard path.hasPrefix("/api/v1/"),!path.contains(".."),let url=URL(string:path,relativeTo:base)?.absoluteURL,url.host==base.host,url.port==base.port,url.scheme==base.scheme else{throw StoreError.message("Invalid server resource.")};return url
+    func url(_ path:String,server:URL) throws -> URL {
+        guard path.hasPrefix("/api/v1/"),!path.contains(".."),let url=URL(string:path,relativeTo:server)?.absoluteURL,url.host==server.host,url.port==server.port,url.scheme==server.scheme else{throw StoreError.message("Invalid server resource.")};return url
     }
-    func makeRequest(_ path: String) throws -> URLRequest { var request=URLRequest(url:try url(path));request.setValue("companion",forHTTPHeaderField:"X-PS5Library-Client");if !token.isEmpty{request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")};return request }
-    private func verifyLibraryNode() async throws {
-        if verified{return}
-        var request=URLRequest(url:try url("/api/v1/service-info"));request.setValue("companion",forHTTPHeaderField:"X-PS5Library-Client")
-        let result:(Data,URLResponse)
-        do{result=try await session.data(for:request)}catch{if let message=serverConnectionMessage(error,server:base){throw StoreError.message(message)};throw error}
-        let(data,response)=result
+    func makeRequest(_ path:String,server:URL) throws -> URLRequest {var request=URLRequest(url:try url(path,server:server));request.setValue("companion",forHTTPHeaderField:"X-PS5Library-Client");if !token.isEmpty{request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")};return request}
+    private func routed<T>(_ operation:(URL) async throws -> T) async throws -> T {
+        do{return try await operation(base)}catch{guard serverTransportFailure(error),let fallback else{throw error};return try await operation(fallback)}
+    }
+    private func connectionError(_ error:Error)->Error {if let message=serverConnectionMessage(error,server:fallback ?? base){return StoreError.message(message)};return error}
+    private func verifyLibraryNode(_ server:URL,refresh:Bool=false) async throws {
+        if !refresh,verified.contains(server){return}
+        var request=URLRequest(url:try url("/api/v1/service-info",server:server));request.setValue("companion",forHTTPHeaderField:"X-PS5Library-Client")
+        let(data,response)=try await session.data(for:request)
         guard let response=response as? HTTPURLResponse,response.statusCode==200,data.count<=1024,
               let marker=try? JSONDecoder().decode(LibraryNodeServiceInfo.self,from:data),marker.compatible else {
             throw StoreError.message("This address is not a compatible PS5Library Server.")
         }
-        verified=true
+        verified.insert(server)
     }
     func request<T:Decodable>(_ path: String, method: String = "GET", json: [String:String] = [:]) async throws -> T {
         try await request(path, method:method, body:json)
@@ -53,66 +55,65 @@ actor API {
     }
     func send<Body:Encodable>(_ path:String,method:String,body:Body) async throws {_ = try await response(path,method:method,body:JSONEncoder().encode(body))}
     private func response(_ path:String,method:String,body:Data?) async throws -> Data {
-        try await verifyLibraryNode()
-        var request=try makeRequest("/api/v1"+path);request.httpMethod=method
-        if let body {request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=body}
-        let result:(Data,URLResponse)
-        do{result=try await session.data(for:request)}catch{if let message=serverConnectionMessage(error,server:base){throw StoreError.message(message)};throw error}
-        let (data,response)=result
-        guard let response=response as? HTTPURLResponse,(200..<300).contains(response.statusCode) else { let value=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any];throw StoreError.message(readable(value?["error"] as? String ?? "Server request failed")) }
-        guard data.count<=12*1024*1024 else{throw StoreError.message("Server response is too large.")}
-        return data
+        do{return try await routed{server in
+            try await verifyLibraryNode(server)
+            var request=try makeRequest("/api/v1"+path,server:server);request.httpMethod=method
+            if let body {request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=body}
+            let(data,response)=try await session.data(for:request)
+            guard let response=response as? HTTPURLResponse,(200..<300).contains(response.statusCode) else{let value=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any];throw StoreError.message(readable(value?["error"] as? String ?? "Server request failed"))}
+            guard data.count<=12*1024*1024 else{throw StoreError.message("Server response is too large.")}
+            return data
+        }}catch{throw connectionError(error)}
     }
-    func artwork(_ path:String) async throws -> Data {try await verifyLibraryNode();let(data,response)=try await session.data(for:makeRequest(path));guard (response as? HTTPURLResponse)?.statusCode==200,data.count<=12*1024*1024 else{throw StoreError.message("Artwork unavailable")};return data }
+    func artwork(_ path:String) async throws -> Data {do{return try await routed{server in try await verifyLibraryNode(server);let(data,response)=try await session.data(for:makeRequest(path,server:server));guard (response as? HTTPURLResponse)?.statusCode==200,data.count<=12*1024*1024 else{throw StoreError.message("Artwork unavailable")};return data}}catch{throw connectionError(error)}}
     func media(_ asset:MediaAsset,kind:String) async throws -> URL {
-        try await verifyLibraryNode()
         guard asset.valid(for:kind) else{throw StoreError.message("Invalid media metadata.")}
         let config=URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies=false;config.urlCache=nil;config.timeoutIntervalForRequest=30;config.timeoutIntervalForResource=300
         let download=URLSession(configuration:config,delegate:NoRedirectPolicy(),delegateQueue:nil)
         defer{download.invalidateAndCancel()}
-        let (stream,response)=try await download.bytes(for:makeRequest(asset.url))
-        guard let response=response as? HTTPURLResponse,response.statusCode==200,
-              response.mimeType==(kind=="music" ? "audio/mp4":"video/mp4"),
-              response.expectedContentLength == -1 || response.expectedContentLength==asset.size else {
-            throw StoreError.message("Media unavailable or changed. Refresh the catalog and try again.")
-        }
-        let file=FileManager.default.temporaryDirectory.appendingPathComponent("PS5Library-"+UUID().uuidString+".mp4")
-        guard FileManager.default.createFile(atPath:file.path,contents:nil,attributes:[.protectionKey:FileProtectionType.complete]) else{throw StoreError.message("Could not create playback file.")}
-        var keep=false
-        defer{if !keep{try? FileManager.default.removeItem(at:file)}}
-        let output=try FileHandle(forWritingTo:file)
-        defer{try? output.close()}
-        var count:Int64=0,chunk=Data(),digest=SHA256()
-        for try await byte in stream {
-            count+=1
-            guard count<=asset.size else{throw StoreError.message("Media exceeds its declared size.")}
-            chunk.append(byte)
-            if chunk.count==65536 {
-                try Task.checkCancellation();digest.update(data:chunk);try output.write(contentsOf:chunk);chunk.removeAll(keepingCapacity:true)
+        do{return try await routed{server in
+            try await verifyLibraryNode(server)
+            let(stream,response)=try await download.bytes(for:makeRequest(asset.url,server:server))
+            guard let response=response as? HTTPURLResponse,response.statusCode==200,
+                  response.mimeType==(kind=="music" ? "audio/mp4":"video/mp4"),
+                  response.expectedContentLength == -1 || response.expectedContentLength==asset.size else{throw StoreError.message("Media unavailable or changed. Refresh the catalog and try again.")}
+            let file=FileManager.default.temporaryDirectory.appendingPathComponent("PS5Library-"+UUID().uuidString+".mp4")
+            guard FileManager.default.createFile(atPath:file.path,contents:nil,attributes:[.protectionKey:FileProtectionType.complete]) else{throw StoreError.message("Could not create playback file.")}
+            var keep=false
+            defer{if !keep{try? FileManager.default.removeItem(at:file)}}
+            let output=try FileHandle(forWritingTo:file)
+            defer{try? output.close()}
+            var count:Int64=0,chunk=Data(),digest=SHA256()
+            for try await byte in stream {
+                count+=1
+                guard count<=asset.size else{throw StoreError.message("Media exceeds its declared size.")}
+                chunk.append(byte)
+                if chunk.count==65536 {try Task.checkCancellation();digest.update(data:chunk);try output.write(contentsOf:chunk);chunk.removeAll(keepingCapacity:true)}
             }
-        }
-        try Task.checkCancellation()
-        digest.update(data:chunk);try output.write(contentsOf:chunk)
-        guard count==asset.size,digest.finalize().map({String(format:"%02x",$0)}).joined()==asset.sha256 else{throw StoreError.message("Media verification failed. Refresh the catalog and try again.")}
-        keep=true;return file
+            try Task.checkCancellation();digest.update(data:chunk);try output.write(contentsOf:chunk)
+            guard count==asset.size,digest.finalize().map({String(format:"%02x",$0)}).joined()==asset.sha256 else{throw StoreError.message("Media verification failed. Refresh the catalog and try again.")}
+            keep=true;return file
+        }}catch{throw connectionError(error)}
     }
     func downloadSave(_ backup:SaveBackup) async throws -> URL {
-        try await verifyLibraryNode()
         guard backup.downloadable,let location=backup.downloadUrl,let size=backup.totalBytes,let expected=backup.sha256 else{throw StoreError.message("This backup is not ready to download.")}
         let config=URLSessionConfiguration.ephemeral;config.httpShouldSetCookies=false;config.urlCache=nil;config.timeoutIntervalForRequest=30;config.timeoutIntervalForResource=1800
         let download=URLSession(configuration:config,delegate:NoRedirectPolicy(),delegateQueue:nil);defer{download.invalidateAndCancel()}
-        let (source,response)=try await download.download(for:makeRequest(location))
-        guard let response=response as? HTTPURLResponse,response.statusCode==200,response.mimeType=="application/vnd.ps5library.save",response.expectedContentLength==size else{throw StoreError.message("The save backup response does not match the server record.")}
-        let input=try FileHandle(forReadingFrom:source);defer{try? input.close()};var count:Int64=0,digest=SHA256()
-        while let data=try input.read(upToCount:1024*1024),!data.isEmpty{try Task.checkCancellation();count+=Int64(data.count);guard count<=size else{throw StoreError.message("The save backup exceeds its declared size.")};digest.update(data:data)}
-        guard count==size,digest.finalize().map({String(format:"%02x",$0)}).joined()==expected else{throw StoreError.message("Save backup verification failed.")}
-        let safe=(backup.saveTitleId+"-"+backup.directory).map{$0.isLetter||$0.isNumber||$0=="-" ? $0:"_"};let destination=FileManager.default.temporaryDirectory.appendingPathComponent(String(safe)+"-"+backup.id+".ps5save")
-        try? FileManager.default.removeItem(at:destination)
-        do{try FileManager.default.moveItem(at:source,to:destination);try FileManager.default.setAttributes([.protectionKey:FileProtectionType.complete],ofItemAtPath:destination.path);return destination}
-        catch{try? FileManager.default.removeItem(at:destination);throw error}
+        do{return try await routed{server in
+            try await verifyLibraryNode(server)
+            let(source,response)=try await download.download(for:makeRequest(location,server:server))
+            guard let response=response as? HTTPURLResponse,response.statusCode==200,response.mimeType=="application/vnd.ps5library.save",response.expectedContentLength==size else{throw StoreError.message("The save backup response does not match the server record.")}
+            let input=try FileHandle(forReadingFrom:source);defer{try? input.close()};var count:Int64=0,digest=SHA256()
+            while let data=try input.read(upToCount:1024*1024),!data.isEmpty{try Task.checkCancellation();count+=Int64(data.count);guard count<=size else{throw StoreError.message("The save backup exceeds its declared size.")};digest.update(data:data)}
+            guard count==size,digest.finalize().map({String(format:"%02x",$0)}).joined()==expected else{throw StoreError.message("Save backup verification failed.")}
+            let safe=(backup.saveTitleId+"-"+backup.directory).map{$0.isLetter||$0.isNumber||$0=="-" ? $0:"_"};let destination=FileManager.default.temporaryDirectory.appendingPathComponent(String(safe)+"-"+backup.id+".ps5save")
+            try? FileManager.default.removeItem(at:destination)
+            do{try FileManager.default.moveItem(at:source,to:destination);try FileManager.default.setAttributes([.protectionKey:FileProtectionType.complete],ofItemAtPath:destination.path);return destination}
+            catch{try? FileManager.default.removeItem(at:destination);throw error}
+        }}catch{throw connectionError(error)}
     }
-    func events(after:Int64) async throws -> URLSessionWebSocketTask {try await verifyLibraryNode();var request=try makeRequest("/api/v1/events/live?after=\(after)");var url=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!;url.scheme=webSocketScheme(for:base.scheme);request.url=url.url;let socket=session.webSocketTask(with:request);socket.resume();return socket }
+    func events(after:Int64) async throws -> URLSessionWebSocketTask {do{return try await routed{server in try await verifyLibraryNode(server,refresh:true);var request=try makeRequest("/api/v1/events/live?after=\(after)",server:server);var url=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!;url.scheme=webSocketScheme(for:server.scheme);request.url=url.url;let socket=session.webSocketTask(with:request);socket.resume();do{try await withCheckedThrowingContinuation{(ready:CheckedContinuation<Void,Error>) in socket.sendPing{error in if let error{ready.resume(throwing:error)}else{ready.resume()}}}}catch{socket.cancel(with:.goingAway,reason:nil);throw error};return socket}}catch{throw connectionError(error)}}
 }
 @MainActor final class Store: ObservableObject {
     @Published var accounts:[Account]=[];@Published var account:Account?;@Published var data=Snapshot(games:[],consoles:[],jobs:[],library:[],consoleId:"")
@@ -123,7 +124,7 @@ actor API {
     func activate(_ selected:Account){poll?.cancel();live?.cancel();socket?.cancel(with:.goingAway,reason:nil);account=selected;api=nil;refreshing=false;data=Snapshot(games:[],consoles:[],jobs:[],library:[],consoleId:"");offline=true
         if let file=try? cache(selected.id),let saved=try? Data(contentsOf:file),let value=try? JSONDecoder().decode(Snapshot.self,from:saved){data=value}
         guard let token=Credentials.read(selected.id) else{error="Sign in to this account again.";account=nil;return}
-        do{api=try API(server:selected.server,token:token)}catch{self.error=error.localizedDescription;return}
+        do{api=try API(server:selected.server,fallback:selected.fallbackServer,token:token)}catch{self.error=error.localizedDescription;return}
         UserDefaults.standard.set(selected.id,forKey:"activeAccount");poll=Task{while !Task.isCancelled{await refresh();try? await Task.sleep(nanoseconds:10_000_000_000)}}
         live=Task{var cursor:Int64=0;while !Task.isCancelled{do{guard let api=self.api else{return};let connection=try await api.events(after:cursor);socket=connection
             while !Task.isCancelled{let message=try await connection.receive();let bytes:Data;switch message{case .data(let value):bytes=value;case .string(let value):bytes=Data(value.utf8);@unknown default:continue};guard let batch=try? JSONDecoder().decode(Events.self,from:bytes) else{continue};cursor=batch.events.last?.id ?? cursor
@@ -143,9 +144,10 @@ actor API {
         guard account?.id==selected.id,!Task.isCancelled else{return};next.consoleId=id;data=next;offline=false;error=nil
         if let file=try? cache(selected.id),let encoded=try? JSONEncoder().encode(data){try? encoded.write(to:file,options:[.atomic,.completeFileProtection])}
     }
-    func login(server:String,username:String,password:String,invite:String,register:Bool) async throws { guard let url=normalizedServerAddress(server) else{throw StoreError.message("Enter HTTPS, a private LAN URL, or a LAN address such as 192.168.1.20:3150.")};let client=try API(server:url);var body=["username":username,"password":password];if register{body["inviteToken"]=invite};let result:Login=try await client.request(register ? "/auth/register":"/auth/login",method:"POST",json:body)
-        let id=accounts.first(where:{$0.server==url&&$0.username==username})?.id ?? UUID().uuidString;let profile=Account(id:id,server:url,username:result.user.username,role:result.user.role);try Credentials.save(result.token,id:id);accounts.removeAll(where:{$0.id==id});accounts.append(profile);UserDefaults.standard.set(try JSONEncoder().encode(accounts),forKey:"accounts");activate(profile)
+    func login(server:String,fallbackServer:String,username:String,password:String,invite:String,register:Bool) async throws {guard let url=normalizedServerAddress(server) else{throw StoreError.message("Enter HTTPS, a private LAN URL, or a LAN address such as 192.168.1.20:3150.")};let fallback:URL?;if fallbackServer.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty{fallback=nil}else if let value=normalizedServerAddress(fallbackServer){fallback=value==url ? nil:value}else{throw StoreError.message("Enter a valid private Tailscale fallback address.")};let client=try API(server:url,fallback:fallback);var body=["username":username,"password":password];if register{body["inviteToken"]=invite};let result:Login=try await client.request(register ? "/auth/register":"/auth/login",method:"POST",json:body)
+        let id=accounts.first(where:{$0.server==url&&$0.username==username})?.id ?? UUID().uuidString;let profile=Account(id:id,server:url,fallbackServer:fallback,username:result.user.username,role:result.user.role);try Credentials.save(result.token,id:id);accounts.removeAll(where:{$0.id==id});accounts.append(profile);UserDefaults.standard.set(try JSONEncoder().encode(accounts),forKey:"accounts");activate(profile)
     }
+    func updateFallback(_ input:String) throws {guard var selected=account,let index=accounts.firstIndex(where:{$0.id==selected.id}) else{return};let value=input.trimmingCharacters(in:.whitespacesAndNewlines);if value.isEmpty{selected.fallbackServer=nil}else if let url=normalizedServerAddress(value){selected.fallbackServer=url==selected.server ? nil:url}else{throw StoreError.message("Enter a valid private Tailscale fallback address.")};accounts[index]=selected;UserDefaults.standard.set(try JSONEncoder().encode(accounts),forKey:"accounts");activate(selected)}
     func perform(_ action: @escaping (API) async throws -> Void) { guard let api=api else{return};let owner=account?.id;Task{do{try await action(api);if account?.id==owner{await refresh()}}catch{if account?.id==owner{self.error=error.localizedDescription}}} }
     func ready(_ game:Game)->Bool { game.ready(in:data.library) }
     func signOut(){let old=api,profile=account;poll?.cancel();live?.cancel();socket?.cancel(with:.goingAway,reason:nil);api=nil;account=nil;data=Snapshot(games:[],consoles:[],jobs:[],library:[],consoleId:"");if let profile=profile{Credentials.remove(profile.id);accounts.removeAll{$0.id==profile.id};if let file=try? cache(profile.id){try? FileManager.default.removeItem(at:file)}};UserDefaults.standard.set(try? JSONEncoder().encode(accounts),forKey:"accounts");Task{let _:Acknowledgement?=try? await old?.request("/auth/logout",method:"POST")} }
