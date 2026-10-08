@@ -14,20 +14,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Check frontend-only repository
+      - name: Check public repository
         run: |
           python3 scripts/check-release.py --source
           python3 scripts/test-release.py
       - name: Build pinned PS5 toolchain
-        run: docker build -t ps5library-build -f docker/ps5-build.Dockerfile .
+        run: docker build -t ps5library-build -f frontend/docker/ps5-build.Dockerfile frontend
       - name: Test and build the ELF files
-        run: docker run --rm --network none --user "$(id -u):$(id -g)" -e GITHUB_REF -v "$PWD:/workspace" ps5library-build bash scripts/build.sh
+        run: docker run --rm --network none --user "$(id -u):$(id -g)" -e GITHUB_REF -v "$PWD:/workspace" -w /workspace/frontend ps5library-build bash scripts/build.sh
       - name: Package corresponding dependency source and notices
-        run: python3 scripts/package-sources.py
+        run: (cd frontend && python3 scripts/package-sources.py)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ps5library-elf
-          path: dist/*
+          path: frontend/dist/*
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

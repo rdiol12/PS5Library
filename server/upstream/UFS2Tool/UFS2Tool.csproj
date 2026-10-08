@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>UFS2Tool</RootNamespace>
+    <AssemblyName>UFS2Tool</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Version>4.1.0</Version>
+    <Authors>SvenGDK</Authors>
+    <Description>UFS2 Tool — FreeBSD UFS1/UFS2 Filesystem Manager for Windows</Description>
+    <PackageLicenseExpression>BSD-2-Clause</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/SvenGDK/UFS2Tool</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Copyright>SvenGDK</Copyright>
+    <Configurations>Debug;Release</Configurations>
+  </PropertyGroup>
+  <!-- Request admin elevation via app manifest (Windows only) -->
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="UFS2Tool.Tests/**" />
+    <Compile Remove="UFS2Tool.GUI/**" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="DokanNet" Version="2.3.0.3" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+PS5Library Shell indicator source notice
+
+Portions of this directory are derived from OnionHEN commit
+b23ffe674b2de9f62fe634944c9230ff149d593a and remain licensed under
+GPL-3.0-or-later. The corresponding license is LICENSE.GPL-3.0.
+
+Pinned upstream source retained under upstream/ keeps its original copyright
+and license notices. Redistributors must preserve those notices and provide
+the corresponding source as required by the GPL.

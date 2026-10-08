@@ -1,0 +1,36 @@
+LibProsperoPkg
+Copyright (C) 2026 SvenGDK
+
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this
+program. If not, see <https://www.gnu.org/licenses/>.
+
+------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------
+
+This library depends on the following package at build/run time:
+
+  * Magick.NET-Q8-AnyCPU - Apache License 2.0
+
+------------------------------------------------------------------------
+Derived code
+------------------------------------------------------------------------
+
+The Kraken (newLZ) decode and bitstream logic in
+src/LibProsperoPkg/PFS/Compression/Oodle/ (KrakenDecoder.cs,
+KrakenBitReader.cs, KrakenBitWriter.cs and the array-entropy helpers) is
+an index-based translation of the decompression reference implementation
+"ooz" by Powzix (kraken.cpp), licensed under the GNU General Public
+License v3.0: <https://github.com/powzix/ooz>.
+
+GPL-3.0 section 13 expressly permits conveying a combined work that
+links or combines GPL-covered code, which this library relies on for the
+combination above.

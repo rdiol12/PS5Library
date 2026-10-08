@@ -1,0 +1,3 @@
+import type {DB} from '../db.js';
+
+export async function consoleSaveData(db:DB,userId:string,consoleId:string,localUserId:string,platform:string,gameTitleId:string,saveTitleId:string,directory:string){return (await db.query(`SELECT s.*,c.last_seen,c.firmware,c.runtime,COALESCE(k.capabilities,'{}'::jsonb) AS capabilities FROM console_save_data s JOIN consoles c ON c.id=s.console_id LEFT JOIN console_capabilities k ON k.console_id=c.id WHERE c.id=$1 AND c.user_id=$2 AND s.local_user_id=$3 AND s.platform=$4 AND s.game_title_id=$5 AND s.save_title_id=$6 AND s.directory=$7`,[consoleId,userId,localUserId,platform,gameTitleId,saveTitleId,directory])).rows[0];}

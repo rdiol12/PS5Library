@@ -1,0 +1,43 @@
+{
+  "name": "ps5library",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.23.2 <23 || >=24.18.1"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file=.env dist/app/src/main.js",
+    "dev": "node --env-file=.env --import tsx app/src/main.ts",
+    "migrate": "node --env-file=.env --import tsx app/src/migrate.ts",
+    "build:worker": "dotnet build worker/PS5Library.Worker.csproj -c Release",
+    "test:worker": "dotnet run --project worker/Tests/PS5Library.Worker.Checks.csproj -c Release",
+    "setup": "node scripts/setup.mjs",
+    "docker:configure": "node --env-file=.env scripts/docker-configure.mjs",
+    "docker:up": "npm run docker:configure && docker compose --env-file .env -f docker/compose.yml up -d --build --wait",
+    "docker:restart": "docker compose --env-file .env -f docker/compose.yml restart server",
+    "docker:logs": "docker compose --env-file .env -f docker/compose.yml logs -f --tail=200 server worker redis",
+    "test:container": "node --env-file=.env scripts/check-container.mjs"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.2",
+    "@fastify/rate-limit": "10.3.0",
+    "@fastify/websocket": "11.3.0",
+    "@simplewebauthn/server": "14.0.2",
+    "bullmq": "5.81.5",
+    "fastify": "5.12.5",
+    "ioredis": "5.11.1",
+    "ipaddr.js": "2.5.0",
+    "pg": "8.23.0",
+    "sharp": "0.35.5",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "@types/pg": "8.23.1",
+    "@types/ws": "8.18.1",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
+  }
+}

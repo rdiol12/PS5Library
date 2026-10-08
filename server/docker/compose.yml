@@ -1,0 +1,217 @@
+name: ps5library
+x-logging: &service-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+services:
+  proxy:
+    profiles: ["https"]
+    image: caddy:2.11.4-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
+    environment:
+      TZ: ${TZ:-UTC}
+      PS5LIBRARY_HTTPS_HOST: ${PS5LIBRARY_HTTPS_HOST:-localhost}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      server: {condition: service_healthy}
+    restart: unless-stopped
+    logging: *service-logging
+  server:
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    image: ps5library-server:local
+    user: "${PUID:-1000}:${PGID:-1000}"
+    init: true
+    env_file: ../.env
+    environment:
+      TZ: ${TZ:-UTC}
+      HOST: 0.0.0.0
+      DATABASE_URL: ${DOCKER_DATABASE_URL:?Run npm run docker:configure first}
+      REDIS_URL: redis://redis:6379
+      DATA_DIR: /data
+      SOURCE_ROOT: /sources
+      DUMP_ROOT: /dumps
+      PACKAGE_WORKER_SOCKET: /worker-ipc/worker.sock
+      PACKAGE_WORKER_URL: ${PACKAGE_WORKER_URL:-}
+      PACKAGE_WORKER_TOKEN: ${PACKAGE_WORKER_TOKEN:-}
+      TRAILER_WORKER_MODE: SANDBOX
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
+      OPERATOR_URL: ${OPERATOR_URL:-}
+    ports: ["${SERVER_BIND:-127.0.0.1}:${PORT:-3150}:${PORT:-3150}"]
+    volumes:
+      - type: bind
+        source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}
+        target: /data
+      - type: bind
+        source: ${DOCKER_SOURCE_ROOT:?Run npm run docker:configure first}
+        target: /sources
+        read_only: true
+      - type: bind
+        source: ${DOCKER_DUMP_ROOT:?Run npm run docker:configure first}
+        target: /dumps
+      - worker-ipc:/worker-ipc
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=1g"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 8g
+    cpus: 4
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      worker: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      start_interval: 2s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    stop_grace_period: 5m
+    restart: unless-stopped
+    logging: *service-logging
+  operator:
+    profiles: ["operator"]
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    image: ps5library-server:local
+    user: "0:0"
+    init: true
+    command: ["node", "dist/app/src/operator-main.js"]
+    environment:
+      TZ: ${TZ:-UTC}
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?Run npm run docker:configure first}
+      COMPOSE_PROJECT_NAME: ps5library
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}
+        target: /data
+        read_only: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.25
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3160/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      start_interval: 2s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    logging: *service-logging
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    image: ps5library-worker:local
+    user: "${PUID:-1000}:${PGID:-1000}"
+    init: true
+    command: ["node", "dist/app/src/worker-main.js"]
+    environment:
+      TZ: ${TZ:-UTC}
+      PACKAGE_WORKER_SOCKET: /worker-ipc/worker.sock
+    volumes:
+      - type: bind
+        source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}
+        target: /data
+        read_only: true
+      - type: bind
+        source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}/jobs
+        target: /data/jobs
+      - type: bind
+        source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}/trailers
+        target: /data/trailers
+      - type: bind
+        source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}/artwork/.staging
+        target: /data/artwork/.staging
+      - type: bind
+        source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}/logs
+        target: /data/logs
+      - type: bind
+        source: ${DOCKER_SOURCE_ROOT:?Run npm run docker:configure first}
+        target: /sources
+        read_only: true
+      - type: bind
+        source: ${DOCKER_DUMP_ROOT:?Run npm run docker:configure first}
+        target: /dumps
+        read_only: true
+      - worker-ipc:/worker-ipc
+    network_mode: none
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=1g"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 8g
+    cpus: 4
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /worker-ipc/worker.sock"]
+      interval: 30s
+      start_interval: 1s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    stop_grace_period: 5m
+    restart: unless-stopped
+    logging: *service-logging
+  postgres:
+    build:
+      context: ..
+      dockerfile: docker/postgres.Dockerfile
+    image: ps5library-postgres:local
+    environment:
+      - TZ=${TZ:-UTC}
+      - POSTGRES_DB=ps5library
+      - POSTGRES_USER=ps5library
+      - POSTGRES_PASSWORD
+    command: ["postgres", "-c", "timezone=${TZ:-UTC}", "-c", "log_timezone=${TZ:-UTC}"]
+    ports: ["127.0.0.1:54329:5432"]
+    volumes: ["postgres:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ps5library -d ps5library"]
+      interval: 30s
+      start_interval: 1s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    logging: *service-logging
+  redis:
+    image: redis:7.4-alpine@sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7
+    environment:
+      TZ: ${TZ:-UTC}
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction", "--logfile", "", "--loglevel", "notice", "--slowlog-log-slower-than", "10000", "--slowlog-max-len", "256", "--latency-monitor-threshold", "100"]
+    ports: ["127.0.0.1:63799:6379"]
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      start_interval: 1s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    logging: *service-logging
+volumes:
+  postgres:
+  redis:
+  worker-ipc:
+  caddy-data:
+  caddy-config:

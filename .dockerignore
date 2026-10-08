@@ -1,5 +1,0 @@
-**
-!docker/
-!docker/ps5-build.Dockerfile
-!docker/ps5-native-build.Dockerfile
-!docker/json-c-0.19-release.patch

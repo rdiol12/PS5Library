@@ -1,0 +1,14 @@
+# Runtime overlay for the prebuilt distribution. Apply after compose.yml.
+services:
+  server:
+    image: ${PS5LIBRARY_SERVER_IMAGE:?Set PS5LIBRARY_SERVER_IMAGE to the released image tag}
+    build: !reset null
+  worker:
+    image: ${PS5LIBRARY_SERVER_IMAGE:?Set PS5LIBRARY_SERVER_IMAGE to the released image tag}
+    build: !reset null
+  operator:
+    image: ${PS5LIBRARY_SERVER_IMAGE:?Set PS5LIBRARY_SERVER_IMAGE to the released image tag}
+    build: !reset null
+  postgres:
+    image: postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
+    build: !reset null
