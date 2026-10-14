@@ -45,9 +45,10 @@ services:
       PACKAGE_WORKER_URL: ${PACKAGE_WORKER_URL:-}
       PACKAGE_WORKER_TOKEN: ${PACKAGE_WORKER_TOKEN:-}
       TRAILER_WORKER_MODE: SANDBOX
-      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-}
       OPERATOR_URL: ${OPERATOR_URL:-}
     ports: ["${SERVER_BIND:-127.0.0.1}:${PORT:-3150}:${PORT:-3150}"]
+    networks: [default, operator-control]
     volumes:
       - type: bind
         source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}
@@ -87,19 +88,20 @@ services:
       context: ..
       dockerfile: docker/server.Dockerfile
     image: ps5library-server:local
-    user: "0:0"
     init: true
     command: ["node", "dist/app/src/operator-main.js"]
     environment:
       TZ: ${TZ:-UTC}
       OPERATOR_TOKEN: ${OPERATOR_TOKEN:?Run npm run docker:configure first}
-      COMPOSE_PROJECT_NAME: ps5library
+      DOCKER_BROKER_URL: http://docker-broker:3161
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - type: bind
         source: ${DOCKER_DATA_DIR:?Run npm run docker:configure first}
         target: /data
         read_only: true
+    networks: [operator-control, operator-socket]
+    depends_on:
+      docker-broker: {condition: service_healthy}
     read_only: true
     tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
     cap_drop: [ALL]
@@ -109,6 +111,39 @@ services:
     cpus: 0.25
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3160/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      start_interval: 2s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    logging: *service-logging
+  docker-broker:
+    profiles: ["operator"]
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    image: ps5library-server:local
+    user: "0:0"
+    init: true
+    command: ["node", "dist/app/src/docker-broker-main.js"]
+    environment:
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?Run npm run docker:configure first}
+      COMPOSE_PROJECT_NAME: ps5library
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    networks: [operator-socket]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 96m
+    cpus: 0.2
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3161/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       start_interval: 2s
       timeout: 3s
@@ -177,10 +212,10 @@ services:
       dockerfile: docker/postgres.Dockerfile
     image: ps5library-postgres:local
     environment:
-      - TZ=${TZ:-UTC}
-      - POSTGRES_DB=ps5library
-      - POSTGRES_USER=ps5library
-      - POSTGRES_PASSWORD
+      TZ: ${TZ:-UTC}
+      POSTGRES_DB: ps5library
+      POSTGRES_USER: ps5library
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run npm run setup first}
     command: ["postgres", "-c", "timezone=${TZ:-UTC}", "-c", "log_timezone=${TZ:-UTC}"]
     ports: ["127.0.0.1:54329:5432"]
     volumes: ["postgres:/var/lib/postgresql"]
@@ -215,3 +250,8 @@ volumes:
   worker-ipc:
   caddy-data:
   caddy-config:
+networks:
+  operator-control:
+    internal: true
+  operator-socket:
+    internal: true

@@ -22,6 +22,12 @@ class AgentRuntime final {
   const std::string& status() const noexcept { return status_; }
 
  private:
+  void recordTelemetry(const std::string& status,
+                       unsigned processScanFailures = 0) noexcept;
+
+  std::filesystem::path telemetryPath_;
+  std::string telemetryStatus_;
+  unsigned telemetryProcessScanFailures_ = 0;
   std::unique_ptr<HeartbeatFile> heartbeat_;
   std::atomic<bool> running_{false};
   std::atomic<bool> serverAuthenticated_{false};

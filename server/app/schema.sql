@@ -617,3 +617,16 @@ CREATE INDEX IF NOT EXISTS jobs_failed_transfer_history
 CREATE INDEX IF NOT EXISTS pairings_console_credentials
   ON pairings(console_id,kind)
   WHERE credential_cipher IS NOT NULL;
+-- PS5LIBRARY MIGRATION 050_runtime_settings.sql
+CREATE TABLE IF NOT EXISTS runtime_settings (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
+  settings jsonb NOT NULL CHECK(jsonb_typeof(settings)='object'),
+  revision bigint NOT NULL DEFAULT 1 CHECK(revision>0),
+  updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+-- PS5LIBRARY MIGRATION 051_open_work_index.sql
+-- Quota accounting sums unfinished download/build jobs. Keep that working set
+-- indexable as ordinary terminal job history grows.
+CREATE INDEX IF NOT EXISTS jobs_open_work ON jobs(user_id)
+  WHERE kind IN ('DOWNLOAD','BUILD') AND state NOT IN ('COMPLETED','ERROR','CANCELLED');

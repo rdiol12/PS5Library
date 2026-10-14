@@ -23,7 +23,22 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
     ]
     (root / 'preview.json').write_text(json.dumps({
         'catalog': games,
-        'consoles': [{'id': 'test-console', 'name': 'Test PS5'}],
+        'jobs': [
+            {'id': 'alpha-job', 'kind': 'DOWNLOAD', 'releaseId': 'alpha-base',
+             'title': 'Alpha', 'state': 'QUEUED', 'queuePosition': 1},
+            {'id': 'beta-job', 'kind': 'BUILD', 'releaseId': 'beta-base',
+             'title': 'Beta', 'state': 'QUEUED', 'queuePosition': 2},
+        ],
+        'consoles': [{'id': 'test-console', 'name': 'Test PS5', 'storage': [
+            {'storageId': 'internal', 'displayName': 'Internal Storage',
+             'freeBytes': 800_000_000_000},
+            {'storageId': 'm2', 'displayName': 'M.2 SSD',
+             'freeBytes': 1_000_000_000_000},
+            {'storageId': 'usb0', 'displayName': 'USB Extended Storage',
+             'freeBytes': 900_000_000_000},
+            {'storageId': 'usb1', 'displayName': 'USB Storage',
+             'freeBytes': 700_000_000_000},
+        ]}],
         'device': {'consoleId': 'test-console'},
         'profile': {'username': 'Tester', 'role': 'ADMIN'},
         'library': [{'releaseId': 'gamma-base', 'state': 'READY_ON_PS5',
@@ -48,4 +63,16 @@ with tempfile.TemporaryDirectory(prefix='ps5library-ui-') as temporary:
     assert (restored['screen'], restored['focus']) == ('My Library', 'grid:beta'), restored
     console = run('up,right,select')
     assert (console['screen'], console['focus']) == ('My Library', 'grid:gamma'), console
-    print('PASS: library scopes, source visibility, focused details and restored controller focus')
+    home_to_games = run('next', 'Home')
+    assert home_to_games['screen'] == 'My Library', home_to_games
+    search_result = run('search,text:Beta,down,select')
+    assert (search_result['screen'], search_result['focus']) == ('Game', 'download'), search_result
+    review = run('select,select,down,down,down,down,down,down,down')
+    assert review['focus'] == 'confirm-download', review
+    review_shortcut = run('select,select,right')
+    assert review_shortcut['focus'] == 'confirm-download', review_shortcut
+    short_cross = run('select-down,select-up', 'Downloads')
+    assert (short_cross['screen'], short_cross['focus']) == ('Game', 'download'), short_cross
+    reordered = run('select-down,wait,wait,down,select-up,up,select,back', 'Downloads')
+    assert (reordered['screen'], reordered['focus']) == ('Downloads', 'job:beta-job'), reordered
+    print('PASS: home navigation, library scopes, search details and restored controller focus')

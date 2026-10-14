@@ -11,6 +11,7 @@
 
 #include <onion/detour.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -51,18 +52,15 @@ struct MonoThread;
 
 extern int (*sceKernelMprotect)(void*, std::size_t, int);
 extern bool has_hv_bypass;
-extern "C" {
-extern const unsigned char ps5library_shell_icon[];
-extern const std::uint64_t ps5library_shell_icon_size;
-}
-
 namespace {
 
 constexpr char statePath[] =
     "/system_tmp/ps5library/agent-indicator.state";
 constexpr char readyPath[] = "/system_tmp/ps5library/shell-helper.pid";
 constexpr char statusPath[] = "/system_tmp/ps5library/shell-helper.status";
-constexpr char iconPath[] = "/system_tmp/ps5library/icon0.png";
+constexpr char observationPath[] =
+    "/system_tmp/ps5library/homeui-observations.txt";
+constexpr char iconPath[] = "/user/appmeta/PPSA99051/icon0.png";
 constexpr char homeTitleId[] = "NPXS40002";
 constexpr char indicatorUri[] = "PS5Library?Status=1";
 constexpr unsigned long decryptRnpsBundle = 0xC0105203;
@@ -190,6 +188,33 @@ std::atomic<bool> hooksReady{false};
 std::atomic<bool> patchEnabled{false};
 std::atomic<bool> reloadPending{false};
 std::atomic<int> homePatchResult{-1};
+std::atomic<int> homePatchFailure{0};
+std::atomic<int> homePatchSize{0};
+std::atomic<unsigned> homeReloadAttempts{0};
+std::atomic<std::uint64_t> nextHomeReloadMs{0};
+std::atomic<std::uint64_t> homePatchSequence{0};
+constexpr std::uint64_t homeReloadInitialDelayMs = 500;
+constexpr std::uint64_t homeReloadRetryDelayMs = 2'000;
+struct HomeObservationRecord {
+  std::uint64_t sequence = 0;
+  unsigned attempt = 0;
+  ps5library::shell_indicator::HomeUiObservation observed;
+  ps5library::shell_indicator::PatchResult result =
+      ps5library::shell_indicator::PatchResult::Rejected;
+  ps5library::shell_indicator::PatchFailure failure =
+      ps5library::shell_indicator::PatchFailure::Container;
+};
+constexpr unsigned homeObservationsPerReload = 8;
+constexpr std::size_t homeObservationCapacity =
+    ps5library::shell_indicator::homeReloadAttemptLimit *
+    homeObservationsPerReload;
+std::mutex homeObservationMutex;
+std::array<HomeObservationRecord, homeObservationCapacity> homeObservations;
+std::size_t homeObservationCount = 0;
+std::atomic<unsigned> homeObservationDropped{0};
+std::atomic<std::uint64_t> homeObservationEpoch{0};
+std::atomic<std::uint64_t> homeObservationOrdinal{0};
+std::atomic<unsigned> homeObservationBudget{0};
 const char* installStage = "STARTING";
 #if defined(PS5LIBRARY_EXPERIMENTAL_SHELL_CHEAT_PAGE)
 std::atomic<bool> cheatPageReady{false};
@@ -763,8 +788,35 @@ void refreshMode() {
 #if defined(PS5LIBRARY_EXPERIMENTAL_SHELL_INPUT_DIAGNOSTIC)
   inputTrace.setSession(visible ? session : std::string{}, visible);
 #endif
-  if (patchEnabled.exchange(visible, std::memory_order_acq_rel) != visible)
+  if (patchEnabled.load(std::memory_order_acquire) == visible) return;
+  if (!visible) {
+    {
+      std::lock_guard<std::mutex> lock(homeObservationMutex);
+      patchEnabled.store(false, std::memory_order_release);
+      homeObservationEpoch.fetch_add(1, std::memory_order_acq_rel);
+    }
+    nextHomeReloadMs.store(0, std::memory_order_release);
     reloadPending.store(true, std::memory_order_release);
+    return;
+  }
+  reloadPending.store(false, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(homeObservationMutex);
+    homeObservationEpoch.fetch_add(1, std::memory_order_acq_rel);
+    homePatchResult.store(-1, std::memory_order_release);
+    homePatchFailure.store(0, std::memory_order_relaxed);
+    homePatchSize.store(0, std::memory_order_relaxed);
+    homeReloadAttempts.store(0, std::memory_order_release);
+    homeObservationCount = 0;
+    homeObservationDropped.store(0, std::memory_order_relaxed);
+    homeObservationOrdinal.store(0, std::memory_order_relaxed);
+    homeObservationBudget.store(0, std::memory_order_relaxed);
+  }
+  nextHomeReloadMs.store(
+      ps5library::shell_indicator::monotonicMilliseconds() +
+          homeReloadInitialDelayMs,
+      std::memory_order_release);
+  patchEnabled.store(true, std::memory_order_release);
 }
 
 #if defined(PS5LIBRARY_EXPERIMENTAL_SHELL_INPUT_DIAGNOSTIC)
@@ -813,15 +865,6 @@ bool publishFile(const char* path, const void* data, std::size_t size,
   return true;
 }
 
-bool publishIcon() {
-  constexpr unsigned char png[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a,
-                                   '\n'};
-  const auto size = static_cast<std::size_t>(ps5library_shell_icon_size);
-  return size >= sizeof(png) && size <= 1024 * 1024 &&
-         std::memcmp(ps5library_shell_icon, png, sizeof(png)) == 0 &&
-         publishFile(iconPath, ps5library_shell_icon, size, 0644);
-}
-
 bool publishReady() {
   const auto value = std::to_string(getpid()) + "\n";
   return publishFile(readyPath, value.data(), value.size(), 0644);
@@ -830,6 +873,73 @@ bool publishReady() {
 bool publishStatus(const std::string& value) {
   const auto line = value + "\n";
   return publishFile(statusPath, line.data(), line.size(), 0644);
+}
+
+std::string observationOffset(std::uint32_t value) {
+  return value == ps5library::shell_indicator::missingHomeUiMarker
+             ? "-"
+             : std::to_string(value);
+}
+
+void recordHomeObservation(
+    std::uint64_t sequence, unsigned attempt,
+    const ps5library::shell_indicator::HomeUiObservation& observed,
+    ps5library::shell_indicator::PatchResult result,
+    ps5library::shell_indicator::PatchFailure failure) {
+  if (homeObservationCount >= homeObservations.size()) {
+    homeObservationDropped.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  homeObservations[homeObservationCount++] =
+      {sequence, attempt, observed, result, failure};
+}
+
+bool publishHomeObservations() {
+  std::array<HomeObservationRecord, homeObservationCapacity> observed;
+  std::size_t count = 0;
+  {
+    std::lock_guard<std::mutex> lock(homeObservationMutex);
+    count = homeObservationCount;
+    std::copy_n(homeObservations.begin(), count, observed.begin());
+  }
+  std::string value = "PS5LH2\tdropped=" +
+                      std::to_string(homeObservationDropped.load(
+                          std::memory_order_relaxed)) +
+                      "\n";
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto& record = observed[index];
+    const auto& item = record.observed;
+    value += std::to_string(record.sequence) + "\t" +
+             std::to_string(record.attempt) + "\t" +
+             std::to_string(item.size) + "\t" +
+             (item.rnpsHeader ? "1" : "0") + "\t" +
+             observationOffset(item.declaredPayloadOffset) + "\t" +
+             observationOffset(item.legacyMagicOffset) + "\t" +
+             observationOffset(item.titleOffset) + "\t" +
+             observationOffset(item.appErrorOffset) + "\t" +
+             observationOffset(item.navigateOffset) + "\t" +
+             observationOffset(item.inferredPayloadOffset) + "\t" +
+             std::to_string(item.titleCount) + "\t" +
+             std::to_string(item.appErrorCount) + "\t" +
+             std::to_string(item.navigateCount) + "\t" +
+             observationOffset(item.oldOrderOffset) + "/" +
+             std::to_string(item.oldOrderCount) + "\t" +
+             observationOffset(item.newOrderOffset) + "/" +
+             std::to_string(item.newOrderCount) + "\t" +
+             observationOffset(item.oldAliasOffset) + "/" +
+             std::to_string(item.oldAliasCount) + "\t" +
+             observationOffset(item.newAliasOffset) + "/" +
+             std::to_string(item.newAliasCount) + "\t" +
+             observationOffset(item.oldSourceOffset) + "/" +
+             std::to_string(item.oldSourceCount) + "\t" +
+             observationOffset(item.newSourceOffset) + "/" +
+             std::to_string(item.newSourceCount) + "\t" +
+             ps5library::shell_indicator::patchResultName(record.result) +
+             "\t" +
+             ps5library::shell_indicator::patchFailureName(record.failure) +
+             "\n";
+  }
+  return publishFile(observationPath, value.data(), value.size(), 0644);
 }
 
 std::string monoText(MonoString* value) {
@@ -1012,23 +1122,98 @@ int ioctlHook(int descriptor, unsigned long request, void* argument) {
       request != decryptRnpsBundle ||
       !patchEnabled.load(std::memory_order_acquire))
     return result;
-  auto* args = static_cast<RnpsArgs*>(argument);
+  auto patch = ps5library::shell_indicator::PatchResult::Rejected;
+  auto failure = ps5library::shell_indicator::PatchFailure::Container;
+  ps5library::shell_indicator::HomeUiObservation observed;
+  int patchSize = 0;
+  std::uint64_t epoch = 0, sequence = 0;
+  unsigned attempt = 0;
+  bool captureObservation = false;
+  {
+    std::lock_guard<std::mutex> lock(homeObservationMutex);
+    if (!patchEnabled.load(std::memory_order_acquire)) return result;
+    epoch = homeObservationEpoch.load(std::memory_order_acquire);
+    const auto budget = homeObservationBudget.load(std::memory_order_relaxed);
+    if (budget) {
+      homeObservationBudget.store(budget - 1, std::memory_order_relaxed);
+      sequence = homeObservationOrdinal.fetch_add(
+                     1, std::memory_order_relaxed) +
+                 1;
+      captureObservation = true;
+    }
+    attempt = homeReloadAttempts.load(std::memory_order_acquire);
+  }
+  const auto* args = static_cast<RnpsArgs*>(argument);
   if (args && args->buffer && args->size > 0) {
-    const auto patch = ps5library::shell_indicator::patchHomeUi450451(
-        static_cast<unsigned char*>(args->buffer),
-        static_cast<std::size_t>(args->size));
-    if (patch != ps5library::shell_indicator::PatchResult::Rejected)
-      homePatchResult.store(static_cast<int>(patch), std::memory_order_release);
+    patchSize = args->size;
+    if (captureObservation)
+      observed = ps5library::shell_indicator::observeHomeUi450451(
+          static_cast<const unsigned char*>(args->buffer),
+          static_cast<std::size_t>(args->size));
+  }
+  {
+    std::lock_guard<std::mutex> lock(homeObservationMutex);
+    if (!patchEnabled.load(std::memory_order_acquire) ||
+        epoch != homeObservationEpoch.load(std::memory_order_acquire))
+      return result;
+    if (args && args->buffer && args->size > 0)
+      patch = ps5library::shell_indicator::patchHomeUi450451(
+          static_cast<unsigned char*>(args->buffer),
+          static_cast<std::size_t>(args->size), &failure);
+    if (captureObservation)
+      recordHomeObservation(sequence, attempt, observed, patch, failure);
+    homePatchSize.store(patchSize, std::memory_order_relaxed);
+    homePatchFailure.store(static_cast<int>(failure),
+                           std::memory_order_relaxed);
+    auto current = homePatchResult.load(std::memory_order_acquire);
+    while (true) {
+      const auto merged =
+          ps5library::shell_indicator::mergePatchResult(current, patch);
+      if (merged == current || homePatchResult.compare_exchange_weak(
+                                   current, merged, std::memory_order_release,
+                                   std::memory_order_acquire))
+        break;
+    }
+    homePatchSequence.fetch_add(1, std::memory_order_release);
   }
   return result;
 }
 
 void updateHook(MonoObject* instance) {
+  if (hooksReady.load(std::memory_order_acquire) && reloadHome &&
+      monoStringNew && rootDomain) {
+    bool reload = reloadPending.exchange(false, std::memory_order_acq_rel);
+    if (!reload) {
+      const auto now =
+          ps5library::shell_indicator::monotonicMilliseconds();
+      auto attempts = homeReloadAttempts.load(std::memory_order_acquire);
+      if (ps5library::shell_indicator::homeReloadDue(
+              patchEnabled.load(std::memory_order_acquire),
+              homePatchResult.load(std::memory_order_acquire), attempts, now,
+              nextHomeReloadMs.load(std::memory_order_acquire)) &&
+          homeReloadAttempts.compare_exchange_strong(
+              attempts, attempts + 1, std::memory_order_acq_rel,
+              std::memory_order_acquire)) {
+        if (patchEnabled.load(std::memory_order_acquire) &&
+            !ps5library::shell_indicator::patchSucceeded(
+                homePatchResult.load(std::memory_order_acquire))) {
+          nextHomeReloadMs.store(now + homeReloadRetryDelayMs,
+                                 std::memory_order_release);
+          reload = true;
+        }
+      }
+    }
+    if (reload) {
+      {
+        std::lock_guard<std::mutex> lock(homeObservationMutex);
+        if (patchEnabled.load(std::memory_order_acquire))
+          homeObservationBudget.fetch_add(homeObservationsPerReload,
+                                          std::memory_order_release);
+      }
+      reloadHome(monoStringNew(rootDomain, homeTitleId));
+    }
+  }
   if (originalUpdate) originalUpdate(instance);
-  if (!hooksReady.load(std::memory_order_acquire)) return;
-  if (reloadPending.exchange(false, std::memory_order_acq_rel) && reloadHome &&
-      monoStringNew && rootDomain)
-    reloadHome(monoStringNew(rootDomain, homeTitleId));
 }
 
 bool bootHook3(MonoString* uri, int option, MonoString* title) {
@@ -1095,9 +1280,6 @@ bool installOptional(std::uint64_t target, void* replacement,
 }
 
 bool install() {
-  installStage = "ICON";
-  if (!publishIcon()) return false;
-
   installStage = "MODULES";
   const auto kernel = module("libkernel_sys.sprx");
   const auto mono = module("libmonosgen-2.0.sprx");
@@ -1289,20 +1471,47 @@ int main() {
     return 1;
   }
   (void)publishStatus("READY_HOMEUI_PENDING");
+  (void)publishHomeObservations();
   int reportedPatch = -1;
+  std::uint64_t reportedSequence = 0;
+  unsigned reportedAttempts = 0;
   while (true) {
     refreshMode();
     const int patch = homePatchResult.load(std::memory_order_acquire);
-    if (patch != reportedPatch &&
-        patch >= static_cast<int>(
-                     ps5library::shell_indicator::PatchResult::Applied) &&
-        patch <= static_cast<int>(
-                     ps5library::shell_indicator::PatchResult::AlreadyApplied)) {
+    const auto sequence = homePatchSequence.load(std::memory_order_acquire);
+    const auto attempts = homeReloadAttempts.load(std::memory_order_acquire);
+    if ((patch != reportedPatch || sequence != reportedSequence ||
+         attempts != reportedAttempts) &&
+        (ps5library::shell_indicator::isPatchResultValue(patch) || attempts)) {
       reportedPatch = patch;
-      const auto result = static_cast<ps5library::shell_indicator::PatchResult>(
-          patch);
-      (void)publishStatus(std::string("HOMEUI_") +
-                          ps5library::shell_indicator::patchResultName(result));
+      reportedSequence = sequence;
+      reportedAttempts = attempts;
+      std::string status;
+      if (ps5library::shell_indicator::patchSucceeded(patch)) {
+        status = std::string("HOMEUI_") +
+                 ps5library::shell_indicator::patchResultName(
+                     static_cast<ps5library::shell_indicator::PatchResult>(
+                         patch));
+      } else if (patch == static_cast<int>(
+                              ps5library::shell_indicator::PatchResult::Rejected)) {
+        status = "HOMEUI_REJECTED";
+        const auto failure = static_cast<
+            ps5library::shell_indicator::PatchFailure>(
+                homePatchFailure.load(std::memory_order_relaxed));
+        status += "_" + std::string(
+                            ps5library::shell_indicator::patchFailureName(failure));
+        status += "_" + std::to_string(
+                            homePatchSize.load(std::memory_order_relaxed));
+        status += "_ATTEMPT_" + std::to_string(attempts);
+      } else {
+        status = attempts >=
+                         ps5library::shell_indicator::homeReloadAttemptLimit
+                     ? "HOMEUI_RELOAD_EXHAUSTED"
+                     : "HOMEUI_RELOAD_ATTEMPT_" +
+                           std::to_string(attempts);
+      }
+      (void)publishStatus(status);
+      (void)publishHomeObservations();
     }
 #if defined(PS5LIBRARY_EXPERIMENTAL_SHELL_INPUT_DIAGNOSTIC)
     inputTrace.flush(ps5library::shell_indicator::monotonicMilliseconds());

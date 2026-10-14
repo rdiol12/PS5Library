@@ -10,6 +10,7 @@ int main(){
   SDL_RendererInfo rendererInfo{};assert(SDL_GetRendererInfo(renderer,&rendererInfo)==0);
   assert(!storefront::heroCrossfade(rendererInfo.flags));
   assert(storefront::heroCrossfade(SDL_RENDERER_ACCELERATED));
+  assert(storefront::backdropMode("Home")==storefront::backdropMode("My Library"));
   assert(storefront::backdropMode("My Library")!=storefront::backdropMode("Game"));
   assert(storefront::backdropMode("My Library")!=storefront::backdropMode("Downloads"));
   assert(storefront::backdropMode("Downloads")==storefront::backdropMode("My PS5"));

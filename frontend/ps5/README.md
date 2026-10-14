@@ -1,6 +1,6 @@
 # PS5 application and agent
 
-Version **0.2.70** contains the controller-first PS5 storefront, its local console agent, the home-entry installer, and the host/native checks used by the public build.
+Version **0.2.91** contains the controller-first PS5 storefront, its local console agent, the home-entry installer, and the host/native checks used by the public build.
 
 PS5Library is self-hosted. The maintainers do not provide a game server address, hosted catalog, packages, dumps, or game links. Each operator runs their own PS5Library server and supplies content they are authorized to use.
 

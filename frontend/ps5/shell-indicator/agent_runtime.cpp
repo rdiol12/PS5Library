@@ -1,6 +1,8 @@
 #include "agent_runtime.hpp"
 #include "injector.hpp"
+#include "../common/client.hpp"
 
+#include <cerrno>
 #include <chrono>
 #include <climits>
 #include <cstddef>
@@ -39,33 +41,52 @@ struct Process {
 };
 
 bool processes(std::vector<Process>& result) {
+  constexpr std::size_t maximumBytes = 4 * 1024 * 1024;
+  constexpr unsigned maximumAttempts = 3;
   int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0};
-  std::size_t size = 0;
-  if (::sysctl(mib, 4, nullptr, &size, nullptr, 0) || !size ||
-      size > 4 * 1024 * 1024)
-    return false;
-  std::vector<unsigned char> data(size);
-  if (::sysctl(mib, 4, data.data(), &size, nullptr, 0)) return false;
-  for (std::size_t offset = 0; offset < size;) {
-    if (size - offset < sizeof(int)) return false;
-    int length = 0;
-    std::memcpy(&length, data.data() + offset, sizeof(length));
-    constexpr auto required = offsetof(kinfo_proc, ki_tdname) +
-                              sizeof(kinfo_proc::ki_tdname);
-    if (length < static_cast<int>(required) ||
-        static_cast<std::size_t>(length) > size - offset)
+  for (unsigned attempt = 0; attempt < maximumAttempts; ++attempt) {
+    std::size_t size = 0;
+    errno = 0;
+    if (::sysctl(mib, 4, nullptr, &size, nullptr, 0)) {
+      if (errno == ENOMEM) continue;
       return false;
-    const auto* process =
-        reinterpret_cast<const kinfo_proc*>(data.data() + offset);
-    result.push_back(
-        {process->ki_pid,
-         std::string(process->ki_comm,
-                     strnlen(process->ki_comm, sizeof(process->ki_comm))),
-         std::string(process->ki_tdname,
-                     strnlen(process->ki_tdname, sizeof(process->ki_tdname)))});
-    offset += static_cast<std::size_t>(length);
+    }
+    if (!size || size > maximumBytes) return false;
+
+    std::vector<unsigned char> data(size);
+    std::size_t reportedSize = data.size();
+    errno = 0;
+    if (::sysctl(mib, 4, data.data(), &reportedSize, nullptr, 0)) {
+      if (errno == ENOMEM || reportedSize > data.size()) continue;
+      return false;
+    }
+    if (reportedSize > data.size()) continue;
+
+    std::vector<Process> parsed;
+    for (std::size_t offset = 0; offset < reportedSize;) {
+      if (reportedSize - offset < sizeof(int)) return false;
+      int length = 0;
+      std::memcpy(&length, data.data() + offset, sizeof(length));
+      constexpr auto required = offsetof(kinfo_proc, ki_tdname) +
+                                sizeof(kinfo_proc::ki_tdname);
+      if (length < static_cast<int>(required) ||
+          static_cast<std::size_t>(length) > reportedSize - offset)
+        return false;
+      const auto* process =
+          reinterpret_cast<const kinfo_proc*>(data.data() + offset);
+      parsed.push_back(
+          {process->ki_pid,
+           std::string(process->ki_comm,
+                       strnlen(process->ki_comm, sizeof(process->ki_comm))),
+           std::string(
+               process->ki_tdname,
+               strnlen(process->ki_tdname, sizeof(process->ki_tdname)))});
+      offset += static_cast<std::size_t>(length);
+    }
+    result = std::move(parsed);
+    return true;
   }
-  return true;
+  return false;
 }
 
 const char* conflict(const std::vector<Process>& processes) {
@@ -133,21 +154,31 @@ std::string sessionId() {
 
 }  // namespace
 
-AgentRuntime::AgentRuntime(const std::filesystem::path& configRoot) {
+AgentRuntime::AgentRuntime(const std::filesystem::path& configRoot)
+    : telemetryPath_(configRoot / "shell-indicator.json") {
   const auto killSwitch = configRoot / "disable-shell-indicator";
   SystemSoftwareVersion system{};
   system.size = sizeof(system);
   if (sceKernelGetProsperoSystemSwVersion(&system) != 0) {
     status_ = "FIRMWARE_QUERY_FAILED";
+    recordTelemetry(status_);
     return;
   }
   const bool onionMarker =
       std::filesystem::exists("/system_tmp/onionhen/ready/toolbox");
   std::vector<Process> snapshot;
-  if (!processes(snapshot)) {
-    status_ = "PROCESS_SCAN_FAILED";
-    return;
+  unsigned processScanFailures = 0;
+  while (!processes(snapshot)) {
+    ++processScanFailures;
+    recordTelemetry("PROCESS_SCAN_RETRY", processScanFailures);
+    if (processSnapshotShouldStop(processScanFailures)) {
+      status_ = "PROCESS_SCAN_FAILED";
+      recordTelemetry(status_, processScanFailures);
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+  if (processScanFailures) recordTelemetry("PROCESS_SCAN_RECOVERED");
   const char* conflictName = onionMarker ? "OnionHEN" : conflict(snapshot);
   if (!startupAllowed(system.version, std::filesystem::exists(killSwitch),
                       conflictName != nullptr)) {
@@ -157,16 +188,20 @@ AgentRuntime::AgentRuntime(const std::filesystem::path& configRoot) {
       status_ = "DISABLED";
     else
       status_ = std::string("CONFLICT_") + conflictName;
+    recordTelemetry(status_);
     return;
   }
 
   heartbeat_ = std::make_unique<HeartbeatFile>(
       "/system_tmp/ps5library/agent-indicator.state", killSwitch, ::getpid(),
       sessionId());
+  status_ = "HEARTBEAT_ACTIVE_HELPER_PENDING";
+  recordTelemetry(status_);
   running_.store(true, std::memory_order_release);
   thread_ = std::thread([this] {
     pid_t failedPid = -1;
     pid_t observedShellUi = -1;
+    unsigned processScanFailures = 0;
     std::string loggedHelperStatus;
     while (running_.load(std::memory_order_acquire)) {
       const auto now = monotonicMilliseconds();
@@ -178,29 +213,45 @@ AgentRuntime::AgentRuntime(const std::filesystem::path& configRoot) {
       if (!heartbeat_->beat(healthy, now, last)) {
         std::fprintf(stderr, "Shell indicator heartbeat stopped: %s\n",
                      heartbeat_->error().c_str());
+        recordTelemetry("HEARTBEAT_STOPPED");
         running_.store(false, std::memory_order_release);
         break;
       }
       std::vector<Process> snapshot;
       if (!processes(snapshot)) {
+        ++processScanFailures;
+        recordTelemetry("PROCESS_SCAN_RETRY", processScanFailures);
         std::fprintf(stderr,
-                     "Shell indicator stopped: process scan became unavailable\n");
-        heartbeat_->stop();
-        running_.store(false, std::memory_order_release);
-        break;
-      }
-      const bool onionMarker =
-          std::filesystem::exists("/system_tmp/onionhen/ready/toolbox");
-      const char* conflictName = onionMarker ? "OnionHEN" : conflict(snapshot);
-      if (conflictName) {
-        std::fprintf(stderr,
-                     "Shell indicator stopped: conflicting injector %s appeared\n",
-                     conflictName);
-        heartbeat_->stop();
-        running_.store(false, std::memory_order_release);
-        break;
-      }
-      {
+                     "Shell indicator process scan unavailable (%u/%u)\n",
+                     processScanFailures, processSnapshotFailureLimit);
+        if (processSnapshotShouldStop(processScanFailures)) {
+          std::fprintf(
+              stderr,
+              "Shell indicator stopped: process scan remained unavailable\n");
+          recordTelemetry("PROCESS_SCAN_FAILED", processScanFailures);
+          heartbeat_->stop();
+          running_.store(false, std::memory_order_release);
+          break;
+        }
+      } else {
+        if (processScanFailures) {
+          processScanFailures = 0;
+          recordTelemetry("PROCESS_SCAN_RECOVERED");
+        }
+        const bool onionMarker =
+            std::filesystem::exists("/system_tmp/onionhen/ready/toolbox");
+        const char* conflictName =
+            onionMarker ? "OnionHEN" : conflict(snapshot);
+        if (conflictName) {
+          std::fprintf(
+              stderr,
+              "Shell indicator stopped: conflicting injector %s appeared\n",
+              conflictName);
+          recordTelemetry(std::string("CONFLICT_") + conflictName);
+          heartbeat_->stop();
+          running_.store(false, std::memory_order_release);
+          break;
+        }
         const auto shellUi = shellUiPid(snapshot);
         if (shellUi != observedShellUi) {
           observedShellUi = shellUi;
@@ -218,6 +269,7 @@ AgentRuntime::AgentRuntime(const std::filesystem::path& configRoot) {
             std::fprintf(stderr,
                          "Shell indicator helper injection failed for pid %d\n",
                          shellUi);
+            recordTelemetry("HELPER_INJECTION_FAILED");
             failedPid = shellUi;
           } else {
             bool ready = false;
@@ -229,6 +281,7 @@ AgentRuntime::AgentRuntime(const std::filesystem::path& configRoot) {
                 std::fprintf(stderr,
                              "Shell indicator helper active for pid %d\n",
                              shellUi);
+                recordTelemetry("HELPER_ACTIVE");
                 break;
               }
               const auto pollNow = monotonicMilliseconds();
@@ -246,6 +299,7 @@ AgentRuntime::AgentRuntime(const std::filesystem::path& configRoot) {
                            "%d%s%s\n",
                            shellUi, detail.empty() ? "" : ": ",
                            detail.c_str());
+              recordTelemetry("HELPER_READINESS_TIMEOUT");
               failedPid = shellUi;
             }
           }
@@ -264,7 +318,6 @@ AgentRuntime::AgentRuntime(const std::filesystem::path& configRoot) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   });
-  status_ = "HEARTBEAT_ACTIVE_HELPER_PENDING";
 }
 
 AgentRuntime::~AgentRuntime() {
@@ -277,6 +330,27 @@ void AgentRuntime::serverHeartbeat(bool authenticated) noexcept {
   serverAuthenticated_.store(authenticated, std::memory_order_release);
   lastServerHeartbeatMs_.store(authenticated ? monotonicMilliseconds() : 0,
                                std::memory_order_release);
+}
+
+void AgentRuntime::recordTelemetry(const std::string& status,
+                                   unsigned processScanFailures) noexcept {
+  if (status == telemetryStatus_ &&
+      processScanFailures == telemetryProcessScanFailures_)
+    return;
+  try {
+    std::filesystem::create_directories(telemetryPath_.parent_path());
+    ps5library::atomicJson(
+        telemetryPath_,
+        Json::object({{"schemaVersion", std::int64_t(1)},
+                      {"status", status},
+                      {"processScanFailures",
+                       static_cast<std::int64_t>(processScanFailures)}}));
+    telemetryStatus_ = status;
+    telemetryProcessScanFailures_ = processScanFailures;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "Shell indicator telemetry unavailable: %s\n",
+                 error.what());
+  }
 }
 
 }  // namespace ps5library::shell_indicator

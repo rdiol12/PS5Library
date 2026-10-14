@@ -10,11 +10,11 @@ static bool safeOverlayPath(const std::string& name){
   return true;
 }
 Json shadowMountScanRoots(const Json& settings,const Json& version){
-  auto roots=settings["scan_paths"];if(roots.size())return roots;
-  if(version["shadowmount_version"].string().rfind("1.7",0)!=0)return Json::array();
-  // Verified 1.7 sm_paths.h defaults; other versions must advertise explicit scan paths.
-  roots=Json::array();for(const auto* storage:{"/data","/mnt/ext0","/mnt/ext1","/mnt/usb0","/mnt/usb1","/mnt/usb2","/mnt/usb3","/mnt/usb4","/mnt/usb5","/mnt/usb6","/mnt/usb7"})for(const auto* suffix:{"/homebrew","/etaHEN/games"})roots.add(std::string(storage)+suffix);
-  for(const auto* storage:{"/mnt/usb0","/mnt/usb1","/mnt/usb2","/mnt/usb3","/mnt/usb4","/mnt/usb5","/mnt/usb6","/mnt/usb7","/mnt/ext0","/mnt/ext1"})roots.add(storage);
+  auto configured=settings["scan_paths"],roots=Json::array();std::set<std::string> seen;auto add=[&](const std::string& path){if(seen.insert(path).second)roots.add(path);};for(size_t i=0;i<configured.size();i++)add(configured[i].string());add("/data/homebrew");if(configured.size())return roots;
+  (void)version;
+  // Use the established fallback roots when the running API omits scan_paths.
+  for(const auto* storage:{"/data","/mnt/ext0","/mnt/ext1","/mnt/usb0","/mnt/usb1","/mnt/usb2","/mnt/usb3","/mnt/usb4","/mnt/usb5","/mnt/usb6","/mnt/usb7"})for(const auto* suffix:{"/homebrew","/etaHEN/games"})add(std::string(storage)+suffix);
+  for(const auto* storage:{"/mnt/usb0","/mnt/usb1","/mnt/usb2","/mnt/usb3","/mnt/usb4","/mnt/usb5","/mnt/usb6","/mnt/usb7","/mnt/ext0","/mnt/ext1"})add(storage);
   return roots;
 }
 bool verifyBackport(const fs::path& folder,const Json& backport){

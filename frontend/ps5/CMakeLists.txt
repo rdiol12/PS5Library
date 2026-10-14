@@ -52,7 +52,7 @@ else()
 endif()
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/update-public-key.pem" UPDATE_KEY)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/update-key.hpp" "#pragma once\ninline constexpr const char* updateTrustKey=R\"KEY(${UPDATE_KEY})KEY\";\n")
-add_library(ps5library_client common/client.cpp common/update.cpp agent/agent.cpp agent/discovery.cpp agent/backport.cpp agent/native.cpp agent/storage_format.cpp agent/installed.cpp agent/trophies.cpp agent/saves.cpp agent/removals.cpp agent/remote_play.cpp agent/cheats.cpp agent/memory_scanner.cpp)
+add_library(ps5library_client common/client.cpp common/client_state.cpp common/update.cpp agent/agent.cpp agent/discovery.cpp agent/backport.cpp agent/native.cpp agent/storage_format.cpp agent/installed.cpp agent/trophies.cpp agent/saves.cpp agent/removals.cpp agent/remote_play.cpp agent/cheats.cpp agent/memory_scanner.cpp)
 target_include_directories(ps5library_client PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_options(ps5library_client PRIVATE -Wall -Wextra -Werror)
 if(PS5 AND PS5LIBRARY_EXPERIMENTAL_MEMORY_SCANNER)
@@ -97,17 +97,9 @@ if(PS5 AND PS5LIBRARY_EXPERIMENTAL_SHELL_INDICATOR)
   target_compile_options(ps5library-onion-detour PRIVATE
     -fPIC -ffunction-sections -fdata-sections)
 
-  set(SHELL_INDICATOR_ICON_BUNDLE
-    "${CMAKE_CURRENT_BINARY_DIR}/shell-indicator-icon.c")
-  add_custom_command(OUTPUT "${SHELL_INDICATOR_ICON_BUNDLE}"
-    COMMAND ${Python3_EXECUTABLE} "${SHELL_INDICATOR_ROOT}/embed.py"
-      "${SHELL_INDICATOR_ICON_BUNDLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon0.png"
-      ps5library_shell_icon
-    DEPENDS assets/icon0.png "${SHELL_INDICATOR_ROOT}/embed.py")
   add_executable(ps5library-shell-indicator-helper
     shell-indicator/helper.cpp shell-indicator/homeui_patch.cpp
-    shell-indicator/lifecycle.cpp "${SHELL_INDICATOR_ICON_BUNDLE}")
+    shell-indicator/lifecycle.cpp)
   target_include_directories(ps5library-shell-indicator-helper PRIVATE
     ${SHELL_INDICATOR_UPSTREAM}/onion_detour/include
     ${SHELL_INDICATOR_UPSTREAM}/compat/include)
@@ -170,7 +162,13 @@ if(PS5 AND PS5LIBRARY_EXPERIMENTAL_SHELL_INDICATOR)
 endif()
 add_library(ps5library_video frontend/video.cpp)
 target_link_libraries(ps5library_video PUBLIC ${VIDEO_LIBS} ps5library_client ${UI_LIBS})
-add_executable(ps5library frontend/main.cpp)
+set(STOREFRONT_SOURCES
+  frontend/main.cpp
+  frontend/storefront.cpp
+  frontend/storefront_core.cpp
+  frontend/storefront_modals.cpp
+  frontend/storefront_pages.cpp)
+add_executable(ps5library ${STOREFRONT_SOURCES})
 target_link_libraries(ps5library PRIVATE ps5library_video)
 if(PS5)
   target_sources(ps5library PRIVATE frontend/ps5_audio.cpp)
@@ -242,11 +240,11 @@ if(NOT PS5)
   add_test(NAME shell-indicator-profile COMMAND shell-indicator-checks)
   add_executable(native-checks tests/checks.cpp)
   target_link_libraries(native-checks PRIVATE ps5library_client)
-  target_link_options(native-checks PRIVATE -Wl,--wrap=curl_global_init -Wl,--wrap=curl_easy_perform)
+  target_link_options(native-checks PRIVATE -Wl,--wrap=curl_global_init -Wl,--wrap=curl_easy_init -Wl,--wrap=curl_easy_cleanup -Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_slist_append -Wl,--wrap=curl_slist_free_all)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(NAME native-update-origin COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/native/build.py" --upstream "${CMAKE_CURRENT_SOURCE_DIR}" --mode app --content-version 01.025.000 --print-version-file-uri)
   set_tests_properties(native-update-origin PROPERTIES ENVIRONMENT "COMMUNITY_MASTER_URL=https://updates.example;PUBLIC_URL=https://node.example" PASS_REGULAR_EXPRESSION "https://updates.example/api/v1/native-updates/PPSA99051/from/01.025.000/version.xml")
-  add_executable(ps5library-native-host frontend/main.cpp)
+  add_executable(ps5library-native-host ${STOREFRONT_SOURCES})
   target_compile_definitions(ps5library-native-host PRIVATE PS5LIBRARY_NATIVE)
   target_link_libraries(ps5library-native-host PRIVATE ps5library_video)
   add_test(NAME native-fself-readback COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/native/verify.py")

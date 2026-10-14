@@ -51,11 +51,10 @@ assert types <= {"R_X86_64_RELATIVE", "R_X86_64_GLOB_DAT"}, (
 )
 
 binary = Path(filename).read_bytes()
-assert b"/system_tmp/ps5library/icon0.png" in binary, "embedded icon path missing"
-assert b"/user/appmeta/PPSA99051/icon0.png" not in binary, (
-    "helper must not depend on installed app metadata"
+assert b"/user/appmeta/PPSA99051/icon0.png" in binary, "app icon path missing"
+assert b"/system_tmp/ps5library/icon0.png" not in binary, (
+    "helper must reuse the installed app icon"
 )
-assert b"\x89PNG\r\n\x1a\n" in binary, "embedded icon data missing"
 input_markers = (
     b"/system_tmp/ps5library/options-input.trace",
     b"Sce.PlayStation.Core.dll",

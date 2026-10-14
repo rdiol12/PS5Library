@@ -16,11 +16,11 @@ import re
 from urllib.parse import urlsplit
 from verify import verify_package_metadata, verify_readback
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 PIN = "fdee81e746308f7f2b27f7914a84eab678088fb6"
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--upstream", required=True, type=Path)
-parser.add_argument("--payload-build", type=Path, default=ROOT / "build/ps5")
+parser.add_argument("--payload-build", type=Path, default=ROOT / "ps5/build/ps5")
 parser.add_argument("--json-c", type=Path, help="patched json-c archive (defaults to the native build image copy)")
 parser.add_argument("--mode", choices=("probe", "app"), default="probe")
 parser.add_argument("--diagnostic", action="store_true", help="persist the bounded storefront stage and fault trace (app mode only)")
@@ -45,15 +45,18 @@ if master_url:
         parser.error("COMMUNITY_MASTER_URL must be an exact HTTPS origin")
 origin = master_url or public_url
 version_uri = "" if probe else (args.version_file_uri or (origin + f"/api/v1/native-updates/PPSA99051/from/{args.content_version}/version.xml" if origin else "")).strip()
+expected_version_path = f"/api/v1/native-updates/PPSA99051/from/{args.content_version}/version.xml"
+if not probe and not version_uri:
+    parser.error("app builds require an update origin so Home can discover future versions")
 if version_uri:
     parsed = urlsplit(version_uri)
-    if len(version_uri) > 255 or parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
-        parser.error("--version-file-uri must be an HTTP(S) URL without credentials or a fragment")
+    if len(version_uri) > 255 or parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path != expected_version_path:
+        parser.error(f"--version-file-uri must be an HTTP(S) URL for {expected_version_path}")
 if args.print_version_file_uri:
     print(version_uri)
     raise SystemExit(0)
 upstream, payload = args.upstream.resolve(), args.payload_build.resolve()
-work = (args.output or ROOT / ("build/native-app-diagnostic" if args.diagnostic else "build/native-app" if args.mode == "app" else "build/native")).resolve()
+work = (args.output or ROOT / ("ps5/build/native-app-diagnostic" if args.diagnostic else "ps5/build/native-app" if args.mode == "app" else "ps5/build/native")).resolve()
 selection_audio = args.selection_audio.resolve() if args.selection_audio else None
 right_sprx = args.right_sprx.resolve() if args.right_sprx else None
 if not probe:
@@ -193,12 +196,12 @@ for name, source in (("app_crt", work / "app_crt.cpp"), ("app_cpp_runtime", work
 run(sdk / "bin/prospero-clang++", "-std=c++17", "-Os", "-ffunction-sections", "-fdata-sections",
     "-DPS5", "-DPS5LIBRARY_NATIVE", f'-DPS5LIBRARY_NATIVE_CONTENT_VERSION="{args.content_version}"', "-Dmain=storefront_main",
     "-isystem", sdk / "target/user/homebrew/include", "-isystem", sdk / "target/user/homebrew/include/SDL2",
-    "-c", ROOT / "frontend/main.cpp", "-o", work / "main.o")
+    "-c", ROOT / "ps5/frontend/main.cpp", "-o", work / "main.o")
 run(sdk / "bin/prospero-clang++", "-std=c++17", "-Os", "-DPS5LIBRARY_NATIVE_TARGET", "-isystem", sdk / "target/user/homebrew/include/SDL2",
     *(["-DPS5LIBRARY_NATIVE_PROBE"] if probe else []),
     *(["-DPS5LIBRARY_NATIVE_DIAGNOSTIC"] if args.diagnostic else []),
     *(["-DPS5LIBRARY_TAB_STRESS"] if args.tab_stress else []),
-    "-c", ROOT / "native/main.cpp", "-o", work / "native-main.o")
+    "-c", ROOT / "ps5/native/main.cpp", "-o", work / "native-main.o")
 # SDK v0.43 lacks this import declaration. Use the pinned upstream link-only
 # facade; the final title imports the real console module and ships no stub.
 run(sdk / "bin/prospero-clang++", "-std=c++20", "-O2", "-fPIC", "-c",
@@ -229,7 +232,7 @@ run(sdk / "bin/prospero-lld", "-T", work / "native.ld", "--eh-frame-hdr", "--gc-
     "-e", "_start", "-o", work / "llvm-pie.elf", work / "app_crt.o", work / "app_cpp_runtime.o", work / "native-main.o",
     "--start-group", *inputs, "-lc++abi", "-lunwind", "-lc", "--end-group", "--as-needed", "-lSceLibcInternal", "-lSceNet", work / "libSceCommonDialog.so")
 symbols = subprocess.check_output(["nm", "-C", str(work / "llvm-pie.elf")], text=True)
-assert "Storefront::startLive()::{lambda()#1}" not in symbols, "Native storefront must not link the live event worker"
+assert "Storefront::startLive()::{lambda()#1}" not in symbols, "native storefront must not link the live /events worker"
 assert "ps5library::atomicBytesMode" not in symbols, "native storefront must use the hardware-proven atomic writer"
 for unsafe in ("openat", "renameat", "unlinkat"):
     assert not re.search(rf"\b[Tt] {unsafe}$", symbols, re.MULTILINE), f"native storefront uses unsupported {unsafe}"
@@ -273,10 +276,10 @@ param = {
 }
 verify_package_metadata(param)
 (dist / "sce_sys/param.json").write_text(json.dumps(param, indent=2) + "\n")
-shutil.copyfile(ROOT / "assets/icon0.png", dist / "sce_sys/icon0.png")
+shutil.copyfile(ROOT / "ps5/assets/icon0.png", dist / "sce_sys/icon0.png")
 for name in ("pic0.dds", "pic1.dds"):
-    shutil.copyfile(ROOT / "assets" / name, dist / "sce_sys" / name)
-shutil.copyfile(ROOT / "assets/pic2.png", dist / "sce_sys/pic2.png")
+    shutil.copyfile(ROOT / "ps5/assets" / name, dist / "sce_sys" / name)
+shutil.copyfile(ROOT / "ps5/assets/pic2.png", dist / "sce_sys/pic2.png")
 if selection_audio:
     shutil.copyfile(selection_audio, dist / "sce_sys/snd0.at9")
 if right_sprx:

@@ -1,0 +1,186 @@
+/* Operational pages share the storefront's open, rail-like composition. */
+.main:is(
+  .page-downloads,
+  .page-my-ps5s,
+  .page-profile,
+  .page-server-cache,
+  .page-sources,
+  .page-server-manager,
+  .page-account
+) {
+  width: min(100%, 1280px);
+  padding-top: clamp(32px, 4vw, 56px);
+}
+.page-server-manager {
+  width: min(100%, 1440px);
+}
+
+.main:is(.page-downloads, .page-my-ps5s, .page-server-cache, .page-sources, .page-account) > h1 {
+  max-width: 18ch;
+  margin-bottom: 10px;
+  font-size: clamp(2.5rem, 4vw, 4.4rem);
+}
+.main:is(.page-downloads, .page-my-ps5s, .page-server-cache, .page-sources, .page-account)
+  > h1
+  + p {
+  margin-bottom: clamp(34px, 5vw, 64px);
+  font-size: 1rem;
+}
+
+.page-downloads > .job,
+.page-my-ps5s > .card,
+.page-server-cache > .cache-row,
+.page-account > .card,
+.page-profile > .card,
+.page-profile #save-backups-view > .card {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding: clamp(22px, 3vw, 34px) 0;
+  background: transparent;
+}
+.page-downloads > .job:last-child,
+.page-my-ps5s > .card:last-child,
+.page-server-cache > .cache-row:last-child,
+.page-account > .card:last-child,
+.page-profile > .card:last-child,
+.page-profile #save-backups-view > .card:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.page-my-ps5s #pair {
+  align-items: end;
+}
+.page-my-ps5s #pair label {
+  flex: 1 1 240px;
+}
+.page-my-ps5s .tab-actions {
+  align-items: end;
+}
+.page-my-ps5s .tab-actions > label {
+  flex: 1 1 280px;
+}
+.page-my-ps5s .destination {
+  padding-block: 18px;
+}
+
+.page-sources > .cols {
+  grid-template-columns: minmax(300px, 0.75fr) minmax(0, 1.25fr);
+  align-items: start;
+  gap: clamp(36px, 6vw, 84px);
+}
+.page-sources .cols > .card,
+.page-sources .cols > section > .card {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding: 26px 0;
+  background: transparent;
+}
+.page-sources .cols > .card {
+  border-bottom: 1px solid var(--line);
+}
+.page-sources .cols > section > .card:last-child {
+  border-bottom: 1px solid var(--line);
+}
+.page-sources li {
+  overflow-wrap: anywhere;
+}
+
+.page-profile > label {
+  max-width: 360px;
+}
+
+.page-account > .card {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.4fr) minmax(0, 1fr);
+  column-gap: clamp(28px, 6vw, 88px);
+}
+.page-account > .card > h2 {
+  grid-row: 1 / 5;
+}
+.page-account > .card > :not(h2) {
+  grid-column: 2;
+}
+.page-account > .card > button {
+  justify-self: start;
+}
+
+.page-server-manager > .manager-hero,
+.page-server-manager > .host-overview,
+.page-server-manager > .card {
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.page-server-manager > .card {
+  margin: 0;
+  border-top: 1px solid var(--line);
+  padding: clamp(24px, 3vw, 36px) 0;
+}
+.page-server-manager > .card:last-child {
+  border-bottom: 1px solid var(--line);
+}
+.page-server-manager > .card.warning {
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 20px;
+  background: #211b11;
+}
+
+.page-server-manager .account-list details {
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.page-server-manager .account-list summary > span:first-child {
+  min-width: 0;
+}
+.page-server-manager .account-list summary small {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .main:is(
+    .page-downloads,
+    .page-my-ps5s,
+    .page-profile,
+    .page-server-cache,
+    .page-sources,
+    .page-server-manager,
+    .page-account
+  ) {
+    padding-top: 28px;
+  }
+  .page-sources > .cols {
+    grid-template-columns: 1fr;
+    gap: 34px;
+  }
+  .page-account > .card {
+    grid-template-columns: 1fr;
+    row-gap: 12px;
+  }
+  .page-account > .card > h2 {
+    grid-row: auto;
+  }
+  .page-account > .card > :not(h2) {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 560px) {
+  .main:is(.page-downloads, .page-my-ps5s, .page-server-cache, .page-sources, .page-account) > h1 {
+    font-size: 2.35rem;
+  }
+  .page-my-ps5s #pair,
+  .page-my-ps5s .tab-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+}

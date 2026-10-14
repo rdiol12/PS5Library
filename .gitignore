@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 /data/
+/server/data/
 dist/
 node_modules/
 **/bin/

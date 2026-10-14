@@ -9,6 +9,7 @@ namespace ps5library::shell_indicator {
 inline constexpr std::uint32_t firmware450 = 0x04500000;
 inline constexpr std::uint32_t firmware451 = 0x04510000;
 inline constexpr bool supportedFirmware(std::uint32_t firmware) noexcept {
+  firmware &= 0xffff0000u;
   return firmware == firmware450 || firmware == firmware451;
 }
 inline constexpr std::uint64_t localHeartbeatMaxAgeMs = 12'000;
@@ -17,6 +18,11 @@ inline constexpr std::uint64_t pulsePeriodMs = 2'400;
 inline constexpr float pulseMinimumOpacity = 0.86f;
 inline constexpr std::uint64_t optionsDoublePressWindowMs = 350;
 inline constexpr std::uint32_t optionsStartButtonMask = 0x100;
+inline constexpr unsigned processSnapshotFailureLimit = 3;
+inline constexpr bool processSnapshotShouldStop(
+    unsigned consecutiveFailures) noexcept {
+  return consecutiveFailures >= processSnapshotFailureLimit;
+}
 
 struct State {
   int pid = 0;

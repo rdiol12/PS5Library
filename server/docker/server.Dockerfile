@@ -10,10 +10,13 @@ RUN npm run build -- --sourceMap false && npm prune --omit=dev && find node_modu
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d AS worker-build
 WORKDIR /app
+COPY dotnet-tools.json ./
 COPY upstream/LibProsperoPKG-drakmor upstream/LibProsperoPKG-drakmor
 COPY upstream/UFS2Tool upstream/UFS2Tool
 COPY worker worker
-RUN dotnet publish worker/PS5Library.Worker.csproj -c Release -o /worker --no-self-contained -p:DebugType=None -p:DebugSymbols=false
+RUN dotnet tool restore \
+    && dotnet tool run csharpier check worker \
+    && dotnet publish worker/PS5Library.Worker.csproj -c Release -o /worker --no-self-contained -p:DebugType=None -p:DebugSymbols=false
 # Exercise the actual package and image builders on Linux during the image build.
 RUN dotnet run --project worker/Tests/PS5Library.Worker.Checks.csproj -c Release
 

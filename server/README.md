@@ -154,8 +154,11 @@ dump.
 
 ## Enable or disable features
 
-Boolean options accept only `true` or `false`. Restart the server after
-changing them.
+Boolean options accept only `true` or `false`. Their environment values set
+the initial defaults. An administrator can change the options in **System &
+logs → Configuration**; those changes persist in PostgreSQL and apply
+immediately. Paths, URLs, credentials, and other restart-only settings remain
+environment configuration.
 
 | Setting | Default | Effect |
 | --- | --- | --- |

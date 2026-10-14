@@ -17,10 +17,19 @@
 static std::atomic<int> curlInitializations{0};
 static std::atomic<int> activeTransfers{0},maximumTransfers{0};
 static std::atomic<bool> passthroughCurl{false};
+static std::atomic<int> headerAppendCalls{0},failHeaderAppendAt{0},activeHeaderNodes{0},activeCurlHandles{0};
 extern "C" CURLcode __real_curl_global_init(long);
 extern "C" CURLcode __wrap_curl_global_init(long flags){curlInitializations++;return __real_curl_global_init(flags);}
+extern "C" CURL* __real_curl_easy_init();
+extern "C" CURL* __wrap_curl_easy_init(){auto* curl=__real_curl_easy_init();if(curl)activeCurlHandles++;return curl;}
+extern "C" void __real_curl_easy_cleanup(CURL*);
+extern "C" void __wrap_curl_easy_cleanup(CURL* curl){if(curl)activeCurlHandles--;__real_curl_easy_cleanup(curl);}
 extern "C" CURLcode __real_curl_easy_perform(CURL*);
 extern "C" CURLcode __wrap_curl_easy_perform(CURL* curl){if(passthroughCurl)return __real_curl_easy_perform(curl);auto active=++activeTransfers;auto maximum=maximumTransfers.load();while(active>maximum&&!maximumTransfers.compare_exchange_weak(maximum,active)){}std::this_thread::sleep_for(std::chrono::milliseconds(30));--activeTransfers;return CURLE_COULDNT_CONNECT;}
+extern "C" curl_slist* __real_curl_slist_append(curl_slist*,const char*);
+extern "C" curl_slist* __wrap_curl_slist_append(curl_slist* list,const char* value){const auto call=++headerAppendCalls;if(failHeaderAppendAt==call)return nullptr;auto* result=__real_curl_slist_append(list,value);if(result)activeHeaderNodes++;return result;}
+extern "C" void __real_curl_slist_free_all(curl_slist*);
+extern "C" void __wrap_curl_slist_free_all(curl_slist* list){for(auto* item=list;item;item=item->next)activeHeaderNodes--;__real_curl_slist_free_all(list);}
 #endif
 int main() {
   std::string hardwareBytes;for(int i=0;i<16;i++)hardwareBytes.push_back(static_cast<char>(i));
@@ -49,21 +58,35 @@ int main() {
   assert(!ps5library::shadowMountSupported(Json::parse(R"({"status":0,"api_version":2,"shadowmount_version":"1.7","capabilities":["add_manual_source","rescan"]})")));
   assert(!ps5library::shadowMountSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7","capabilities":["list_games"]})")));
   assert(!ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta1","capabilities":["add_manual_source","rescan"]})")));
-  assert(ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta2","capabilities":["add_manual_source","rescan"]})")));
-  assert(ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta2-2-g123456","capabilities":["add_manual_source","rescan"]})")));
+  assert(!ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta2","capabilities":["add_manual_source","rescan"]})")));
+  assert(!ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta2-2-g123456","capabilities":["add_manual_source","rescan"]})")));
   assert(!ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta3","capabilities":["add_manual_source","rescan"]})")));
   assert(ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta4","capabilities":["add_manual_source","rescan","installed_pkg_games","game_fakelib_settings"]})")));
   assert(ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta4-2-g123456","capabilities":["add_manual_source","rescan","installed_pkg_games","game_fakelib_settings"]})")));
   assert(!ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta4","capabilities":["add_manual_source","rescan","game_fakelib_settings"]})")));
   assert(!ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta4","capabilities":["add_manual_source","rescan","installed_pkg_games"]})")));
+  assert(!ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"2.4-custom","capabilities":["add_manual_source","rescan"]})")));
   assert(!ps5library::shadowMountPkgBackportSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta4","capabilities":"installed_pkg_games,game_fakelib_settings"})")));
+  auto fakelibSettings=Json::parse(R"({"fakelib_default_mode":"full"})");
+  auto fakelibGames=Json::parse(R"([{"title_id":"PPSA00001","fakelib_mode":"disabled"},{"title_id":"CUSA00002","fakelib_mode":"emulators"},{"title_id":"PPSA00003","fakelib_mode":"full"}])");
+  assert(ps5library::shadowMountFakelibMode(fakelibSettings,fakelibGames,"PPSA99999")=="full");
+  assert(ps5library::shadowMountFakelibMode(fakelibSettings,fakelibGames,"PPSA00001")=="disabled");
+  assert(ps5library::shadowMountFakelibMode(fakelibSettings,fakelibGames,"CUSA00002")=="emulators");
+  assert(ps5library::shadowMountFakelibMode(fakelibSettings,fakelibGames,"PPSA00003")=="full");
+  assert(ps5library::shadowMountFakelibMode(Json::object(),Json::array(),"PPSA99999")=="disabled");
+  auto overlayFiles=Json::parse(R"([{"path":"eboot.bin"},{"path":"fakelib/libSceAppContent.sprx"}])");
+  assert(ps5library::shadowMountOverlayAllowed("full","FPKG",overlayFiles));
+  assert(ps5library::shadowMountOverlayAllowed("emulators","FPKG",overlayFiles));
+  assert(!ps5library::shadowMountOverlayAllowed("disabled","FPKG",overlayFiles));
+  assert(ps5library::shadowMountOverlayAllowed("disabled","FPKG",Json::parse(R"([{"path":"eboot.bin"}])")));
+  assert(!ps5library::shadowMountOverlayAllowed("emulators","FPKG",Json::parse(R"([{"path":"fakelib/libGameCompat.sprx"}])")));
   assert(ps5library::shadowMountMoveSupported(Json::parse(R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta2","capabilities":["add_manual_source","rescan","move_game_source","list_games","storage_space","storage_job_status"]})")));
   assert(ps5library::shadowMountRefreshDue(0,1000,false));
   assert(!ps5library::shadowMountRefreshDue(1000,30999,false));
   assert(ps5library::shadowMountRefreshDue(1000,31000,false));
   assert(!ps5library::shadowMountRefreshDue(1000,300999,true));
-  assert(!ps5library::shadowMountRefreshDue(1000,301000,true));
-  assert(!ps5library::shadowMountRefreshDue(1000,999,true));
+  assert(ps5library::shadowMountRefreshDue(1000,301000,true));
+  assert(ps5library::shadowMountRefreshDue(1000,999,true));
   auto entry=Json::parse(R"({"titleId":"CUSA12345","addedAt":"2026-09-10","releases":[{"id":"release","sources":[{}],"artifacts":[{}]}]})");
   assert(storefront::validTitleId("PPSA12345")&&storefront::validTitleId("CUSA12345")&&!storefront::validTitleId("PPSA1234")&&!storefront::validTitleId("ppsa12345")&&!storefront::validTitleId("PPSA1234x"));
   auto library=Json::parse(R"([{"releaseId":"release","state":"READY_ON_PS5","source":"INSTALLED_TITLE","registered":false}])");
@@ -93,7 +116,7 @@ int main() {
   auto older=Json::parse(entry.dump());older.set("addedAt","2026-09-01");std::vector<Json> added={older,entry,older,older,older};
   auto recent=storefront::recentlyAdded(added);assert(recent.size()==4&&recent.front()["addedAt"].string()=="2026-09-10");
   assert(storefront::recentlyAdded({Json::parse(R"({"releases":[{"sources":[],"artifacts":[]}]})")}).empty());
-  assert(!storefront::offlinePageEnabled("Discover"));assert(storefront::offlinePageEnabled("My Library"));assert(storefront::offlinePageEnabled("Downloads"));assert(storefront::offlinePageEnabled("My PS5"));
+  assert(!storefront::offlinePageEnabled("Discover"));assert(storefront::offlinePageEnabled("Home"));assert(storefront::offlinePageEnabled("My Library"));assert(storefront::offlinePageEnabled("Downloads"));assert(storefront::offlinePageEnabled("My PS5"));
   auto extracting=Json::parse(R"({"kind":"BUILD","state":"EXTRACTING","downloadedBytes":0,"totalBytes":400,"progress":{"stage":"Extracting archive","completedStages":0,"totalStages":7,"extraction":{"completedBytes":100,"totalBytes":400}}})");
   auto measured=storefront::buildByteProgress(extracting);assert(measured["completedBytes"].number()==100&&measured["totalBytes"].number()==400);
   auto staging=Json::parse(R"({"kind":"BUILD","state":"BUILDING","progress":{"stage":"Copying to staging","completedStages":2,"totalStages":7,"staging":{"completedBytes":300,"totalBytes":600}}})");
@@ -109,7 +132,7 @@ int main() {
   auto liveJobs=Json::parse(R"([{"id":"job-a","kind":"BUILD","state":"QUEUED","downloadedBytes":0,"totalBytes":1000,"progress":null}])");
   auto liveEvent=Json::parse(R"({"jobId":"job-a","state":"BUILDING","progress":{"downloadedBytes":1000,"totalBytes":1000,"speedBytesPerSecond":0,"etaSeconds":null,"conversion":{"stage":"Building package","completedStages":3,"totalStages":7,"operation":{"completedBytes":450,"totalBytes":900}}}})");
   assert(storefront::mergeJobEvent(liveJobs,liveEvent));measured=storefront::buildByteProgress(liveJobs[size_t(0)]);assert(liveJobs[size_t(0)]["state"].string()=="BUILDING"&&liveJobs[size_t(0)]["downloadedBytes"].number()==1000&&liveJobs[size_t(0)]["progress"]["stage"].string()=="Building package"&&measured["completedBytes"].number()==450&&measured["totalBytes"].number()==900);assert(!storefront::mergeJobEvent(liveJobs,Json::parse(R"({"jobId":"missing","state":"BUILDING","progress":{}})")));
-  assert(storefront::landingPage("My Library",true));assert(storefront::landingPage("My Library",false));assert(!storefront::landingPage("Discover",false));
+  assert(storefront::landingPage("Home",true));assert(storefront::landingPage("Home",false));assert(!storefront::landingPage("My Library",false));assert(!storefront::landingPage("Discover",false));
   auto rawUsb=Json::parse(R"({"storageId":"usb0","displayName":"USB Storage","path":"/mnt/usb0","totalBytes":1000000000000,"formatEligible":true})");
   assert(storefront::formatEligibleStorage(rawUsb));
   auto inferredUsb=Json::parse(R"({"storageId":"usb0","displayName":"USB Storage","path":"/mnt/usb0","totalBytes":1000000000000})");assert(!storefront::formatEligibleStorage(inferredUsb));
@@ -139,8 +162,8 @@ int main() {
   assert(!ps5library::heartbeatIncludesInventory(true,true,false));
   assert(ps5library::heartbeatIncludesInventory(false,false,false));
   assert(!ps5library::heartbeatIncludesInventory(false,true,false));
-  auto serverConsole=Json::parse(R"({"id":"local-console","storage":[{"storageId":"ext1"},{"storageId":"usb0"}],"storageFormat":null})"),localStorage=Json::parse(local.dump());localStorage.set("storage",Json::parse(R"([{"storageId":"usb0","formatEligible":true},{"storageId":"ext1"}])"));
-  auto overlaid=storefront::withLocalConsoleState(serverConsole,localStorage,true,"local-console");assert(overlaid["storage"][size_t(0)]["storageId"].string()=="usb0"&&overlaid["storageFormat"]["formatProgress"].number()==42);
+  auto serverConsole=Json::parse(R"({"id":"local-console","presence":"ONLINE","storage":[{"storageId":"ext1"},{"storageId":"usb0"}],"storageFormat":null})"),localStorage=Json::parse(local.dump());localStorage.set("storage",Json::parse(R"([{"storageId":"usb0","formatEligible":true},{"storageId":"ext1"}])"));
+  auto overlaid=storefront::withLocalConsoleState(serverConsole,localStorage,true,"local-console");assert(overlaid["presence"].string()=="LOCAL"&&overlaid["storage"][size_t(0)]["storageId"].string()=="usb0"&&overlaid["storageFormat"]["formatProgress"].number()==42);
   auto serverLibrary=Json::parse(R"([{"releaseId":"release-1","titleId":"PPSA10001","version":"01.00","storageId":"internal-installed","state":"READY_ON_PS5","registered":true,"source":"INSTALLED_TITLE"}])");
   auto localInventory=Json::parse(R"([{"releaseId":"release-1","titleId":"PPSA10001","version":"01.00","storageId":"ext0","relativePath":"app/PPSA10001","available":true,"registered":true,"nativeRegistered":true,"canMove":true,"canDelete":true,"source":"INSTALLED_TITLE"}])");
   auto connectedLibrary=storefront::withLocalInventory(serverLibrary,localInventory);assert(connectedLibrary.size()==1&&connectedLibrary[size_t(0)]["storageId"].string()=="ext0"&&connectedLibrary[size_t(0)]["nativeRegistered"].boolean()&&connectedLibrary[size_t(0)]["canMove"].boolean());
@@ -241,7 +264,14 @@ interleaved kernel log line
   assert(verifyBackport(libraries,fullBackport));
   assert(!verifyBackport(libraries,Json::parse(R"({"files":[{"path":"../data","size":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]})")));
   assert(shadowMountScanRoots(Json::parse(R"({"scan_paths":[]})"),Json::parse(R"({"shadowmount_version":"1.7alpha13"})")).size()>20);
-  assert(shadowMountScanRoots(Json::parse(R"({"scan_paths":[]})"),Json::parse(R"({"shadowmount_version":"2.0"})")).size()==0);
+  assert(shadowMountScanRoots(Json::parse(R"({"scan_paths":[]})"),Json::parse(R"({"shadowmount_version":"2.0"})")).size()>20);
+  auto customRoots=shadowMountScanRoots(Json::parse(R"({"scan_paths":["/mnt/usb0/games"]})"),Json());
+  assert(customRoots.size()==2);
+  assert(customRoots[size_t(0)].string()=="/mnt/usb0/games");
+  assert(customRoots[size_t(1)].string()=="/data/homebrew");
+  auto fallbackOnce=shadowMountScanRoots(Json::parse(R"({"scan_paths":["/data/homebrew"]})"),Json());
+  assert(fallbackOnce.size()==1);
+  assert(fallbackOnce[size_t(0)].string()=="/data/homebrew");
   rejected=false;try{Client invalid(Json::object({{"serverUrl","https://example.net/not-a-server-root"}}));}catch(...){rejected=true;}assert(rejected);
   auto config=Json::object({{"serverUrl","https://one.example"},{"name","Keep my name"}});atomicJson(root/"config.json",config);Agent initial(root/"config.json");auto state=readJson(root/"device-state.json");assert(state["serverUrl"].string()=="https://one.example");config.set("serverUrl","https://two.example");atomicJson(root/"config.json",config);rejected=false;try{Agent wrong(root/"config.json");}catch(...){rejected=true;}assert(rejected);
   auto unpaired=root/"unpaired/config.json";fs::create_directories(unpaired.parent_path());atomicJson(unpaired,Json::object({{"serverUrl","https://one.example"},{"allowInsecureLan",false}}));atomicJson(unpaired.parent_path()/"device-state.json",Json::object({{"deviceId",deviceId()},{"serverUrl",""},{"libraryRevision",int64_t(0)}}));Agent unpairedAgent(unpaired);assert(readJson(unpaired.parent_path()/"device-state.json")["serverUrl"].string()=="https://one.example");
@@ -256,13 +286,16 @@ interleaved kernel log line
   for(const auto* bad:{"https://localhost:8118","http://server.example:8118","http://localhost:8118/path"}){rejected=false;try{normalizeProxyUrl(bad);}catch(...){rejected=true;}assert(rejected);}
   assert(clientConnectTimeout(false,false)==10&&clientConnectTimeout(true,false)==3&&clientConnectTimeout(true,true)==10);
   for(const auto* bad:{"", "http://one.example", "https://name:password@one.example", "https://one.example/path", "https://one.example?token=x", "https://one.example#fragment", "https://one.example:99999"}){rejected=false;try{normalizeServerUrl(bad);}catch(...){rejected=true;}assert(rejected);}
-  assert(normalizeServerUrl("http://192.168.1.20:3150",true)=="http://192.168.1.20:3150");
+  const auto ipv4=[](int a,int b,int c,int d){return std::to_string(a)+"."+std::to_string(b)+"."+std::to_string(c)+"."+std::to_string(d);};
+  const auto lanOrigin="http://"+ipv4(192,168,1,20)+":3150",tailnetOrigin="http://"+ipv4(100,64,0,10)+":3150";
+  assert(normalizeServerUrl(lanOrigin,true)==lanOrigin);
   rejected=false;try{normalizeServerUrl("http://public.example",true);}catch(...){rejected=true;}assert(rejected);
   assert(normalizeServerUrl("http://127.0.0.1:3150/",true)=="http://127.0.0.1:3150");
   auto nativeConfig=root/"native/config.json",agentConfig=root/"agent/config.json";fs::create_directories(nativeConfig.parent_path());
   auto freshAgent=root/"fresh-agent/config.json";auto freshDefaults=bootstrapAgentConfig(freshAgent,{});assert(fs::is_regular_file(freshAgent)&&freshDefaults["serverUrl"].string().empty());Agent freshLocal(freshAgent);
   atomicJson(nativeConfig,Json::object({{"serverUrl","https://one.example"},{"fallbackServerUrl","https://one-tail.example"},{"fallbackProxyUrl","http://localhost:8118"},{"allowInsecureLan",false}}));
   auto bootstrapped=bootstrapAgentConfig(agentConfig,nativeConfig);assert(bootstrapped["serverUrl"].string()=="https://one.example"&&bootstrapped["fallbackServerUrl"].string()=="https://one-tail.example"&&bootstrapped["fallbackProxyUrl"].string()=="http://localhost:8118");
+  auto preservedFallback=connectAgentConfig(agentConfig,"https://one.example",false);assert(preservedFallback["fallbackServerUrl"].string()=="https://one-tail.example"&&preservedFallback["fallbackProxyUrl"].string()=="http://localhost:8118");
   assert(bootstrapped["caBundle"].string()==(agentConfig.parent_path()/"ca-bundle.crt").string());assert(fs::is_regular_file(agentConfig));
   atomicJson(nativeConfig,Json::object({{"serverUrl","https://two.example"},{"allowInsecureLan",false}}));
   auto directBootstrap=bootstrapAgentConfig(agentConfig,nativeConfig);assert(directBootstrap["serverUrl"].string()=="https://two.example"&&directBootstrap["fallbackProxyUrl"].string().empty());
@@ -270,7 +303,7 @@ interleaved kernel log line
   assert(agentState["credential"].null()&&agentState["consoleId"].null());
   atomicJson(nativeConfig,Json::object({{"serverUrl",""},{"allowInsecureLan",false}}));
   atomicJson(agentConfig.parent_path()/"device-state.json",Json::object({{"deviceId",deviceId()},{"serverUrl","https://two.example"},{"consoleId","old-console"},{"credential","old-secret"},{"libraryRevision",int64_t(9)}}));
-  auto disconnectedBootstrap=bootstrapAgentConfig(agentConfig,nativeConfig);assert(disconnectedBootstrap["serverUrl"].string().empty()&&disconnectedBootstrap["fallbackProxyUrl"].string().empty());
+  auto disconnectedBootstrap=bootstrapAgentConfig(agentConfig,nativeConfig);assert(disconnectedBootstrap["serverUrl"].string().empty()&&disconnectedBootstrap["fallbackServerUrl"].string().empty()&&disconnectedBootstrap["fallbackProxyUrl"].string().empty());
   agentState=readJson(agentConfig.parent_path()/"device-state.json");
   assert(agentState["credential"].null()&&agentState["consoleId"].null()&&agentState["serverUrl"].string().empty());
   Agent localOnly(agentConfig);assert(localOnly.localSnapshot()["inventory"].size()==0);
@@ -278,7 +311,7 @@ interleaved kernel log line
   const auto authorized="Authorization: Bearer "+std::string(localAgentCredential)+"\r\n\r\n";assert(parseLocalAgentRequest("POST /api/v1/agent/titles/PPSA10001/delete/internal HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Delete);auto moveRequest=parseLocalAgentRequest("POST /api/v1/agent/titles/PPSA10001/move/internal/usb0 HTTP/1.1\r\n"+authorized);assert(moveRequest.action==LocalAgentAction::Move&&moveRequest.sourceStorageId=="internal"&&moveRequest.storageId=="usb0");assert(parseLocalAgentRequest("POST /api/v1/agent/titles/PPSA10001/move/internal/../data HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Invalid);
   auto offlineRequest=parseLocalAgentRequest("POST /api/v1/agent/offline/0/68747470733a2f2f6f6e652e6578616d706c65 HTTP/1.1\r\n"+authorized);assert(offlineRequest.action==LocalAgentAction::Offline&&offlineRequest.serverUrl=="https://one.example"&&!offlineRequest.allowInsecureLan);
   assert(localAgentModePath(true,false,"https://one.example")=="/api/v1/agent/offline/0/68747470733a2f2f6f6e652e6578616d706c65");
-  assert(localAgentModePath(false,true,"http://192.168.1.20:3150","http://100.64.0.10:3150")=="/api/v1/agent/connect/1/687474703a2f2f3139322e3136382e312e32303a33313530/687474703a2f2f3130302e36342e302e31303a33313530");
+  assert(localAgentModePath(false,true,lanOrigin,tailnetOrigin)=="/api/v1/agent/connect/1/687474703a2f2f3139322e3136382e312e32303a33313530/687474703a2f2f3130302e36342e302e31303a33313530");
   bool connectionNotified=false;int connectionNotices=0;notifyLocalAgentConnection(connectionNotified,[&]{connectionNotices++;return false;});assert(!connectionNotified);notifyLocalAgentConnection(connectionNotified,[&]{connectionNotices++;return true;});notifyLocalAgentConnection(connectionNotified,[&]{connectionNotices++;return true;});assert(connectionNotified&&connectionNotices==2);connectionNotified=false;notifyLocalAgentConnection(connectionNotified,[&]{connectionNotices++;return true;});assert(connectionNotices==3);
   assert(parseLocalAgentRequest("POST /api/v1/agent/disconnect HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Disconnect);
   assert(parseLocalAgentRequest("POST /api/v1/agent/refresh HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Refresh);
@@ -287,7 +320,7 @@ interleaved kernel log line
   auto appUpdate=parseLocalAgentRequest("POST /api/v1/agent/app-update/PPSA99051/01.042.000 HTTP/1.1\r\n"+authorized);assert(appUpdate.action==LocalAgentAction::AppUpdate&&appUpdate.titleId==nativeTitleId&&appUpdate.version=="01.042.000");auto gameUpdate=parseLocalAgentRequest("POST /api/v1/agent/app-update/PPSA99783/01.000.021 HTTP/1.1\r\n"+authorized);assert(gameUpdate.action==LocalAgentAction::AppUpdate&&gameUpdate.titleId=="PPSA99783"&&gameUpdate.version=="01.000.021");assert(parseLocalAgentRequest("POST /api/v1/agent/app-update/01.042.000 HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Invalid);assert(parseLocalAgentRequest("POST /api/v1/agent/app-update/PPSA99999/01.000.021 HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Invalid);assert(parseLocalAgentRequest("POST /api/v1/agent/app-update/PPSA99783/01.04..000 HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Invalid);assert(parseLocalAgentRequest("POST /api/v1/agent/app-update/PPSA99051/01.042.000?url=https://other HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Invalid);
   auto launchRequest=parseLocalAgentRequest("POST /api/v1/agent/titles/CUSA12345/launch HTTP/1.1\r\n"+authorized);assert(launchRequest.action==LocalAgentAction::Launch&&launchRequest.titleId=="CUSA12345");assert(localLaunchable(Json::parse(R"({"inventory":[{"titleId":"CUSA12345","available":true,"source":"INSTALLED_TITLE"}]})"),"CUSA12345"));assert(!localLaunchable(Json::parse(R"({"inventory":[{"titleId":"CUSA12345","available":false,"source":"INSTALLED_TITLE"}]})"),"CUSA12345"));
   auto connectRequest=parseLocalAgentRequest("POST /api/v1/agent/connect/0/68747470733a2f2f6f6e652e6578616d706c65 HTTP/1.1\r\n"+authorized);assert(connectRequest.action==LocalAgentAction::Connect&&connectRequest.serverUrl=="https://one.example"&&!connectRequest.allowInsecureLan);
-  auto fallbackRequest=parseLocalAgentRequest("POST /api/v1/agent/connect/1/687474703a2f2f3139322e3136382e312e32303a33313530/687474703a2f2f3130302e36342e302e31303a33313530 HTTP/1.1\r\n"+authorized);assert(fallbackRequest.action==LocalAgentAction::Connect&&fallbackRequest.serverUrl=="http://192.168.1.20:3150"&&fallbackRequest.fallbackServerUrl=="http://100.64.0.10:3150"&&fallbackRequest.allowInsecureLan);
+  auto fallbackRequest=parseLocalAgentRequest("POST /api/v1/agent/connect/1/687474703a2f2f3139322e3136382e312e32303a33313530/687474703a2f2f3130302e36342e302e31303a33313530 HTTP/1.1\r\n"+authorized);assert(fallbackRequest.action==LocalAgentAction::Connect&&fallbackRequest.serverUrl==lanOrigin&&fallbackRequest.fallbackServerUrl==tailnetOrigin&&fallbackRequest.allowInsecureLan);
   assert(parseLocalAgentRequest("POST /api/v1/agent/connect/1/zz HTTP/1.1\r\n"+authorized).action==LocalAgentAction::Invalid);
   assert(localAgentAddress()=="127.0.0.1");assert(localAgentUrl()=="http://127.0.0.1:"+std::to_string(localAgentPort));
   auto oversizedSnapshot=Json::object({{"snapshot",Json::object({{"firmware","4.50"},{"runtimeStatus",Json::object({{"shadowMount","RUNNING"},{"fakelibEnabled",true}})},{"inventory",Json::parse(R"([{"title":"Local game","titleId":"PPSA10001","version":"01.00","available":true,"registered":true,"localMedia":{"cover":{"url":"/api/v1/agent/media/PPSA10001/cover?v=1","size":1234}}}])")},{"saveData",Json::object({{"items",Json::parse("[\""+std::string(8192,'x')+"\"]")}})},{"cheats",Json::array()}})},{"device",Json::object({{"consoleId","local-console"}})}});
@@ -338,6 +371,7 @@ interleaved kernel log line
 #ifndef PS5
   assert(curlInitializations==1);
   Client first(Json::object({{"serverUrl","http://127.0.0.1:9"},{"allowInsecureLan",true}})),second(Json::object({{"serverUrl","http://127.0.0.1:9"},{"allowInsecureLan",true}}));
+  headerAppendCalls=0;failHeaderAppendAt=2;rejected=false;try{first.bytes("/api/v1/test");}catch(const std::exception& error){rejected=std::string(error.what())=="Network header allocation failed";}failHeaderAppendAt=0;assert(rejected&&activeHeaderNodes==0&&activeCurlHandles==0);
   auto transfer=[](Client& client){try{client.bytes("/api/v1/test");}catch(...){}};std::thread a(transfer,std::ref(first)),b(transfer,std::ref(second));a.join();b.join();assert(maximumTransfers==1);
 #endif
   fs::remove_all(root);return 0;

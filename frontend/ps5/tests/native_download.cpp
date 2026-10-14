@@ -15,6 +15,7 @@ struct PlayGoInfo {char languages[30][8],scenarios[64][3],ids[64][48];unsigned c
 struct InstallError {int32_t code,version;char description[512],type[9];};
 struct InstallStatus {char status[16],source[8];uint32_t remaining;uint64_t downloaded,initial,total;uint32_t promote;InstallError error;int32_t copyPercent;bool copyOnly;};
 static std::atomic<int> initialized{0},moveStateDelayMs{0};static int requests=0,result=0,statusResult=0,statusRequests=0,uninstallRequests=0,existsRequests=0,moveRequests=0,moveCancels=0,moveSource=0,moveRequestSource=0,moveRequestResult=0,moveState=0,installLocation=1,installLocationGets=0,expectedInstallLocation=-1;static std::vector<int> installLocationSets;static std::string uninstalled,movedTitle;static std::array<char,12> movedTitleSlot{};static InstallStatus reported{};
+static std::string ipv4(int a,int b,int c,int d){return std::to_string(a)+"."+std::to_string(b)+"."+std::to_string(c)+"."+std::to_string(d);}
 static void sendAll(int fd,const char* data,size_t size){while(size){auto n=send(fd,data,size,0);assert(n>0);data+=n;size-=static_cast<size_t>(n);}}
 static void serve(int listener,const std::string& payload,std::atomic<bool>& stop,std::atomic<int>& ranges,std::atomic<int>& reports,std::atomic<int>& relayFetches){
   while(!stop){pollfd ready{listener,POLLIN,0};if(poll(&ready,1,100)<=0)continue;int client=accept(listener,nullptr,nullptr);if(client<0)continue;
@@ -34,6 +35,9 @@ static void serve(int listener,const std::string& payload,std::atomic<bool>& sto
 }
 static std::string relayRequest(const std::string& url,const std::string& method="GET",const std::string& headers={}){
   const std::string prefix="http://127.0.0.1:";assert(url.rfind(prefix,0)==0);auto slash=url.find('/',prefix.size());auto port=std::stoi(url.substr(prefix.size(),slash-prefix.size()));int client=socket(AF_INET,SOCK_STREAM,0);assert(client>=0);sockaddr_in address{};address.sin_family=AF_INET;address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);address.sin_port=htons(static_cast<uint16_t>(port));assert(connect(client,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0);auto request=method+" "+url.substr(slash)+" HTTP/1.1\r\nHost: 127.0.0.1\r\n"+headers+"Connection: close\r\n\r\n";sendAll(client,request.data(),request.size());std::string response;char bytes[4096];for(;;){auto count=recv(client,bytes,sizeof(bytes),0);if(count<=0)break;response.append(bytes,static_cast<size_t>(count));}close(client);return response;
+}
+static std::pair<std::string,std::string> captureRelayError(const std::function<std::string()>& request){
+  int output[2];assert(pipe(output)==0);const int saved=dup(STDERR_FILENO);assert(saved>=0&&dup2(output[1],STDERR_FILENO)>=0);close(output[1]);auto response=request();std::fflush(stderr);assert(dup2(saved,STDERR_FILENO)>=0);close(saved);std::string diagnostic;char bytes[512];for(ssize_t count;(count=read(output[0],bytes,sizeof(bytes)))>0;)diagnostic.append(bytes,static_cast<size_t>(count));close(output[0]);return {response,diagnostic};
 }
 extern "C" int sceAppInstUtilInitialize(){initialized++;std::this_thread::sleep_for(std::chrono::milliseconds(40));return 0;}
 extern "C" int sceAppInstUtilInstallByPackage(MetaInfo* meta,PackageInfo* info,PlayGoInfo* playgo){
@@ -70,6 +74,7 @@ int main(){using namespace ps5library;
   startNativeDownload(url,id,"Owned homebrew",icon);assert(requests==1&&installLocationGets==0&&installLocationSets.empty()&&installLocation==1);
   std::strncpy(reported.status,"downloading",sizeof(reported.status)-1);reported.remaining=12;reported.downloaded=345;reported.total=1000;reported.promote=4;reported.copyPercent=7;
   auto status=nativeDownloadStatus(id);assert(status["available"].boolean()&&status["status"].string()=="downloading"&&status["downloadedBytes"].number()==345&&status["totalBytes"].number()==1000&&status["remainingSeconds"].number()==12&&status["promoteProgress"].number()==4&&status["localCopyPercent"].number()==7&&statusRequests==1);
+  assert(!nativeDownloadCancelled(status,false));status.set("status","none");assert(!nativeDownloadCancelled(status,false));assert(nativeDownloadCancelled(status,true));status.set("status","cancelled");assert(nativeDownloadCancelled(status,false));status.set("status","canceled");assert(nativeDownloadCancelled(status,false));status.set("available",false);assert(!nativeDownloadCancelled(status,true));
   reported.error.code=-77;status=nativeDownloadStatus(id);assert(status["errorCode"].number()==-77);reported.error.code=0;
   statusResult=-9;status=nativeDownloadStatus(id);assert(!status["available"].boolean()&&status["result"].number()==-9);statusResult=0;
   result=-7;bool rejected=false;try{startNativeDownload(url,id,"Owned homebrew",icon);}catch(const std::exception& e){rejected=std::string(e.what()).rfind("NATIVE_INSTALL_REJECTED_",0)==0;}assert(rejected);
@@ -109,9 +114,10 @@ int main(){using namespace ps5library;
   assert(ranged.nativeDownloadUrl(packagePath)==fallbackOrigin+packagePath);
   Client primaryProxied(Json::object({{"serverUrl",fallbackOrigin},{"serverProxyUrl",fallbackOrigin},{"allowInsecureLan",true}}));
   rejected=false;try{primaryProxied.nativeDownloadUrl(packagePath);}catch(const std::exception& error){rejected=std::string(error.what())=="NATIVE_INSTALL_DIRECT_URL_UNAVAILABLE";}assert(rejected);
-  Client fallbackProxied(Json::object({{"serverUrl",fallbackOrigin},{"fallbackServerUrl","http://10.0.0.2:3150"},{"fallbackProxyUrl",fallbackOrigin},{"allowInsecureLan",true}}));
+  const auto privateFallback="http://"+ipv4(10,0,0,2)+":3150";
+  Client fallbackProxied(Json::object({{"serverUrl",fallbackOrigin},{"fallbackServerUrl",privateFallback},{"fallbackProxyUrl",fallbackOrigin},{"allowInsecureLan",true}}));
   assert(!fallbackProxied.nativeDownloadRelayRequired());assert(fallbackProxied.nativeDownloadUrl(packagePath)==fallbackOrigin+packagePath);
-  Client proxied(Json::object({{"serverUrl","http://127.0.0.1:9"},{"fallbackServerUrl","http://10.0.0.2:3150"},{"fallbackProxyUrl",fallbackOrigin},{"allowInsecureLan",true}}));proxied.credential="relay-credential";proxied.request("GET","/api/v1/ping");
+  Client proxied(Json::object({{"serverUrl","http://127.0.0.1:9"},{"fallbackServerUrl",privateFallback},{"fallbackProxyUrl",fallbackOrigin},{"allowInsecureLan",true}}));proxied.credential="relay-credential";proxied.request("GET","/api/v1/ping");
   rejected=false;try{proxied.nativeDownloadUrl(packagePath);}catch(const std::exception& error){rejected=std::string(error.what())=="NATIVE_INSTALL_DIRECT_URL_UNAVAILABLE";}assert(rejected);
   rejected=false;try{proxied.nativeUpdateUrl("/api/v1/native-updates/PPSA99051/47/packages/"+packageHash+".pkg");}catch(const std::exception& error){rejected=std::string(error.what())=="NATIVE_INSTALL_DIRECT_URL_UNAVAILABLE";}assert(rejected);
   std::string relayPackage;uint16_t relayPort=0;
@@ -122,5 +128,6 @@ int main(){using namespace ps5library;
     auto fetched=relayFetches.load();assert(relayRequest(relayPackage+".crc?product=0287&serverIpAddr=127.0.0.1&r=00000000").rfind("HTTP/1.1 404 Not Found",0)==0&&relayFetches==fetched);assert(relayRequest(relayPackage,"GET","Range: bytes=0-1,3-4\r\n").rfind("HTTP/1.1 400 Bad Request",0)==0&&relayFetches==fetched);
   }
   {NativeDownloadRelay restarted(proxied,relayPort);auto urls=restarted.pin(packagePath,iconPath);assert(urls.first==relayPackage&&relayRequest(urls.second,"HEAD").rfind("HTTP/1.1 200 OK",0)==0);}
+  int unavailable=socket(AF_INET,SOCK_STREAM,0);assert(unavailable>=0);sockaddr_in unavailableAddress{};unavailableAddress.sin_family=AF_INET;unavailableAddress.sin_addr.s_addr=htonl(INADDR_LOOPBACK);unavailableAddress.sin_port=0;assert(bind(unavailable,reinterpret_cast<sockaddr*>(&unavailableAddress),sizeof(unavailableAddress))==0);socklen_t unavailableSize=sizeof(unavailableAddress);assert(getsockname(unavailable,reinterpret_cast<sockaddr*>(&unavailableAddress),&unavailableSize)==0);Client unavailableClient(Json::object({{"serverUrl","http://127.0.0.1:"+std::to_string(ntohs(unavailableAddress.sin_port))},{"allowInsecureLan",true}}));unavailableClient.credential="relay-credential";NativeDownloadRelay failingRelay(unavailableClient,0);auto failingUrl=failingRelay.pin(packagePath).first;auto failure=captureRelayError([&]{return relayRequest(failingUrl);});close(unavailable);assert(failure.first.rfind("HTTP/1.1 502 Bad Gateway",0)==0&&failure.second.find("Native download relay failed")!=std::string::npos);
   stop=true;shutdown(listener,SHUT_RDWR);close(listener);server.join();assert(fileHash(part)==hash&&ranges==2&&reports==2);fs::remove_all(root);
 }

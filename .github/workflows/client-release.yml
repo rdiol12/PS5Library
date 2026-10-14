@@ -1,0 +1,131 @@
+name: Build client releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the IPA and agent ELF to a GitHub release
+        type: boolean
+        default: false
+      release_tag:
+        description: Version tag required when publishing, for example v0.2.91
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate release input
+        env:
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version="$(sed -n 's/.*appVersion = "\([0-9.]*\)".*/\1/p' frontend/ps5/common/version.hpp)"
+          test -n "$version"
+          if [[ "$PUBLISH_RELEASE" == true ]]; then
+            if [[ "$RELEASE_TAG" != "v$version" ]]; then
+              echo "Release tag must be v$version."
+              exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null; then
+              echo "Release tag $RELEASE_TAG already exists."
+              exit 1
+            fi
+          fi
+
+  ios:
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check public source
+        run: python3 scripts/check-release.py --source
+      - run: sh frontend/ios/check.sh
+      - name: Build unsigned iPhone app
+        run: >-
+          xcodebuild -project frontend/ios/PS5LibraryCompanion.xcodeproj
+          -scheme PS5LibraryCompanion -configuration Release
+          -sdk iphoneos -destination 'generic/platform=iOS'
+          CONFIGURATION_BUILD_DIR="$RUNNER_TEMP/device"
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Package and verify IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/Payload" artifacts
+          cp -R "$RUNNER_TEMP/device/PS5LibraryCompanion.app" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/artifacts/PS5LibraryCompanion-unsigned.ipa" Payload)
+          unzip -t artifacts/PS5LibraryCompanion-unsigned.ipa
+          unzip -l artifacts/PS5LibraryCompanion-unsigned.ipa | grep -q 'Payload/PS5LibraryCompanion.app/Info.plist'
+          (cd artifacts && shasum -a 256 PS5LibraryCompanion-unsigned.ipa > PS5LibraryCompanion-unsigned.ipa.sha256)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: client-ios
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  agent:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check public repository
+        run: |
+          python3 scripts/check-release.py --source
+          python3 scripts/test-release.py
+      - name: Build pinned PS5 toolchain
+        run: |
+          docker build -t ps5library-build:0.43 -f frontend/docker/ps5-build.Dockerfile frontend
+          docker build -t ps5library-native-build:0.3 -f frontend/docker/ps5-native-build.Dockerfile frontend
+      - name: Test and build agent
+        run: docker run --rm --network none --user "$(id -u):$(id -g)" -e GITHUB_REF -v "$PWD:/workspace" -w /workspace/frontend ps5library-native-build:0.3 bash scripts/build.sh
+      - name: Package corresponding dependency source
+        run: (cd frontend && python3 scripts/package-sources.py)
+      - name: Select release files
+        run: |
+          mkdir artifacts
+          cp frontend/dist/ps5library-agent.elf frontend/dist/PS5Library-dependencies.zip artifacts/
+          grep '  ps5library-agent.elf$' frontend/dist/SHA256SUMS > artifacts/ps5library-agent.elf.sha256
+          grep '  PS5Library-dependencies.zip$' frontend/dist/SHA256SUMS > artifacts/PS5Library-dependencies.zip.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: client-agent
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    if: ${{ inputs.publish_release }}
+    needs: [ios, agent]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: client-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          gh release create "$RELEASE_TAG" release-assets/*
+          --repo "$GITHUB_REPOSITORY"
+          --target "$GITHUB_SHA"
+          --title "PS5Library $RELEASE_TAG"
+          --generate-notes

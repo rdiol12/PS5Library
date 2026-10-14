@@ -1,9 +1,12 @@
 *
+# Default-deny the build context. Keep local dumps, credentials, diagnostics,
+# native binaries, private services, and developer tools out of BuildKit.
 !.dockerignore
 !package.json
 !package-lock.json
 !tsconfig.json
 !LICENSE
+!dotnet-tools.json
 
 !docker/
 docker/*
@@ -52,6 +55,8 @@ upstream/UFS2Tool/*
 !upstream/UFS2Tool/LICENSE
 !upstream/UFS2Tool/app.manifest
 
+# A broad source include must never pull local build products, credentials,
+# diagnostics, database files, packages, or downloaded archives into BuildKit.
 **/bin/
 **/bin/**
 **/obj/
@@ -83,15 +88,17 @@ upstream/UFS2Tool/*
 **/*.pdb
 **/*.so
 **/*.dylib
+**/*.pem
 **/*.dmp
 **/*.core
-**/*.pem
 **/*.zip
 **/*.7z
 **/*.tar
 **/*.tar.*
 **/*.rar
 
+# Deterministic, synthetic multipart fixtures exercised by the Linux worker
+# build. Their README records their generated, non-commercial contents.
 !worker/Tests/Fixtures/homebrew.part1.rar
 !worker/Tests/Fixtures/homebrew.part2.rar
 !worker/Tests/Fixtures/homebrew.part3.rar
