@@ -8,8 +8,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "format": "prettier --write \"app/src/**/*.ts\" \"app/tests/**/*.{ts,mjs}\" \"app/public/*.{js,css,html}\" \"scripts/**/*.{ts,mjs}\" \"shared/**/*.ts\"",
-    "format:check": "prettier --check \"app/src/**/*.ts\" \"app/tests/**/*.{ts,mjs}\" \"app/public/*.{js,css,html}\" \"scripts/**/*.{ts,mjs}\" \"shared/**/*.ts\"",
+    "format": "prettier --write \"app/src/**/*.ts\" \"app/tests/**/*.{ts,mjs}\" \"app/public/*.{js,css,html}\" \"scripts/**/*.{ts,mjs}\" \"shared/**/*.ts\" \"../tools/native-pkg-updater/*.mjs\"",
+    "format:check": "prettier --check \"app/src/**/*.ts\" \"app/tests/**/*.{ts,mjs}\" \"app/public/*.{js,css,html}\" \"scripts/**/*.{ts,mjs}\" \"shared/**/*.ts\" \"../tools/native-pkg-updater/*.mjs\"",
     "format:native": "node scripts/format-native.mjs",
     "format:native:check": "node scripts/format-native.mjs --check",
     "format:worker": "dotnet tool run csharpier format worker",
@@ -27,7 +27,8 @@
     "docker:restart": "docker compose --env-file .env -f docker/compose.yml restart server",
     "docker:logs": "docker compose --env-file .env -f docker/compose.yml logs -f --tail=200 server worker redis",
     "test:container": "node --env-file=.env scripts/check-container.mjs",
-    "test:native": "node --env-file=.env --import tsx --test --test-concurrency=1 app/tests/native/*.test.ts"
+    "test:native": "node --env-file=.env --import tsx --test --test-concurrency=1 app/tests/native/*.test.ts",
+    "native:update": "node --env-file-if-exists=.env ../tools/native-pkg-updater/native-update.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

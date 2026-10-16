@@ -24,6 +24,7 @@ content.
 | --- | --- |
 | [`server/`](server/README.md) | API, web UI, package worker, shared schemas, Docker stack, PostgreSQL, and Redis |
 | [`frontend/`](frontend/) | Native PS5 storefront and agent plus the iPhone companion |
+| [`tools/native-pkg-updater/`](tools/native-pkg-updater/README.md) | CLI for building and publishing native PKG updates |
 
 The local Library Server holds each operator's catalog and generated artifacts.
 The PS5 and iPhone connect only to the server address configured by that

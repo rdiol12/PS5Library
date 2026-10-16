@@ -136,6 +136,27 @@ MCowBQYDK2VwAyEA111111111111111111111111111111111111111=
             with self.assertRaisesRegex(ValueError, 'Unreviewed binary'):
                 release.check_source(root, quiet=True)
 
+    def test_only_the_reviewed_public_tool_folder_can_publish(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(['git', 'init', '--quiet'], cwd=root, check=True)
+            public = root / 'tools' / 'native-pkg-updater' / 'README.md'
+            public.parent.mkdir(parents=True)
+            public.write_text('# Public updater\n', encoding='utf-8')
+            release.check_source(root, quiet=True)
+
+            unreviewed = public.parent / 'private-helper.py'
+            unreviewed.write_text('print("private")\n', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'Excluded file'):
+                release.check_source(root, quiet=True)
+            unreviewed.unlink()
+
+            private = root / 'tools' / 'private' / 'README.md'
+            private.parent.mkdir()
+            private.write_text('# Private tool\n', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'Excluded file'):
+                release.check_source(root, quiet=True)
+
 
 if __name__ == '__main__':
     unittest.main()

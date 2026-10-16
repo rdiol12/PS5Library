@@ -41,6 +41,8 @@ authorized content.
   state reported by the PS5 agent.
 - Provide an administrator dashboard for services, jobs, accounts, devices,
   logs, and cache management.
+- Build and publish registered native-title update PKGs with the documented
+  [Native PKG Update CLI](../tools/native-pkg-updater/README.md).
 
 Compatibility still depends on the console firmware, jailbreak runtime,
 installed agent, package runtime, source quality, and an exact matching

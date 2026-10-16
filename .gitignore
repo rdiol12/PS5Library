@@ -17,6 +17,7 @@ node_modules/
 *.ffpfs
 *.ffpfsc
 *.log
+*.param-before-update-uri.json
 *.db
 *.db-*
 *.sqlite*

@@ -185,6 +185,14 @@ def check_source(root=Path('.'), quiet=False):
     if not files:
         raise ValueError('No tracked release files')
     roots = {'frontend', 'server', 'scripts', '.github'}
+    public_tools = {
+        'tools/native-pkg-updater/README.md',
+        'tools/native-pkg-updater/build-native-update.ps1',
+        'tools/native-pkg-updater/check-native-update.mjs',
+        'tools/native-pkg-updater/native-update-retention.mjs',
+        'tools/native-pkg-updater/native-update.mjs',
+        'tools/native-pkg-updater/publish-native-update.mjs',
+    }
     standalone = {
         '.clang-format',
         '.clang-format-files',
@@ -239,6 +247,7 @@ def check_source(root=Path('.'), quiet=False):
     for name in files:
         relative = Path(name)
         path = root / relative
+        public_tool = name in public_tools
         if path.is_symlink():
             raise ValueError('Excluded file in export: ' + name)
         if not path.exists():
@@ -249,7 +258,7 @@ def check_source(root=Path('.'), quiet=False):
             for part in relative.parts
         )
         if (
-            (relative.parts[0] not in roots and name not in standalone)
+            (relative.parts[0] not in roots and name not in standalone and not public_tool)
             or suffix in forbidden_suffixes
             or (suffix in {'.zip', '.7z', '.rar'} and name not in synthetic_archives)
             or (suffix in {'.bin', '.sprx'} and name not in vendored_resources)
