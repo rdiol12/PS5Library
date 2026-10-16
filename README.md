@@ -1,7 +1,8 @@
 <p align="center"><img src="frontend/ps5/assets/icon0.png" width="140" alt="PS5Library icon"></p>
 
-# PS5Library
+Use the native updater if you publish your app as an FPKG and want to deliver future updates through the PS5’s native update system, instead of requiring users to download and reinstall the full PKG for every release.
 
+# PS5Library
 PS5Library is a self-hosted library platform for a jailbroken PS5. It combines
 a private Library Server, a controller-first PS5 storefront and console agent,
 and an iPhone companion.
