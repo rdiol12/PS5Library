@@ -1,3 +1,5 @@
+<p align="center"><a href="https://www.buymeacoffee.com/rdiol12" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="60" width="217"></a></p>
+
 <p align="center"><img src="frontend/ps5/assets/icon0.png" width="140" alt="PS5Library icon"></p>
 
 Use the native updater if you publish your app as an FPKG and want to deliver future updates through the PS5’s native update system, instead of requiring users to download and reinstall the full PKG for every release.
@@ -161,11 +163,3 @@ Thank you to their maintainers and contributors for publishing source,
 documentation, and research that made independent PS5 homebrew development
 possible. Their original licenses and notices remain in the relevant source
 directories.
-
----
-
-## Support ☕
-
-If my work saves you time, you can fuel the next project:
-
-<a href="https://www.buymeacoffee.com/rdiol12" target="_blank"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy Me A Coffee" height="32"></a>
