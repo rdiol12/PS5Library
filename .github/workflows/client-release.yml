@@ -4,13 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish the IPA and agent ELF to a GitHub release
+        description: Publish the built artifacts to a GitHub release
         type: boolean
         default: false
       release_tag:
-        description: Release tag, required only when publishing (for example v0.2.91)
+        description: Release tag, required only when publishing (for example v0.2.92)
         type: string
         required: false
+      release_mode:
+        description: Create a brand-new tag/release, or update an existing one
+        type: choice
+        default: new tag
+        options:
+          - new tag
+          - update existing
 
 permissions:
   contents: read
@@ -56,8 +63,7 @@ jobs:
           test -d "$app"
           mkdir -p "$RUNNER_TEMP/ipa/Payload" artifacts
           cp -R "$app" "$RUNNER_TEMP/ipa/Payload/"
-          (cd "$RUNNER_TEMP/ipa" && ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/artifacts/PS5LibraryCompanion-unsigned.ipa")
-          (cd artifacts && shasum -a 256 PS5LibraryCompanion-unsigned.ipa > PS5LibraryCompanion-unsigned.ipa.sha256)
+          (cd "$RUNNER_TEMP/ipa" && ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/artifacts/PS5LibraryCompanion.ipa")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: client-ios
@@ -84,8 +90,7 @@ jobs:
           apk="app/build/outputs/apk/debug/app-debug.apk"
           test -f "$apk"
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          cp "$apk" "$GITHUB_WORKSPACE/artifacts/PS5LibraryCompanion-android-debug.apk"
-          (cd "$GITHUB_WORKSPACE/artifacts" && sha256sum PS5LibraryCompanion-android-debug.apk > PS5LibraryCompanion-android-debug.apk.sha256)
+          cp "$apk" "$GITHUB_WORKSPACE/artifacts/PS5LibraryCompanion-android.apk"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: client-android
@@ -117,7 +122,6 @@ jobs:
           PY
           mkdir -p artifacts
           cp ps5/build/ps5/ps5library-agent.elf artifacts/
-          (cd artifacts && sha256sum ps5library-agent.elf > ps5library-agent.elf.sha256)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: client-agent
@@ -141,13 +145,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
+          exists=false
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exists=true
+          fi
+          if [[ "$RELEASE_MODE" == "new tag" && "$exists" == true ]]; then
+            echo "Release $RELEASE_TAG already exists, but 'new tag' was selected. Pick 'update existing' or a different tag."
+            exit 1
+          fi
+          if [[ "$RELEASE_MODE" == "update existing" && "$exists" == false ]]; then
+            echo "Release $RELEASE_TAG does not exist, but 'update existing' was selected. Pick 'new tag'."
+            exit 1
+          fi
+          if [[ "$exists" == true ]]; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "PS5Library $RELEASE_TAG" \
-              --generate-notes
+              --title "PS5Library $RELEASE_TAG"
           fi
