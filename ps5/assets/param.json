@@ -1,5 +1,7 @@
 {
   "titleId": "BREW05001",
+  "contentId": "IV0000-BREW05001_00-PS5LIBRARY000000",
+  "contentVersion": "01.00",
   "deeplinkUri": "http://127.0.0.1:8080/fs/user/app/BREW05001/launch.html",
   "localizedParameters": {
     "defaultLanguage": "en-US",
