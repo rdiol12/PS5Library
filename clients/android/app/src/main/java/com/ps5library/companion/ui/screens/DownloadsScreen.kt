@@ -15,7 +15,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.ui.Alignment
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -77,7 +83,39 @@ fun DownloadsScreen(
         if (installations.isNotEmpty()) {
             item { SectionLabel("Installations") }
             items(installations, key = { it.id }) { installation ->
-                InstallationCard(installation)
+                val dismissState = rememberSwipeToDismissBoxState(
+                    confirmValueChange = { value ->
+                        if (value != SwipeToDismissBoxValue.Settled) {
+                            session.removeInstallation(installation.id)
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                )
+                SwipeToDismissBox(
+                    state = dismissState,
+                    backgroundContent = {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.CenterEnd,
+                                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "Remove installation",
+                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            }
+                        }
+                    },
+                ) {
+                    InstallationCard(installation)
+                }
             }
         }
     }

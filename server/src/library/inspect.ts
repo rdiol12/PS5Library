@@ -154,7 +154,7 @@ export async function runWorker(
   runKey?: string,
 ) {
   if (process.env.PACKAGE_WORKER_URL || process.env.PACKAGE_WORKER_SOCKET) {
-    const timeout = /^(build|hash)/.test(args[0] ?? '') ? 6 * 60 * 60_000 : 30 * 60_000,
+    const timeout = 60 * 60_000,
       body = runKey ? { kind: 'dotnet', args, runKey } : { kind: 'dotnet', args };
     try {
       return await remote<Record<string, any>>(body, timeout, progress);
@@ -248,13 +248,16 @@ export async function runLocalWorker(
     let output = '',
       pending = '',
       events = Promise.resolve();
-    const timeout = setTimeout(
-      () => {
+    // Stall timeout: re-armed on every progress event, so an arbitrarily large but progressing build is never killed; only a worker that goes silent this long aborts.
+    const idleMs = 60 * 60_000;
+    let timeout: ReturnType<typeof setTimeout>;
+    const armTimeout = () => {
+      timeout = setTimeout(() => {
         process.kill();
         reject(new AppError('WORKER_TIMEOUT', 504));
-      },
-      /^(build|hash)/.test(args[0] ?? '') ? 6 * 60 * 60_000 : 30 * 60_000,
-    );
+      }, idleMs);
+    };
+    armTimeout();
     process.stdout.on('data', (chunk) => {
       output += chunk;
       if (output.length > 4 * 1024 ** 2) process.kill();
@@ -273,6 +276,8 @@ export async function runLocalWorker(
           try {
             const event = JSON.parse(line.slice(20));
             if (!validWorkerProgress(event)) throw new AppError('INVALID_WORKER_EVENT');
+            clearTimeout(timeout);
+            armTimeout();
             events = events
               .then(() => progress?.(event))
               .catch((error) => {

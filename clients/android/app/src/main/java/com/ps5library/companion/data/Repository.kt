@@ -153,6 +153,11 @@ class Repository(private val context: Context) {
         Unit
     }
 
+    suspend fun removeInstallation(id: String) = withContext(Dispatchers.IO) {
+        client?.service?.removeInstallation(id)
+        Unit
+    }
+
     suspend fun logout() {
         val api = client
         client = null

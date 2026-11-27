@@ -3995,12 +3995,9 @@ setInterval(() => {
     else offlineView();
     return;
   }
-  state.page =
-    location.pathname === '/pair'
-      ? 'My PS5s'
-      : location.pathname === '/profile'
-        ? 'Profile'
-        : 'Server library';
+  if (location.pathname === '/pair') state.page = 'My PS5s';
+  else if (location.pathname === '/profile') state.page = 'Profile';
+  // otherwise keep the page restored from localStorage (ps5lib.page) so a refresh stays put
   try {
     await refresh();
   } catch {

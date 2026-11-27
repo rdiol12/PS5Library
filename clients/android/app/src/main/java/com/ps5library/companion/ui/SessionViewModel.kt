@@ -165,6 +165,17 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun removeInstallation(id: String) {
+        viewModelScope.launch {
+            try {
+                repository.removeInstallation(id)
+                refreshNow()
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Could not remove the installation."
+            }
+        }
+    }
+
     fun clearError() {
         _error.value = null
     }

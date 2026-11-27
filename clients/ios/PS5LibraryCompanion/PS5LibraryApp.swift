@@ -1149,51 +1149,49 @@ struct DownloadsView: View {
                     SectionHeading(title: "Installations", detail: "\(installations.count)")
                         .padding(.top, 18).padding(.bottom, 8)
                     ForEach(installations) { item in
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(item.title).font(.headline)
-                                    if let console = store.data.consoles
-                                        .first(where: { $0.id == item.consoleId })
-                                    {
-                                        Text(console
-                                            .name + " | " +
-                                            (console.storage
-                                                .first(where: { $0.id == item.storageId })?
-                                                .displayName ?? item.storageId)).font(.caption)
-                                            .foregroundStyle(secondaryText)
+                        SwipeableRow(actions: [
+                            SwipeActionItem(label: "Remove", system: "trash.fill", tint: danger) {
+                                store.removeInstallation(item.id)
+                            }
+                        ]) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(item.title).font(.headline)
+                                        if let console = store.data.consoles
+                                            .first(where: { $0.id == item.consoleId })
+                                        {
+                                            Text(console
+                                                .name + " | " +
+                                                (console.storage
+                                                    .first(where: { $0.id == item.storageId })?
+                                                    .displayName ?? item.storageId)).font(.caption)
+                                                .foregroundStyle(secondaryText)
+                                        }
                                     }
+                                    Spacer()
+                                    StatusPill(
+                                        text: readable(item.state),
+                                        color: item.error == nil ? accent : danger
+                                    )
                                 }
-                                Spacer()
-                                StatusPill(
-                                    text: readable(item.state),
-                                    color: item.error == nil ? accent : danger
-                                )
-                                Button {
-                                    store.removeInstallation(item.id)
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.title3).foregroundStyle(secondaryText)
-                                }
-                                .buttonStyle(.plain).padding(.leading, 4)
-                                .accessibilityLabel("Remove installation")
-                            }
-                            Label(
-                                item
-                                    .method == "SHADOWMOUNT" ? "ShadowMountPlus" :
-                                    readable(item.method),
-                                systemImage: "shippingbox.fill"
-                            ).font(.caption).foregroundStyle(secondaryText)
-                            if let error = item.error {
                                 Label(
-                                    readable(error),
-                                    systemImage: "exclamationmark.triangle.fill"
-                                ).font(.footnote).foregroundStyle(danger)
-                            }
-                        }.padding(.vertical, 18)
-                            .overlay(alignment: .bottom) {
-                                Divider().overlay(.white.opacity(0.1))
-                            }
+                                    item
+                                        .method == "SHADOWMOUNT" ? "ShadowMountPlus" :
+                                        readable(item.method),
+                                    systemImage: "shippingbox.fill"
+                                ).font(.caption).foregroundStyle(secondaryText)
+                                if let error = item.error {
+                                    Label(
+                                        readable(error),
+                                        systemImage: "exclamationmark.triangle.fill"
+                                    ).font(.footnote).foregroundStyle(danger)
+                                }
+                            }.padding(.vertical, 18)
+                                .overlay(alignment: .bottom) {
+                                    Divider().overlay(.white.opacity(0.1))
+                                }
+                        }
                     }
                 }
                 if !store.data.jobs.isEmpty {

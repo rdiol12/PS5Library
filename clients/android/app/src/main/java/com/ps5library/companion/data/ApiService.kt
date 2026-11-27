@@ -37,4 +37,7 @@ interface ApiService {
 
     @DELETE("api/v1/jobs/{id}")
     suspend fun dismissJob(@Path("id") id: String): Acknowledgement
+
+    @DELETE("api/v1/installations/{id}")
+    suspend fun removeInstallation(@Path("id") id: String): Acknowledgement
 }
