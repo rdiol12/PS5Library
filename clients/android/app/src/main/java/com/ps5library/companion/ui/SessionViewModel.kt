@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ps5library.companion.App
 import com.ps5library.companion.data.Account
+import com.ps5library.companion.data.InstallationPlan
+import com.ps5library.companion.data.InstallationRequest
 import com.ps5library.companion.data.Job
 import com.ps5library.companion.data.Repository
 import com.ps5library.companion.data.Snapshot
@@ -172,6 +174,51 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
                 refreshNow()
             } catch (e: Exception) {
                 _error.value = e.message ?: "Could not remove the installation."
+            }
+        }
+    }
+
+    private val _installPlan = MutableStateFlow<InstallationPlan?>(null)
+    val installPlan: StateFlow<InstallationPlan?> = _installPlan.asStateFlow()
+    private val _installBusy = MutableStateFlow(false)
+    val installBusy: StateFlow<Boolean> = _installBusy.asStateFlow()
+
+    fun planInstall(sourceReleaseId: String, consoleId: String) {
+        viewModelScope.launch {
+            _installBusy.value = true
+            try {
+                _installPlan.value = repository.planInstallation(sourceReleaseId, consoleId, null)
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Could not check compatibility."
+            } finally {
+                _installBusy.value = false
+            }
+        }
+    }
+
+    fun clearInstallPlan() {
+        _installPlan.value = null
+    }
+
+    fun submitInstall(
+        sourceReleaseId: String,
+        consoleId: String,
+        storageId: String,
+        method: String,
+        onDone: () -> Unit,
+    ) {
+        viewModelScope.launch {
+            _installBusy.value = true
+            try {
+                repository.requestInstallation(
+                    InstallationRequest(sourceReleaseId, consoleId, storageId, method),
+                )
+                refreshNow()
+                onDone()
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Could not start the installation."
+            } finally {
+                _installBusy.value = false
             }
         }
     }

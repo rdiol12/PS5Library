@@ -297,6 +297,49 @@ data class Snapshot(
     val installations: List<Installation> = emptyList(),
 )
 
+@Serializable
+data class InstallationPlanRequest(
+    val sourceReleaseId: String,
+    val consoleId: String,
+    val method: String? = null,
+)
+
+@Serializable
+data class InstallationRequest(
+    val sourceReleaseId: String,
+    val consoleId: String,
+    val storageId: String,
+    val method: String? = null,
+)
+
+@Serializable
+data class InstallationPlan(
+    val method: String? = null,
+    val methods: List<String> = emptyList(),
+    val compatibility: Compatibility = Compatibility(),
+    val storage: List<PlanDestination> = emptyList(),
+    val allowed: Boolean = false,
+    val reason: String = "",
+    val online: Boolean? = null,
+    val estimated: Boolean = false,
+    val message: String? = null,
+) {
+    @Serializable
+    data class Compatibility(
+        val status: String = "",
+        val method: String? = null,
+    )
+
+    @Serializable
+    data class PlanDestination(
+        val storageId: String,
+        val displayName: String = "",
+        val freeBytes: Long = 0,
+        val requiredBytes: Long = 0,
+        val allowed: Boolean = false,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------

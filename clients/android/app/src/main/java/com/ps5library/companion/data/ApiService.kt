@@ -40,4 +40,10 @@ interface ApiService {
 
     @DELETE("api/v1/installations/{id}")
     suspend fun removeInstallation(@Path("id") id: String): Acknowledgement
+
+    @POST("api/v1/installations/plan")
+    suspend fun planInstallation(@Body body: InstallationPlanRequest): InstallationPlan
+
+    @POST("api/v1/installations")
+    suspend fun requestInstallation(@Body body: InstallationRequest): Acknowledgement
 }

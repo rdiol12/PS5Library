@@ -158,6 +158,21 @@ class Repository(private val context: Context) {
         Unit
     }
 
+    suspend fun planInstallation(
+        sourceReleaseId: String,
+        consoleId: String,
+        method: String?,
+    ): InstallationPlan? = withContext(Dispatchers.IO) {
+        client?.service?.planInstallation(
+            InstallationPlanRequest(sourceReleaseId, consoleId, method),
+        )
+    }
+
+    suspend fun requestInstallation(request: InstallationRequest) = withContext(Dispatchers.IO) {
+        client?.service?.requestInstallation(request)
+        Unit
+    }
+
     suspend fun logout() {
         val api = client
         client = null

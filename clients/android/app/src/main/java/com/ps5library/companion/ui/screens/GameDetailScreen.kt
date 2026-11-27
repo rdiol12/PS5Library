@@ -31,6 +31,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -126,18 +132,28 @@ private fun GameDetailContent(game: Game, modifier: Modifier = Modifier) {
                 }
             }
 
-            // Availability-only primary action (full install flow is intentionally out of scope).
             Spacer(Modifier.height(16.dp))
             val available = game.serverAvailable
+            var showInstall by remember { mutableStateOf(false) }
             Button(
-                onClick = {},
+                onClick = { showInstall = true },
                 enabled = available,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(Icons.Filled.CloudDownload, contentDescription = null)
                 Text(
-                    if (available) "Available to download & prepare" else "Not available on this server",
+                    if (available) "Install to a PS5" else "Not available on this server",
                     modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            if (showInstall) {
+                InstallSheet(
+                    session = session,
+                    game = game,
+                    onDismiss = {
+                        showInstall = false
+                        session.clearInstallPlan()
+                    },
                 )
             }
 
@@ -197,6 +213,111 @@ private fun ReleaseRow(release: Release) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 2.dp),
                     )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InstallSheet(
+    session: SessionViewModel,
+    game: Game,
+    onDismiss: () -> Unit,
+) {
+    val snapshot by session.snapshot.collectAsStateWithLifecycle()
+    val plan by session.installPlan.collectAsStateWithLifecycle()
+    val busy by session.installBusy.collectAsStateWithLifecycle()
+    val consoles = snapshot.consoles
+    val release = game.releases.firstOrNull()
+    var consoleId by remember(consoles) { mutableStateOf(consoles.firstOrNull()?.id ?: "") }
+    var storageId by remember { mutableStateOf("") }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Install to a PS5", style = MaterialTheme.typography.titleMedium)
+            when {
+                release == null -> Text("No installable release for this game.")
+                consoles.isEmpty() -> Text("Pair a PS5 in the My PS5 tab first.")
+                else -> {
+                    Text("Console", style = MaterialTheme.typography.labelLarge)
+                    consoles.forEach { console ->
+                        val select = {
+                            if (consoleId != console.id) {
+                                consoleId = console.id
+                                storageId = ""
+                                session.clearInstallPlan()
+                            }
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable(onClick = select),
+                        ) {
+                            RadioButton(selected = consoleId == console.id, onClick = select)
+                            Text(console.name)
+                        }
+                    }
+
+                    val current = plan
+                    if (current == null) {
+                        Button(
+                            onClick = { session.planInstall(release.id, consoleId) },
+                            enabled = !busy && consoleId.isNotEmpty(),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(if (busy) "Checking..." else "Check compatibility")
+                        }
+                    } else {
+                        current.message?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (current.storage.isNotEmpty()) {
+                            Text("Destination", style = MaterialTheme.typography.labelLarge)
+                            current.storage.forEach { dest ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                        .clickable(enabled = dest.allowed) { storageId = dest.storageId },
+                                ) {
+                                    RadioButton(
+                                        selected = storageId == dest.storageId,
+                                        enabled = dest.allowed,
+                                        onClick = { storageId = dest.storageId },
+                                    )
+                                    Text("${dest.displayName} · ${formatBytes(dest.freeBytes)} free")
+                                }
+                            }
+                        }
+                        val method = current.method
+                        Button(
+                            onClick = {
+                                if (method != null) {
+                                    session.submitInstall(
+                                        release.id,
+                                        consoleId,
+                                        storageId,
+                                        method,
+                                        onDismiss,
+                                    )
+                                }
+                            },
+                            enabled = !busy && current.allowed && method != null && storageId.isNotEmpty(),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(if (busy) "Starting..." else "Install")
+                        }
+                    }
                 }
             }
         }
