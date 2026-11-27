@@ -74,6 +74,49 @@ struct AutoTrailerView: View {
     }
 }
 
+struct AutoMusicView: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.scenePhase) private var scenePhase
+    let game: Game
+    @State private var queue: AVQueuePlayer?
+    @State private var looper: AVPlayerLooper?
+    @State private var file: URL?
+    var body: some View {
+        Label("Game music plays automatically.", systemImage: "music.note")
+            .font(.caption).foregroundStyle(.secondary)
+            .task(id: game.id) { await load() }
+            .onDisappear { cleanup() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { queue?.play() } else { queue?.pause() }
+            }
+            .onChange(of: store.account?.id) { _, _ in cleanup() }
+    }
+
+    private func load() async {
+        cleanup()
+        guard let api = store.api, let asset = game.music, !store.offline else { return }
+        do {
+            let local = try await api.media(asset, kind: "music")
+            file = local
+            let item = AVPlayerItem(url: local)
+            let q = AVQueuePlayer()
+            looper = AVPlayerLooper(player: q, templateItem: item)
+            queue = q
+            if scenePhase == .active { q.play() }
+        } catch {
+            cleanup()
+        }
+    }
+
+    private func cleanup() {
+        queue?.pause()
+        looper = nil
+        queue = nil
+        if let file { try? FileManager.default.removeItem(at: file) }
+        file = nil
+    }
+}
+
 private struct CinematicBackdrop: View {
     var body: some View {
         ZStack {
@@ -4093,10 +4136,7 @@ struct GameMediaView: View {
                 .music !=
                 nil
             {
-                Button("Play game music", systemImage: "music.note") {
-                    selection = "music"
-                }
-                .buttonStyle(.bordered).controlSize(.large).disabled(store.offline)
+                AutoMusicView(game: game)
             } else if let state = game
                 .musicState
             {

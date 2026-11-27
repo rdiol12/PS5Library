@@ -361,12 +361,17 @@ export async function installationRoutes(
       const userId = await owner(req),
         id = uuid.parse((req.params as { id: string }).id);
       const changed = await db.query(
-        `UPDATE installations
-         SET state = 'CANCELLED', error = NULL, updated_at = now()
-         WHERE id = $1
-           AND user_id = $2
-           AND transfer_job_id IS NULL
-           AND state NOT IN ('READY_ON_PS5', 'CANCELLED')
+        `DELETE FROM installations i
+         WHERE i.id = $1
+           AND i.user_id = $2
+           AND i.state <> 'READY_ON_PS5'
+           AND (
+             i.transfer_job_id IS NULL
+             OR EXISTS (
+               SELECT 1 FROM jobs j
+               WHERE j.id = i.transfer_job_id AND j.state IN ('ERROR', 'CANCELLED')
+             )
+           )
          RETURNING id`,
         [id, userId],
       );
