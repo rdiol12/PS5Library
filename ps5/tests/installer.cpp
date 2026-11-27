@@ -6,5 +6,17 @@ int main(){using namespace install;auto root=fs::temp_directory_path()/("ps5libr
   rejected=false;try{publish(target,{{"../escape",first,sizeof(first)}},[]{});}catch(...){rejected=true;}assert(rejected&&!fs::exists(root/"escape"));
   auto foreign=root/"OTHER0000";fs::create_directory(foreign);rejected=false;try{publish(foreign,{{"eboot.elf",first,sizeof(first)}},[]{});}catch(...){rejected=true;}assert(rejected&&fs::is_empty(foreign));
   fs::create_directory_symlink(target,root/"alias");rejected=false;try{publish(root/"alias",{{"eboot.elf",first,sizeof(first)}},[]{});}catch(...){rejected=true;}assert(rejected);
+  publish(target,{{"eboot.elf",second,sizeof(second)}},[]{},true);assert(fs::exists(root/".ps5library-previous/eboot.elf"));
+  rollback(target);assert(fs::file_size(target/"eboot.elf")==3&&!fs::exists(root/".ps5library-previous"));
+  install::write(target/"foreign.txt",first,sizeof(first));rejected=false;try{removeOwned(target);}catch(...){rejected=true;}assert(rejected&&owned(target)&&fs::file_size(target/"foreign.txt")==3&&fs::file_size(target/"eboot.elf")==3);fs::remove(target/"foreign.txt");
+  fs::create_directory_symlink(foreign,target/"sce_sys");rejected=false;try{removeOwned(target);}catch(...){rejected=true;}assert(rejected&&owned(target)&&fs::exists(foreign));fs::remove(target/"sce_sys");
+  publish(target,{{"eboot.elf",second,sizeof(second)},{"sce_sys/icon0.png",first,sizeof(first)},{"sce_sys/pic0.png",first,sizeof(first)},{"sce_sys/pic0.dds",first,sizeof(first)},{"sce_sys/pic1.png",first,sizeof(first)},{"sce_sys/pic1.dds",first,sizeof(first)},{"sce_sys/param.json",first,sizeof(first)},{"launch.html",first,sizeof(first)}},[]{});
+  removeOwned(target);assert(!fs::exists(target));
+  auto native=root/"PPSA99051";
+  publish(native,{{"eboot.bin",first,sizeof(first)},{"sce_module/libc.prx",second,sizeof(second)},{"assets/banner.txt",first,sizeof(first)},{"sce_sys/param.json",first,sizeof(first)}},[]{});
+  assert(owned(native)&&fs::file_size(native/"sce_module/libc.prx")==sizeof(second));
+  assert((fs::status(native/"eboot.bin").permissions()&fs::perms::owner_exec)!=fs::perms::none);
+  assert((fs::status(native/"sce_module/libc.prx").permissions()&fs::perms::owner_exec)!=fs::perms::none);
+  removeOwned(native);assert(!fs::exists(native));
   fs::remove_all(root);return 0;
 }

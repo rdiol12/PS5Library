@@ -1,0 +1,153 @@
+name: Build client releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the IPA and agent ELF to a GitHub release
+        type: boolean
+        default: false
+      release_tag:
+        description: Release tag, required only when publishing (for example v0.2.91)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate release input
+        env:
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ "$PUBLISH_RELEASE" == true && ! "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+            echo "A release tag containing only letters, numbers, dots, underscores, or dashes is required."
+            exit 1
+          fi
+
+  ios:
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check and build iPhone app
+        run: |
+          bash clients/ios/check.sh
+          xcodebuild \
+            -project clients/ios/PS5LibraryCompanion.xcodeproj \
+            -scheme PS5LibraryCompanion \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            build
+      - name: Package unsigned IPA
+        run: |
+          app="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/PS5LibraryCompanion.app"
+          test -d "$app"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload" artifacts
+          cp -R "$app" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/artifacts/PS5LibraryCompanion-unsigned.ipa")
+          (cd artifacts && shasum -a 256 PS5LibraryCompanion-unsigned.ipa > PS5LibraryCompanion-unsigned.ipa.sha256)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: client-ios
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build Android app (unsigned debug APK)
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
+        run: |
+          cd clients/android
+          # The binary gradle-wrapper.jar is not committed; regenerate it with the runner's Gradle.
+          gradle wrapper --gradle-version 8.10.2 --no-daemon
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$apk"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp "$apk" "$GITHUB_WORKSPACE/artifacts/PS5LibraryCompanion-android-debug.apk"
+          (cd "$GITHUB_WORKSPACE/artifacts" && sha256sum PS5LibraryCompanion-android-debug.apk > PS5LibraryCompanion-android-debug.apk.sha256)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: client-android
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  agent:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build PS5 agent toolchain image
+        run: docker build -f docker/ps5-build.Dockerfile -t ps5library-build:0.43 .
+      - name: Build and validate agent ELF
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/workspace" ps5library-build:0.43 \
+            cmake -S ps5 -B ps5/build/ps5 -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=/opt/ps5-payload-sdk/toolchain/prospero.cmake
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/workspace" ps5library-build:0.43 \
+            cmake --build ps5/build/ps5 --target ps5library-agent -j 2
+          python3 - <<'PY'
+          from pathlib import Path
+          agent = Path('ps5/build/ps5/ps5library-agent.elf')
+          data = agent.read_bytes()
+          assert len(data) > 4096 and data[:6] == b'\x7fELF\x02\x01', 'invalid PS5 agent ELF'
+          PY
+          mkdir -p artifacts
+          cp ps5/build/ps5/ps5library-agent.elf artifacts/
+          (cd artifacts && sha256sum ps5library-agent.elf > ps5library-agent.elf.sha256)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: client-agent
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: ${{ inputs.publish_release }}
+    needs: [ios, android, agent]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: client-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "PS5Library $RELEASE_TAG" \
+              --generate-notes
+          fi

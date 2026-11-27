@@ -1,0 +1,9 @@
+{
+	admin off
+}
+
+{$PS5LIBRARY_HTTPS_HOST:localhost} {
+	encode zstd gzip
+	header -Server
+	reverse_proxy server:3150
+}

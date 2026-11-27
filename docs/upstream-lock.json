@@ -5,6 +5,11 @@
     "commit": "ebac9ffd79723d28658e9091ac55b1939ed1ee87"
   },
   {
+    "name": "PS5-Backport-Kit",
+    "url": "https://github.com/dnullptr/PS5-Backport-Kit.git",
+    "commit": "d14b4e077aef673df291cba809dd429c190ea121"
+  },
+  {
     "name": "etaHEN",
     "url": "https://github.com/etaHEN/etaHEN.git",
     "commit": "dafa13b562ddb137a4b4a97b9aaa287c0c57cc9c"
@@ -17,7 +22,8 @@
   {
     "name": "kstuff-lite",
     "url": "https://github.com/EchoStretch/kstuff-lite.git",
-    "commit": "4363fbd78eb4e3bd00310c12fe57c8b665e025a4"
+    "commit": "85fb88a526e58e357d6f1e626ce05af4acdb8b5d",
+    "version": "v1.11"
   },
   {
     "name": "LibProsperoPKG",
@@ -27,7 +33,7 @@
   {
     "name": "ps5-ezremote-client",
     "url": "https://github.com/cy33hc/ps5-ezremote-client.git",
-    "commit": "b5a716c56a815f8d51bc1cc24439f03c81049456"
+    "commit": "a81a264c5caf6de16844141a380135ecc27d8adf"
   },
   {
     "name": "PS5-FPKG-Builder",
@@ -47,12 +53,14 @@
   {
     "name": "ShadowMountPlus",
     "url": "https://github.com/drakmor/ShadowMountPlus.git",
-    "commit": "3530d8d88ea1fa0d907545eda7ac95d4240a0213"
+    "commit": "13a8223b1e75c6d5b2cc0d30355b6566c80a2552",
+    "version": "1.7beta2"
   },
   {
     "name": "UFS2Tool",
     "url": "https://github.com/SvenGDK/UFS2Tool.git",
-    "commit": "b5307a60d5b4e3a68ba680e0e33cfadf05017c77"
+    "commit": "b5307a60d5b4e3a68ba680e0e33cfadf05017c77",
+    "patch": "patches/upstream/UFS2Tool.patch"
   },
   {
     "name": "websrv",
@@ -83,5 +91,76 @@
     "name": "elf-sdk-downgrade",
     "url": "https://gist.github.com/2ded24b7b5ff296f21792a8202542aaa.git",
     "commit": "4e8d85e7cde3782a80dfa1e16f1af0a04f1bd797"
+  },
+  {
+    "name": "LibProsperoPKG-drakmor",
+    "url": "https://github.com/drakmor/LibProsperoPKG.git",
+    "commit": "5e26c8ae65f4b3cf88dcc7c84226ea9718c38e5e",
+    "patch": "patches/upstream/LibProsperoPKG-drakmor.patch"
+  },
+  {
+    "name": "ShadowMountPlus-1.7beta2",
+    "url": "https://github.com/drakmor/ShadowMountPlus.git",
+    "commit": "13a8223b1e75c6d5b2cc0d30355b6566c80a2552",
+    "version": "1.7beta2"
+  },
+  {
+    "name": "ps5-moonlight",
+    "url": "https://github.com/br1cks4t1ts/ps5-moonlight.git",
+    "commit": "6d1b65afeba305a51e7e8b3d7c0b83a461c9002f"
+  },
+  {
+    "name": "ps5upload",
+    "url": "https://github.com/phantomptr/ps5upload.git",
+    "commit": "2f806dd1deb5e2a355f1fee2e2fd95b4a2587c61"
+  },
+  {
+    "name": "SharpCompress",
+    "url": "https://github.com/adamhathcock/sharpcompress.git",
+    "commit": "c083c6efd843a844b0c8f7878787360e815be781",
+    "version": "0.50.4"
+  },
+  {
+    "name": "Nativehbl",
+    "url": "https://github.com/Rufidj/Nativehbl.git",
+    "commit": "e9488102399de9546d13dd496694c74142abe49f"
+  },
+  {
+    "name": "ps5-native-app-boilerplate",
+    "url": "https://github.com/blackbearreloaded/ps5-native-app-boilerplate.git",
+    "commit": "722f2227a8bb6fa2229120546995b6562552c752"
+  },
+  {
+    "name": "ProsperoLight",
+    "url": "https://github.com/blackbearreloaded/ProsperoLight.git",
+    "commit": "05816b67837c550e138f839aada4328523bf2a3d"
+  },
+  {
+    "name": "ps5-pup-decrypt",
+    "url": "https://github.com/zecoxao/ps5-pup-decrypt.git",
+    "commit": "81e59b8c28fc0bbbbe8dde90ccca3d3a4bb47617"
+  },
+  {
+    "name": "ps5-pup-unpacker",
+    "url": "https://github.com/zecoxao/ps5-pup-unpacker.git",
+    "commit": "005cccc908142c35ab7280e7f9eef8d5203c21e0"
+  },
+  {
+    "name": "mongoose-4.1",
+    "url": "https://github.com/cesanta/mongoose.git",
+    "commit": "3070e8572da70c57b2545d628f1764d85792dc46",
+    "version": "4.1"
+  },
+  {
+    "name": "mDNSResponder-320.18",
+    "url": "https://github.com/apple-oss-distributions/mDNSResponder.git",
+    "commit": "7cdd6ee7e48478fa8528c6ce5bed0f91cf7d622e",
+    "version": "320.18"
+  },
+  {
+    "name": "mDNSResponder-379.27",
+    "url": "https://github.com/apple-oss-distributions/mDNSResponder.git",
+    "commit": "0a5aafa677669ab57d3232a3e6a89ccd60a373a5",
+    "version": "379.27"
   }
 ]

@@ -1,0 +1,23 @@
+diff --git a/Ufs2ImageCreator.cs b/Ufs2ImageCreator.cs
+index fae6f3f27e490a3cb06fef6375047f1df2922581..5003538794617108d48a3b0297c910e00bf859b7 100644
+--- a/Ufs2ImageCreator.cs
++++ b/Ufs2ImageCreator.cs
+@@ -97,6 +97,9 @@ namespace UFS2Tool
+         /// </summary>
+         public TextWriter? ErrorOutput { get; set; }
+ 
++        /// <summary>Reports actual source bytes copied into the image.</summary>
++        public Action<long, long>? CopyProgress { get; set; }
++
+         /// <summary>
+         /// Get the on-disk inode size for the selected filesystem format.
+         /// </summary>
+@@ -1966,6 +1969,8 @@ namespace UFS2Tool
+                 if (totalFiles <= 0 && totalBytes <= 0)
+                     return;
+ 
++                CopyProgress?.Invoke(copiedBytes, totalBytes);
++
+                 int percent;
+                 if (totalBytes > 0)
+                 {

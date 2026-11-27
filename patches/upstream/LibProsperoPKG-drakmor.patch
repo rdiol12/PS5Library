@@ -1,0 +1,3078 @@
+diff --git a/src/LibProsperoPkg/Content/ProsperoFself.cs b/src/LibProsperoPkg/Content/ProsperoFself.cs
+index 500739d0d1bb91936a7df469eb4ab9454130e729..b3246a345f1b78dc63318b7abf50becd33861f09 100644
+--- a/src/LibProsperoPkg/Content/ProsperoFself.cs
++++ b/src/LibProsperoPkg/Content/ProsperoFself.cs
+@@ -505,6 +505,8 @@ public static class ProsperoFself
+             return ReadOnlySpan<byte>.Empty;
+ 
+         int shoff = (int)shoffValue;
++        if (shoff >= elf.Length)
++            return ReadOnlySpan<byte>.Empty;
+         if ((long)shoff + (long)shnum * shentSize > elf.Length)
+             throw new ArgumentException("ELF section headers overrun the file.", nameof(elf));
+ 
+diff --git a/src/LibProsperoPkg/LibProsperoPkg.csproj b/src/LibProsperoPkg/LibProsperoPkg.csproj
+index 33973a37fd1c17c073af80030743bdf10d5b8b53..b19c2fd659ddf46d9152b7f9d70dccad6c9f6836 100644
+--- a/src/LibProsperoPkg/LibProsperoPkg.csproj
++++ b/src/LibProsperoPkg/LibProsperoPkg.csproj
+@@ -35,6 +35,7 @@
+     <!-- README shipped inside the NuGet package. -->
+     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+     <InternalsVisibleTo Include="PprPfsKrakenTool" />
++    <InternalsVisibleTo Include="PS5Library.Worker.Checks" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/src/LibProsperoPkg/PFS/FSTree.cs b/src/LibProsperoPkg/PFS/FSTree.cs
+index 07d8a3403feadec9ca80a33655f96b54d42e0907..7d2aea80207a2d99129eaa6c0e07d923e7be6982 100644
+--- a/src/LibProsperoPkg/PFS/FSTree.cs
++++ b/src/LibProsperoPkg/PFS/FSTree.cs
+@@ -139,6 +139,8 @@ public class FSDir : FSNode
+ /// </summary>
+ public class FSFile : FSNode
+ {
++    internal string SourcePath { get; private set; }
++
+     /// <summary>
+     /// Lower values are placed earlier when read-optimized physical file ordering is enabled.
+     /// The default preserves the existing traversal order.
+@@ -152,6 +154,7 @@ public class FSFile : FSNode
+     /// <param name="origFileName">Real path to the file.</param>
+     public FSFile(string origFileName)
+     {
++        SourcePath = origFileName;
+         Write = destination =>
+         {
+             using var source = new FileStream(
+diff --git a/src/LibProsperoPkg/PFS/PFSBuilder.cs b/src/LibProsperoPkg/PFS/PFSBuilder.cs
+index a2f827518937920c39a27511e07cea605210798f..5bb15f3740148cdf22dccb7cb963883326fb1a1e 100644
+--- a/src/LibProsperoPkg/PFS/PFSBuilder.cs
++++ b/src/LibProsperoPkg/PFS/PFSBuilder.cs
+@@ -483,6 +483,7 @@ public class PfsBuilder
+                 stream.Write(sectorBuffer, 0, xtsSectorSize);
+             }
+         }
++        stream.Position = CalculatePfsSize();
+     }
+ 
+     /// <summary>
+diff --git a/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs b/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
+index 05be975ac3ba6b7ea174840c17c71cc11854a46c..6828b09a3ba31c2f4b8e5049f47ee91866ac75da 100644
+--- a/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
++++ b/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
+@@ -163,6 +163,7 @@ public sealed class ProsperoOuterPackageFileResult
+ {
+     public required long PfsSize { get; init; }
+     public required byte[] ImageDigests { get; init; }
++    public byte[] BlockCrc32C { get; init; } = [];
+     public required byte[] SuperblockIcv { get; init; }
+     public required int SuperblockIndex { get; init; }
+     public required int InodeTableIndex { get; init; }
+@@ -721,12 +722,43 @@ public static class ProsperoOuterPfsBuilder
+         byte[]? ekpfs,
+         string outputPath,
+         bool encryptOutput = true)
++        => BuildForPackageToFileCore(
++            files, parameters, ekpfs, outputPath, encryptOutput, outputOffset: 0);
++
++    internal static ProsperoOuterPackageFileResult BuildForPackageToFileAtOffset(
++        IReadOnlyList<ProsperoOuterFileSource> files,
++        ProsperoOuterPfsBuildParameters parameters,
++        string outputPath,
++        long outputOffset,
++        long? reusedFirstFileLength = null)
++        => BuildForPackageToFileCore(
++            files, parameters, ekpfs: null, outputPath, encryptOutput: false,
++            outputOffset, reusedFirstFileLength);
++
++    private static ProsperoOuterPackageFileResult BuildForPackageToFileCore(
++        IReadOnlyList<ProsperoOuterFileSource> files,
++        ProsperoOuterPfsBuildParameters parameters,
++        byte[]? ekpfs,
++        string outputPath,
++        bool encryptOutput,
++        long outputOffset,
++        long? reusedFirstFileLength = null)
+     {
+         ArgumentNullException.ThrowIfNull(files);
+         ArgumentNullException.ThrowIfNull(parameters);
+         if (encryptOutput)
+             ArgumentNullException.ThrowIfNull(ekpfs);
+         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
++        if (outputOffset < 0 || outputOffset % BlockSize != 0)
++            throw new ArgumentOutOfRangeException(
++                nameof(outputOffset), "The output offset must be a non-negative 64-KiB boundary.");
++        if (encryptOutput && outputOffset != 0)
++            throw new ArgumentException(
++                "An offset output is supported only for a plaintext outer PFS.", nameof(outputOffset));
++        if (reusedFirstFileLength is <= 0 ||
++            (reusedFirstFileLength is not null && outputOffset == 0))
++            throw new ArgumentOutOfRangeException(
++                nameof(reusedFirstFileLength), "A reused first file requires a positive length and offset output.");
+         if (files.Count == 0)
+             throw new ArgumentException("At least one outer file is required.", nameof(files));
+         byte[] seed = parameters.Seed ?? new byte[16];
+@@ -743,7 +775,9 @@ public static class ProsperoOuterPfsBuilder
+                 ?? throw new ArgumentException($"Outer file {i} is null.", nameof(files));
+             ArgumentException.ThrowIfNullOrWhiteSpace(file.Name);
+             ArgumentException.ThrowIfNullOrWhiteSpace(file.Path);
+-            lengths[i] = new FileInfo(file.Path).Length;
++            lengths[i] = i == 0 && reusedFirstFileLength is long reusedLength
++                ? reusedLength
++                : new FileInfo(file.Path).Length;
+             long blocks64 = Math.Max(1, checked((lengths[i] + BlockSize - 1) / BlockSize));
+             blockCounts[i] = checked((int)blocks64);
+             firstBlocks[i] = dataBlockTotal;
+@@ -782,35 +816,53 @@ public static class ProsperoOuterPfsBuilder
+         StringComparison pathComparison = OperatingSystem.IsWindows()
+             ? StringComparison.OrdinalIgnoreCase
+             : StringComparison.Ordinal;
+-        foreach (ProsperoOuterFileSource file in files)
+-            if (string.Equals(Path.GetFullPath(file.Path), outputFullPath, pathComparison))
++        for (int i = 0; i < files.Count; i++)
++            if (string.Equals(Path.GetFullPath(files[i].Path), outputFullPath, pathComparison) &&
++                !(i == 0 && reusedFirstFileLength is not null))
+                 throw new ArgumentException("An outer-PFS source cannot also be the output file.", nameof(outputPath));
++        if (reusedFirstFileLength is not null && !string.Equals(
++                Path.GetFullPath(files[0].Path), outputFullPath, pathComparison))
++            throw new ArgumentException("The reused first outer file must be the output file.", nameof(files));
+ 
++        bool directOutput = outputOffset != 0;
+         string token = Guid.NewGuid().ToString("N");
+-        string plaintextPath = Path.Combine(outputDirectory, ".libprospero-outer-plain-" + token + ".tmp");
++        string plaintextPath = directOutput
++            ? outputFullPath
++            : Path.Combine(outputDirectory, ".libprospero-outer-plain-" + token + ".tmp");
+         string ciphertextPath = Path.Combine(outputDirectory, ".libprospero-outer-cipher-" + token + ".tmp");
+         var imageDigests = new byte[checked(totalBlocks * 32)];
++        var blockCrc32C = new byte[checked(totalBlocks * 4)];
+         byte[] superblockIcv;
++        bool completed = false;
+         try
+         {
+             using (var image = new FileStream(
+-                plaintextPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None,
++                plaintextPath,
++                reusedFirstFileLength is not null ? FileMode.Open :
++                    directOutput ? FileMode.Create : FileMode.CreateNew,
++                FileAccess.ReadWrite, FileShare.None,
+                 bufferSize: 1 << 20, FileOptions.RandomAccess))
+             {
+-                image.SetLength(totalLength);
++                if (reusedFirstFileLength is long reusedLength &&
++                    image.Length != checked(outputOffset + reusedLength))
++                    throw new InvalidDataException("The reusable first outer file is incomplete.");
++                image.SetLength(checked(outputOffset + totalLength));
+                 byte[] block = new byte[BlockSize];
+ 
+                 void StoreDigest(int blockIndex, ReadOnlySpan<byte> bytes)
+                 {
+                     byte[] digest = ProsperoOuterPfsSignature.ComputeBlockHash(bytes);
+                     digest.CopyTo(imageDigests, blockIndex * 32);
++                    BinaryPrimitives.WriteUInt32LittleEndian(
++                        blockCrc32C.AsSpan(blockIndex * 4),
++                        Util.ProsperoCrc32C.Compute(bytes));
+                 }
+ 
+                 void WriteBlock(int blockIndex, ReadOnlySpan<byte> bytes)
+                 {
+                     if (bytes.Length != BlockSize)
+                         throw new ArgumentException("Structural outer-PFS blocks must be exactly 64 KiB.");
+-                    image.Position = checked((long)blockIndex * BlockSize);
++                    image.Position = checked(outputOffset + (long)blockIndex * BlockSize);
+                     image.Write(bytes);
+                     StoreDigest(blockIndex, bytes);
+                 }
+@@ -818,6 +870,38 @@ public static class ProsperoOuterPfsBuilder
+                 // Data region.
+                 for (int fileIndex = 0; fileIndex < files.Count; fileIndex++)
+                 {
++                    if (fileIndex == 0 && reusedFirstFileLength is not null)
++                    {
++                        long reusedRemaining = lengths[fileIndex];
++                        const int batchBlocks = 1024;
++                        var batch = new byte[batchBlocks * BlockSize];
++                        for (int localBlock = 0; localBlock < blockCounts[fileIndex];)
++                        {
++                            int count = Math.Min(batchBlocks, blockCounts[fileIndex] - localBlock);
++                            int capacity = checked(count * BlockSize);
++                            int bytes = checked((int)Math.Min(capacity, reusedRemaining));
++                            batch.AsSpan(0, capacity).Clear();
++                            image.Position = checked(
++                                outputOffset + (long)(firstBlocks[fileIndex] + localBlock) * BlockSize);
++                            image.ReadExactly(batch.AsSpan(0, bytes));
++                            System.Threading.Tasks.Parallel.For(0, count, i =>
++                            {
++                                byte[] digest = ProsperoOuterPfsSignature.ComputeBlockHash(
++                                    batch.AsSpan(i * BlockSize, BlockSize));
++                                digest.CopyTo(
++                                    imageDigests,
++                                    checked((firstBlocks[fileIndex] + localBlock + i) * 32));
++                                BinaryPrimitives.WriteUInt32LittleEndian(
++                                    blockCrc32C.AsSpan(
++                                        checked((firstBlocks[fileIndex] + localBlock + i) * 4)),
++                                    Util.ProsperoCrc32C.Compute(
++                                        batch.AsSpan(i * BlockSize, BlockSize)));
++                            });
++                            localBlock += count;
++                            reusedRemaining -= bytes;
++                        }
++                        continue;
++                    }
+                     using var source = new FileStream(
+                         files[fileIndex].Path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                         bufferSize: 1 << 20, FileOptions.SequentialScan);
+@@ -937,7 +1021,7 @@ public static class ProsperoOuterPfsBuilder
+                 }
+                 File.Move(ciphertextPath, outputFullPath, overwrite: true);
+             }
+-            else
++            else if (!directOutput)
+             {
+                 // Diagnostic/plaintext NAPS carrier. PFS hashes and ICV remain present;
+                 // only the final AES-XTS transform is omitted.
+@@ -947,10 +1031,12 @@ public static class ProsperoOuterPfsBuilder
+             ProsperoPfsImageTreeInfo tree = BuildTreeInfo(
+                 totalBlocks, inodeTableIndex, superRootDirentIndex, fltIndex, urootDirentIndex,
+                 firstBlocks, blockCounts, files, lengths, seed, superblockIcv);
++            completed = true;
+             return new ProsperoOuterPackageFileResult
+             {
+                 PfsSize = totalLength,
+                 ImageDigests = imageDigests,
++                BlockCrc32C = blockCrc32C,
+                 SuperblockIcv = superblockIcv,
+                 SuperblockIndex = superblockIndex,
+                 InodeTableIndex = inodeTableIndex,
+@@ -965,7 +1051,7 @@ public static class ProsperoOuterPfsBuilder
+         }
+         finally
+         {
+-            TryDeleteFile(plaintextPath);
++            if (!directOutput || !completed) TryDeleteFile(plaintextPath);
+             TryDeleteFile(ciphertextPath);
+         }
+     }
+diff --git a/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs b/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
+index 885f385590cce53f72940700d302dc611f7ef5c9..aa21b3e75fb17b54bddc08cdcab7a53844120c72 100644
+--- a/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
++++ b/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
+@@ -12,6 +12,8 @@
+ // ---------------------------------------------------------------------------------------------------
+ #nullable enable
+ using LibProsperoPkg.PFS.Compression;
++using LibProsperoPkg.PFS.Compression.Oodle;
++using LibProsperoPkg.PKG;
+ using System;
+ using System.Collections.Generic;
+ using System.IO;
+@@ -27,6 +29,15 @@ public sealed class ProsperoPs5InnerFile
+ 
+     /// <summary>The uncompressed file bytes.</summary>
+     public required byte[] Data { get; init; }
++
++    /// <summary>Optional source retained for the file-backed assembly path.</summary>
++    internal Action<Stream>? WriteSource { get; init; }
++
++    /// <summary>Original file path, when the source can be read directly without buffering.</summary>
++    internal string? SourcePath { get; init; }
++
++    /// <summary>Exact byte count produced by <see cref="WriteSource"/>.</summary>
++    internal long SourceLength { get; init; }
+ }
+ 
+ /// <summary>
+@@ -51,6 +62,9 @@ public sealed class ProsperoPs5InnerImageResult
+     /// <summary>Physical image path for a file-backed result; otherwise <see langword="null"/>.</summary>
+     public string? ImagePath { get; init; }
+ 
++    /// <summary>Byte offset of the physical image within <see cref="ImagePath"/>.</summary>
++    public long ImageOffset { get; init; }
++
+     /// <summary>Exact block-aligned physical <c>pfs_image.dat</c> length.</summary>
+     public required long ImageLength { get; init; }
+ 
+@@ -58,9 +72,12 @@ public sealed class ProsperoPs5InnerImageResult
+     public Stream OpenImage()
+     {
+         if (ImagePath is not null)
+-            return new FileStream(
++        {
++            var file = new FileStream(
+                 ImagePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                 bufferSize: 1 << 20, FileOptions.RandomAccess);
++            return new Util.SubStream(file, ImageOffset, ImageLength, leaveOpen: false);
++        }
+         return new MemoryStream(Image, writable: false);
+     }
+ 
+@@ -133,6 +150,8 @@ public readonly struct ProsperoPs5InnerPlacement
+     /// not from the Kraken stream stored in <c>pfs_image.dat</c>.
+     /// </summary>
+     public ReadOnlyMemory<byte> PlainData { get; init; }
++    internal bool PlainDataStoredInImage { get; init; }
++    internal string? PlainDataPath { get; init; }
+     /// <summary>True when stored raw (block-split), false when Kraken-compressed.</summary>
+     public bool StoreRaw { get; init; }
+ 
+@@ -163,25 +182,33 @@ public sealed class ProsperoPs5InnerImageAssembler
+     /// <summary>Inner-image block size (64 KiB).</summary>
+     public const int BlockSize = 0x10000;
+ 
++    // Keep the file-backed build's retained byte arrays and transient MemoryStream + ToArray peak
++    // bounded. Files beyond this aggregate budget are copied straight into the physical image.
++    private const long DefaultInMemoryBudget = 64L * 1024 * 1024;
++
+     private const string SceSysDir = "sce_sys";
+ 
+     private readonly long _timeSec;
+     private readonly uint _timeNsec;
+     private readonly IReadOnlyDictionary<string, uint>? _explicitAfids;
++    private readonly Action<long,long>? _progress;
+ 
+     /// <param name="buildTimeSec">Build timestamp seconds (package c_date/c_time — a deterministic build input).</param>
+     /// <param name="buildTimeNsec">Build timestamp nanoseconds fraction.</param>
+     /// <param name="explicitAfids">
+     /// Optional exact path-to-AFID map. Unassigned slot numbers become sparse 256-KiB zero extents.
+     /// </param>
++    /// <param name="progress">Optional actual source-byte progress callback.</param>
+     public ProsperoPs5InnerImageAssembler(
+         long buildTimeSec,
+         uint buildTimeNsec,
+-        IReadOnlyDictionary<string, uint>? explicitAfids = null)
++        IReadOnlyDictionary<string, uint>? explicitAfids = null,
++        Action<long,long>? progress = null)
+     {
+         _timeSec = buildTimeSec;
+         _timeNsec = buildTimeNsec;
+         _explicitAfids = explicitAfids;
++        _progress = progress;
+     }
+ 
+     // ---- Internal tree model -----------------------------------------------------------------------
+@@ -203,6 +230,9 @@ public sealed class ProsperoPs5InnerImageAssembler
+         public string Name = "";
+         public string FullPath = "";
+         public byte[] Data = Array.Empty<byte>();
++        public Action<Stream>? WriteSource;
++        public string? SourcePath;
++        public long Size;
+         public Dir Parent = null!;
+         public uint Inode;
+         public uint Afid;
+@@ -238,7 +268,7 @@ public sealed class ProsperoPs5InnerImageAssembler
+     /// </summary>
+     public ProsperoPs5InnerImageResult BuildFromFsTree(FSDir uroot)
+     {
+-        RenderedFsTree tree = RenderFsTree(uroot);
++        RenderedFsTree tree = RenderFsTree(uroot, fileBacked: false, Array.MaxLength);
+         return Build(tree.Files, tree.Directories);
+     }
+ 
+@@ -248,25 +278,66 @@ public sealed class ProsperoPs5InnerImageAssembler
+     /// is empty; metadata and per-file integrity inputs remain available in the result.
+     /// </summary>
+     public ProsperoPs5InnerImageResult BuildFromFsTreeToFile(FSDir uroot, string outputPath)
++        => BuildFromFsTreeToFile(uroot, outputPath, DefaultInMemoryBudget);
++
++    internal ProsperoPs5InnerImageResult BuildFromFsTreeToFile(
++        FSDir uroot, string outputPath, long inMemoryBudget)
++        => BuildFromFsTreeToFileCore(uroot,outputPath,0,inMemoryBudget);
++
++    internal ProsperoPs5InnerImageResult BuildFromFsTreeToFileAtOffset(
++        FSDir uroot, string outputPath, long outputOffset)
++        => BuildFromFsTreeToFileAtOffset(uroot, outputPath, outputOffset, DefaultInMemoryBudget);
++
++    internal ProsperoPs5InnerImageResult BuildFromFsTreeToFileAtOffset(
++        FSDir uroot, string outputPath, long outputOffset, long inMemoryBudget)
++        => BuildFromFsTreeToFileCore(uroot,outputPath,outputOffset,inMemoryBudget);
++
++    private ProsperoPs5InnerImageResult BuildFromFsTreeToFileCore(
++        FSDir uroot,string outputPath,long outputOffset,long inMemoryBudget)
+     {
+-        RenderedFsTree tree = RenderFsTree(uroot);
+-        return BuildToFile(tree.Files, tree.Directories, outputPath);
++        if (inMemoryBudget < 0)
++            throw new ArgumentOutOfRangeException(nameof(inMemoryBudget));
++        var total=uroot.GetAllChildrenFiles().Where(file=>!IsExcludedFromInner(file.FullPath())).Sum(file=>file.Size);long completed=0;
++        void Advance(long count){completed=checked(completed+count);if(completed>total)throw new InvalidDataException("Inner sources exceeded their declared byte count.");_progress?.Invoke(completed,total);}
++        _progress?.Invoke(0,total);
++        RenderedFsTree tree = RenderFsTree(uroot, fileBacked: true, inMemoryBudget,Advance);
++        string fullPath = Path.GetFullPath(outputPath);
++        Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory());
++        var result=BuildCore(tree.Files, tree.Directories, fullPath, outputOffset,Advance);
++        if(completed!=total)throw new InvalidDataException("Inner sources wrote a different byte count than declared.");
++        return result;
+     }
+ 
+     private sealed record RenderedFsTree(
+         IReadOnlyList<ProsperoPs5InnerFile> Files,
+         IReadOnlyList<ProsperoPs5InnerDirectory> Directories);
+ 
+-    private static RenderedFsTree RenderFsTree(FSDir uroot)
++    private static RenderedFsTree RenderFsTree(
++        FSDir uroot, bool fileBacked, long inMemoryBudget,Action<long>? progress=null)
+     {
+         ArgumentNullException.ThrowIfNull(uroot);
+         var files = new List<ProsperoPs5InnerFile>();
++        long bufferedBytes = 0;
+         foreach (var f in uroot.GetAllChildrenFiles())
+         {
+             if (IsExcludedFromInner(f.FullPath())) continue;
++            if (fileBacked && (f.Size > inMemoryBudget - bufferedBytes))
++            {
++                files.Add(new ProsperoPs5InnerFile
++                {
++                    Path = f.FullPath(), Data = ReadPrefix(f),
++                    WriteSource = f.Write, SourcePath = f.SourcePath, SourceLength = f.Size,
++                });
++                continue;
++            }
+             using var ms = new System.IO.MemoryStream();
+-            f.Write(ms);
+-            files.Add(new ProsperoPs5InnerFile { Path = f.FullPath(), Data = ms.ToArray() });
++            var destination=new BoundedWriteStream(ms,f.Size,progress);f.Write(destination);
++            if(destination.Position!=f.Size||destination.Length!=f.Size)throw new InvalidDataException($"Inner source '{f.FullPath()}' wrote a different byte count than declared.");
++            files.Add(new ProsperoPs5InnerFile
++            {
++                Path = f.FullPath(), Data = ms.ToArray(), SourceLength = f.Size,
++            });
++            bufferedBytes = checked(bufferedBytes + f.Size);
+         }
+         var directories = uroot.GetAllChildrenDirs()
+             .Select(directory => new ProsperoPs5InnerDirectory { Path = directory.FullPath() })
+@@ -274,6 +345,214 @@ public sealed class ProsperoPs5InnerImageAssembler
+         return new RenderedFsTree(files, directories);
+     }
+ 
++    private sealed class PrefixCompleteException : Exception { }
++
++    private sealed class PrefixStream(byte[] prefix) : Stream
++    {
++        private long _length;
++        private long _position;
++
++        public override bool CanRead => false;
++        public override bool CanSeek => true;
++        public override bool CanWrite => true;
++        public override long Length => _length;
++        public override long Position
++        {
++            get => _position;
++            set => _position = value >= 0 ? value : throw new ArgumentOutOfRangeException(nameof(value));
++        }
++
++        public override void Flush() { }
++        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
++        public override long Seek(long offset, SeekOrigin origin)
++        {
++            long position = origin switch
++            {
++                SeekOrigin.Begin => offset,
++                SeekOrigin.Current => checked(_position + offset),
++                SeekOrigin.End => checked(_length + offset),
++                _ => throw new ArgumentOutOfRangeException(nameof(origin)),
++            };
++            Position = position;
++            return position;
++        }
++        public override void SetLength(long value)
++        {
++            if (value < 0) throw new ArgumentOutOfRangeException(nameof(value));
++            _length = value;
++        }
++        public override void Write(byte[] buffer, int offset, int count) =>
++            Write(buffer.AsSpan(offset, count));
++        public override void Write(ReadOnlySpan<byte> buffer)
++        {
++            if (_position < prefix.Length)
++            {
++                int count = checked((int)Math.Min(buffer.Length, prefix.Length - _position));
++                buffer[..count].CopyTo(prefix.AsSpan(checked((int)_position), count));
++            }
++            _position = checked(_position + buffer.Length);
++            _length = Math.Max(_length, _position);
++            if (_position >= prefix.Length)
++                throw new PrefixCompleteException();
++        }
++    }
++
++    private static byte[] ReadPrefix(FSFile file)
++    {
++        var prefix = new byte[checked((int)Math.Min(4, file.Size))];
++        if (prefix.Length == 0) return prefix;
++        if (file.SourcePath is not null)
++        {
++            using var input = new FileStream(
++                file.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read,
++                bufferSize: 4096, FileOptions.SequentialScan);
++            input.ReadExactly(prefix);
++            return prefix;
++        }
++        try
++        {
++            file.Write(new PrefixStream(prefix));
++        }
++        catch (PrefixCompleteException)
++        {
++            // Expected: stop a potentially multi-gigabyte writer as soon as its magic is known.
++        }
++        return prefix;
++    }
++
++    private static (long StoredSize, IReadOnlyList<ProsperoInnerDataBlockChunk> Blocks)
++        WriteCompressedSource(
++            string sourcePath, long sourceLength, Stream destination, long destinationOffset,
++            Action<long>? progress)
++    {
++        const int blockSize = ProsperoPs5InnerImageBuilder.CompressBlockSize;
++        int batchSize = Math.Max(1, Math.Min(Environment.ProcessorCount, 8));
++        var inputBlocks = Enumerable.Range(0, batchSize)
++            .Select(_ => new byte[blockSize])
++            .ToArray();
++        var inputLengths = new int[batchSize];
++        var encodedBlocks = new EncodedBlock?[batchSize];
++        var geometry = new List<ProsperoInnerDataBlockChunk>(
++            checked((int)((sourceLength + blockSize - 1) / blockSize)));
++
++        using var input = new FileStream(
++            sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read,
++            bufferSize: 1 << 20, FileOptions.SequentialScan);
++        if (input.Length != sourceLength)
++            throw new InvalidDataException($"Inner source '{sourcePath}' changed size before compression.");
++
++        destination.Position = destinationOffset;
++        long consumed = 0;
++        long stored = 0;
++        while (consumed < sourceLength)
++        {
++            int count = 0;
++            while (count < batchSize && consumed < sourceLength)
++            {
++                int length = checked((int)Math.Min(blockSize, sourceLength - consumed));
++                input.ReadExactly(inputBlocks[count].AsSpan(0, length));
++                inputLengths[count] = length;
++                encodedBlocks[count] = null;
++                consumed += length;
++                progress?.Invoke(length);
++                count++;
++            }
++
++            System.Threading.Tasks.Parallel.For(0, count, i =>
++            {
++                encodedBlocks[i] = OodleKrakenEncoder.EncodeBlock(
++                    inputBlocks[i].AsSpan(0, inputLengths[i]),
++                    useHuffmanArrays: true,
++                    compressionLevel: 7);
++            });
++
++            for (int i = 0; i < count; i++)
++            {
++                int plainSize = inputLengths[i];
++                if (encodedBlocks[i] is EncodedBlock encoded && encoded.Payload.Length < plainSize)
++                {
++                    destination.Write(encoded.Payload);
++                    stored = checked(stored + encoded.Payload.LongLength);
++                    geometry.Add(new ProsperoInnerDataBlockChunk(
++                        encoded.Payload.Length, plainSize, false,
++                        encoded.MultiChunk, encoded.FirstChunkCompSize, encoded.BoundaryFlags));
++                }
++                else
++                {
++                    destination.Write(inputBlocks[i].AsSpan(0, plainSize));
++                    stored = checked(stored + plainSize);
++                    geometry.Add(new ProsperoInnerDataBlockChunk(
++                        plainSize, plainSize, true, false, 0));
++                }
++            }
++        }
++
++        if (stored <= ((sourceLength * 15) >> 4))
++            return (stored, geometry);
++
++        input.Position = 0;
++        destination.Position = destinationOffset;
++        var copyBuffer = new byte[1 << 20];
++        long copied = 0;
++        while (copied < sourceLength)
++        {
++            int count = input.Read(copyBuffer, 0, checked((int)Math.Min(copyBuffer.Length, sourceLength - copied)));
++            if (count == 0)
++                throw new EndOfStreamException($"Inner source '{sourcePath}' ended during raw fallback.");
++            destination.Write(copyBuffer, 0, count);
++            copied += count;
++        }
++        return (sourceLength, Array.Empty<ProsperoInnerDataBlockChunk>());
++    }
++
++    private sealed class BoundedWriteStream(Stream source, long maximumLength,Action<long>? progress=null) : Stream
++    {
++        public override bool CanRead => false;
++        public override bool CanSeek => true;
++        public override bool CanWrite => true;
++        public override long Length => source.Length;
++        public override long Position
++        {
++            get => source.Position;
++            set
++            {
++                if (value < 0 || value > maximumLength)
++                    throw new IOException("A file source attempted to seek outside its declared extent.");
++                source.Position = value;
++            }
++        }
++
++        public override void Flush() => source.Flush();
++        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
++        public override long Seek(long offset, SeekOrigin origin)
++        {
++            long position = origin switch
++            {
++                SeekOrigin.Begin => offset,
++                SeekOrigin.Current => checked(Position + offset),
++                SeekOrigin.End => checked(Length + offset),
++                _ => throw new ArgumentOutOfRangeException(nameof(origin)),
++            };
++            Position = position;
++            return position;
++        }
++        public override void SetLength(long value)
++        {
++            if (value < 0 || value > maximumLength)
++                throw new IOException("A file source attempted to resize beyond its declared extent.");
++            source.SetLength(value);
++        }
++        public override void Write(byte[] buffer, int offset, int count) =>
++            Write(buffer.AsSpan(offset, count));
++        public override void Write(ReadOnlySpan<byte> buffer)
++        {
++            if (Position > maximumLength - buffer.Length)
++                throw new IOException("A file source wrote beyond its declared extent.");
++            source.Write(buffer);
++            progress?.Invoke(buffer.Length);
++        }
++    }
++
+     // A sce_sys file whose sce_sys-relative name is a known outer-CNT entry is carried in the OUTER
+     // container, not the inner image. The rule extends the standard inner-PFS builder
+     // (ProsperoPfsBuilder) with param.json (CNT id 0x2000, emitted as its own outer entry and therefore
+@@ -324,11 +603,20 @@ public sealed class ProsperoPs5InnerImageAssembler
+     private ProsperoPs5InnerImageResult BuildCore(
+         IReadOnlyList<ProsperoPs5InnerFile> files,
+         IReadOnlyList<ProsperoPs5InnerDirectory>? directories,
+-        string? outputPath)
++        string? outputPath,
++        long outputOffset = 0,
++        Action<long>? progress = null)
+     {
+         ArgumentNullException.ThrowIfNull(files);
+         if (files.Count == 0)
+             throw new ArgumentException("At least one inner file is required.", nameof(files));
++        if (outputPath is null && files.Any(file => file.WriteSource is not null))
++            throw new ArgumentException(
++                "File-backed inner sources require BuildToFile.", nameof(files));
++        if (outputOffset < 0 || outputOffset % BlockSize != 0 ||
++            (outputPath is null && outputOffset != 0))
++            throw new ArgumentOutOfRangeException(
++                nameof(outputOffset), "The output offset must be a non-negative 64-KiB boundary.");
+ 
+         Dir uroot = BuildTree(files, directories);
+ 
+@@ -383,9 +671,9 @@ public sealed class ProsperoPs5InnerImageAssembler
+         // Zero-length files retain inode/dirent metadata but do not consume a normal AFID/FIDX data
+         // slot. Their inode points at the common terminal FIDX marker assigned below.
+         List<FileNode> emptyFiles = afidOrder
+-            .Where(file => file.Data.Length == 0)
++            .Where(file => file.Size == 0)
+             .ToList();
+-        afidOrder.RemoveAll(file => file.Data.Length == 0);
++        afidOrder.RemoveAll(file => file.Size == 0);
+ 
+         List<FileNode?> afidSlots;
+         if (_explicitAfids is null)
+@@ -429,7 +717,7 @@ public sealed class ProsperoPs5InnerImageAssembler
+                 file.Afid = checked((uint)afidSlots.Count);
+                 afidSlots.Add(file);
+                 predictedLogicalOffset = checked(
+-                    predictedLogicalOffset + file.Data.LongLength);
++                    predictedLogicalOffset + file.Size);
+                 startsInWindow++;
+             }
+         }
+@@ -483,10 +771,6 @@ public sealed class ProsperoPs5InnerImageAssembler
+             .Where(file => file is not null)
+             .Select(file => file!)
+             .ToList();
+-        uint terminalAfid = checked(
+-            (uint)afidSlots.Count + (uint)emptyFiles.Count + 1);
+-        foreach (FileNode emptyFile in emptyFiles)
+-            emptyFile.Afid = terminalAfid;
+ 
+         static string NormalizeAfidPath(string path)
+         {
+@@ -505,36 +789,55 @@ public sealed class ProsperoPs5InnerImageAssembler
+ 
+         // ---- 3. Logical offsets (packed, in afid order) + store rule. -----------------------------
+         long cursor = 0;
+-        long fileBackedDataEnd = 0;
+-        FileStream? fileBackedData = outputPath is null
+-            ? null
+-            : new FileStream(
+-                outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None,
+-                bufferSize: 1 << 20, FileOptions.SequentialScan);
+-        var afidOffsets = new long[afidSlots.Count];
++        long[] afidOffsets = [];
+         var sparseAfidHoles = new List<ProsperoPs5SparseAfidHole>();
+-        try
++        void AssignLogicalLayout()
+         {
++            cursor = 0;
++            afidOffsets = new long[afidSlots.Count];
++            sparseAfidHoles.Clear();
+             for (int afid = 0; afid < afidSlots.Count; afid++)
+             {
+-                FileNode? f = afidSlots[afid];
++                FileNode? file = afidSlots[afid];
+                 afidOffsets[afid] = cursor;
+-                if (f is null)
++                if (file is null)
+                 {
+                     sparseAfidHoles.Add(new ProsperoPs5SparseAfidHole(
+                         checked((uint)afid), cursor, 0x40000));
+                     cursor = checked(cursor + 0x40000);
+                     continue;
+                 }
+-                f.LogicalOffset = cursor;
+-                cursor += f.Data.Length;
++                file.Afid = checked((uint)afid);
++                file.LogicalOffset = cursor;
++                cursor = checked(cursor + file.Size);
++            }
++            uint terminalAfid = checked(
++                (uint)afidSlots.Count + (uint)emptyFiles.Count + 1);
++            foreach (FileNode emptyFile in emptyFiles)
++            {
++                emptyFile.Afid = terminalAfid;
++                emptyFile.LogicalOffset = cursor;
++            }
++        }
++        AssignLogicalLayout();
++
++        long fileBackedDataEnd = 0;
++        FileStream? fileBackedData = outputPath is null
++            ? null
++            : new FileStream(
++                outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None,
++                bufferSize: 1 << 20, FileOptions.SequentialScan);
++        try
++        {
++            foreach (FileNode f in afidOrder)
++            {
+                 // Keystone and executable modules are stored raw; every other file is Kraken-compressed and
+                 // packed unless the compressed result does not save at least the store threshold. Compress once
+                 // and reuse it so the data-region geometry and the final image share a single compression pass.
+-                if (IsKeystone(f.FullPath) || IsExecutableModule(f.Data))
++                if (f.WriteSource is not null || IsKeystone(f.FullPath) || IsExecutableModule(f.Data))
+                 {
+                     f.StoreRaw = true;
+-                    f.OnDiskData = f.Data;
++                    f.OnDiskData = f.WriteSource is null ? f.Data : null;
+                 }
+                 else
+                 {
+@@ -555,106 +858,140 @@ public sealed class ProsperoPs5InnerImageAssembler
+ 
+                 if (fileBackedData is not null)
+                 {
+-                    byte[] onDisk = f.OnDiskData!;
+                     bool alignBefore = f.WholeBlockRaw;
+                     if (alignBefore)
+                         fileBackedDataEnd = RoundUp(fileBackedDataEnd, BlockSize);
+                     f.OnDiskOffset = fileBackedDataEnd;
+-                    f.OnDiskSize = onDisk.LongLength;
+-                    fileBackedData.Position = fileBackedDataEnd;
+-                    fileBackedData.Write(onDisk);
+-                    fileBackedDataEnd = checked(fileBackedDataEnd + onDisk.LongLength);
++                    fileBackedData.Position = checked(outputOffset + fileBackedDataEnd);
++                    if (f.SourcePath is not null && !f.WholeBlockRaw)
++                    {
++                        (f.OnDiskSize, f.CompressionBlocks) = WriteCompressedSource(
++                            f.SourcePath, f.Size, fileBackedData,
++                            checked(outputOffset + fileBackedDataEnd), progress);
++                        f.StoreRaw = f.CompressionBlocks.Count == 0;
++                    }
++                    else if (f.WriteSource is not null)
++                    {
++                        var destination = new BoundedWriteStream(
++                            new Util.OffsetStream(fileBackedData, checked(outputOffset + fileBackedDataEnd)), f.Size,progress);
++                        destination.Position = 0;
++                        f.WriteSource(destination);
++                        if (destination.Position != f.Size || destination.Length != f.Size)
++                            throw new InvalidDataException($"Inner source '{f.FullPath}' wrote a different byte count than declared.");
++                        f.OnDiskSize = f.Size;
++                    }
++                    else
++                    {
++                        byte[] onDisk = f.OnDiskData!;
++                        fileBackedData.Write(onDisk);
++                        f.OnDiskSize = onDisk.LongLength;
++                    }
++                    fileBackedDataEnd = checked(fileBackedDataEnd + f.OnDiskSize);
+                     if (f.WholeBlockRaw)
+                         fileBackedDataEnd = RoundUp(fileBackedDataEnd, BlockSize);
+                     f.OnDiskData = null;
+                 }
+             }
+-            foreach (FileNode emptyFile in emptyFiles)
+-                emptyFile.LogicalOffset = cursor;
+         }
+         finally
+         {
+             if (fileBackedData is not null)
+             {
+-                fileBackedData.SetLength(fileBackedDataEnd);
++                fileBackedData.SetLength(checked(outputOffset + fileBackedDataEnd));
+                 fileBackedData.Flush(flushToDisk: true);
+                 fileBackedData.Dispose();
+             }
+         }
+ 
+-        // The metadata base belongs to the LOGICAL mount address space. It must follow the end of every
+-        // uncompressed file extent; deriving it from the much smaller packed on-disk stream can place
+-        // fidx/inode offsets beyond Ndblock for compressible content. Physical packed placement is
+-        // calculated independently by BuildImage below.
+-        // The AFID data region ends on a complete 256-KiB NAPS unit and contains at least one such
+-        // unit.  The superblock follows a fixed 60-block (0x3C0000) metadata gap:
+-        //
+-        //   superblock = alignUp(max(afidDataEnd, 1), 0x40000) + 0x3C0000
+-        //
+-        // A minimal AC image therefore places it at 0x400000.  Merely rounding to the 64-KiB PFS
+-        // block size also breaks larger images (for example, a 0x95000 payload put the superblock
+-        // at 0x460000 instead of the required 0x480000), which the publisher PFS reader rejects.
++        // ---- 4-8. Build metadata/image, then prove the exact NAPS u2c layout is representable. ----
+         const long NapsLogicalBlockSize = 0x40000;
+-        long logicalDataBlocks =
+-            RoundUp(Math.Max(cursor, 1), NapsLogicalBlockSize) / BlockSize;
+-
+-        // ---- 4. Dirents (with byte offsets). -------------------------------------------------------
+         BuildDirents(uroot);
+-
+-        // ---- 5. Build variable-size metadata payloads and resolve their logical extents. -----------
+-        List<byte[]> metadataPayloads = BuildMetadataPayloads(
+-            dirsPreOrder, fileNodes, afidSlots,
+-            inodeFltInode, aprFltInode, afidTableInode, uroot);
+-
+-        // ---- 6. Build the metadata nodes in inode order. ------------------------------------------
+-        var nodes = BuildNodes(uroot, dirsPreOrder, fileNodes, logicalDataBlocks,
+-            superRootInode, inodeFltInode, aprFltInode, afidTableInode,
+-            metadataPayloads, out long ndblock, out int trailingMetadataBlocks);
+-
+-        // ---- 7. Build metadata plaintext. ----------------------------------------------------------
+-        byte[] metaPlain = BuildMetadataPlaintext(
+-            nodes, metadataPayloads, ndblock, trailingMetadataBlocks);
+-
+-        // ---- 8. Assemble the data-first image. ----------------------------------------------------
+-        byte[] image = BuildImage(
+-            afidOrder, metaPlain, cursor, outputPath, fileBackedDataEnd,
+-            out long imageLength, out long blockInfoOnDisk, out long metadataOnDisk,
+-            out byte[] compressedMeta, out var metaBlocks);
+-
+-        long metaBaseLogical = ndblock * ProsperoPs5InnerImageBuilder.BlockSize - metaPlain.Length;
+-        var placements = afidOrder.Select(f => new ProsperoPs5InnerPlacement
+-        {
+-            Afid = f.Afid,
+-            OnDiskOffset = f.OnDiskOffset,
+-            LogicalOffset = f.LogicalOffset,
+-            OnDiskSize = f.OnDiskSize,
+-            UncompressedSize = f.Data.Length,
+-            PlainData = f.Data,
+-            StoreRaw = f.StoreRaw,
+-            CompressionBlocks = f.CompressionBlocks,
+-        }).ToList();
+-
+-        return new ProsperoPs5InnerImageResult
++        int layoutRepairs = 0;
++        while (true)
+         {
+-            Image = image,
+-            ImagePath = outputPath,
+-            ImageLength = imageLength,
+-            MetadataPlaintext = metaPlain,
+-            Nodes = nodes,
+-            Ndblock = ndblock,
+-            AfidLogicalOffsets = afidOffsets,
+-            EmptyFileLogicalOffsets = emptyFiles
+-                .Select(file => file.LogicalOffset)
+-                .ToArray(),
+-            Placements = placements,
+-            SparseAfidHoles = sparseAfidHoles,
+-            BlockInfoOnDiskOffset = blockInfoOnDisk,
+-            MetadataOnDiskOffset = metadataOnDisk,
+-            CompressedMetadata = compressedMeta,
+-            MetadataBlocks = metaBlocks,
+-            DataEndLogical = cursor,
+-            MetaBaseLogical = metaBaseLogical,
+-        };
++            long logicalDataBlocks =
++                RoundUp(Math.Max(cursor, 1), NapsLogicalBlockSize) / BlockSize;
++            List<byte[]> metadataPayloads = BuildMetadataPayloads(
++                dirsPreOrder, fileNodes, afidSlots,
++                inodeFltInode, aprFltInode, afidTableInode, uroot);
++            var nodes = BuildNodes(uroot, dirsPreOrder, fileNodes, logicalDataBlocks,
++                superRootInode, inodeFltInode, aprFltInode, afidTableInode,
++                metadataPayloads, out long ndblock, out int trailingMetadataBlocks);
++            byte[] metaPlain = BuildMetadataPlaintext(
++                nodes, metadataPayloads, ndblock, trailingMetadataBlocks);
++            byte[] image = BuildImage(
++                afidOrder, metaPlain, cursor, outputPath, outputOffset, fileBackedDataEnd,
++                out long imageLength, out long blockInfoOnDisk, out long metadataOnDisk,
++                out byte[] compressedMeta, out var metaBlocks);
++            long metaBaseLogical =
++                ndblock * ProsperoPs5InnerImageBuilder.BlockSize - metaPlain.Length;
++            var placements = afidOrder.Select(f => new ProsperoPs5InnerPlacement
++            {
++                Afid = f.Afid,
++                OnDiskOffset = f.OnDiskOffset,
++                LogicalOffset = f.LogicalOffset,
++                OnDiskSize = f.OnDiskSize,
++                UncompressedSize = f.Size,
++                PlainData = f.Data,
++                PlainDataStoredInImage = f.WriteSource is not null && f.StoreRaw,
++                PlainDataPath = f.StoreRaw ? null : f.SourcePath,
++                StoreRaw = f.StoreRaw,
++                CompressionBlocks = f.CompressionBlocks,
++            }).ToList();
++            var result = new ProsperoPs5InnerImageResult
++            {
++                Image = image,
++                ImagePath = outputPath,
++                ImageOffset = outputOffset,
++                ImageLength = imageLength,
++                MetadataPlaintext = metaPlain,
++                Nodes = nodes,
++                Ndblock = ndblock,
++                AfidLogicalOffsets = afidOffsets,
++                EmptyFileLogicalOffsets = emptyFiles
++                    .Select(file => file.LogicalOffset)
++                    .ToArray(),
++                Placements = placements,
++                SparseAfidHoles = sparseAfidHoles.ToArray(),
++                BlockInfoOnDiskOffset = blockInfoOnDisk,
++                MetadataOnDiskOffset = metadataOnDisk,
++                CompressedMetadata = compressedMeta,
++                MetadataBlocks = metaBlocks,
++                DataEndLogical = cursor,
++                MetaBaseLogical = metaBaseLogical,
++            };
++
++            try
++            {
++                _ = ProsperoNwonlyNapsGenerator.Generate(result);
++                return result;
++            }
++            catch (NapsU2cOverflowException overflow) when (_explicitAfids is null)
++            {
++                long pivot = Math.Max(
++                    overflow.GroupStartLogicalOffset,
++                    overflow.TargetLogicalOffset - NapsLogicalBlockSize);
++                int insertAt = afidSlots.FindIndex(slot =>
++                    slot is FileNode file &&
++                    file.LogicalOffset >= pivot &&
++                    file.LogicalOffset < overflow.TargetLogicalOffset);
++                if (insertAt < 0)
++                    insertAt = afidSlots.FindIndex(slot =>
++                        slot is FileNode file &&
++                        file.LogicalOffset >= overflow.GroupStartLogicalOffset &&
++                        file.LogicalOffset < overflow.TargetLogicalOffset);
++                if (insertAt < 0 || ++layoutRepairs > afidOrder.Count + 64)
++                    throw;
++                afidSlots.Insert(insertAt, null);
++                AssignLogicalLayout();
++            }
++            catch (NapsU2cOverflowException overflow)
++            {
++                throw new NotSupportedException(
++                    "The explicit publisher AFID map produces an unrepresentable NAPS u2c layout.",
++                    overflow);
++            }
++        }
+     }
+ 
+     // ---- Tree construction -------------------------------------------------------------------------
+@@ -712,6 +1049,9 @@ public sealed class ProsperoPs5InnerImageAssembler
+                 Name = name,
+                 FullPath = "/" + path,
+                 Data = f.Data,
++                WriteSource = f.WriteSource,
++                SourcePath = f.SourcePath,
++                Size = f.WriteSource is null ? f.Data.LongLength : f.SourceLength,
+                 Parent = parent,
+             });
+         }
+@@ -943,7 +1283,7 @@ public sealed class ProsperoPs5InnerImageAssembler
+                 // for a data blob (e.g. the DRM keystone), +0x20000 for the sce_sys subtree.
+                 Flags = 0x10u | (exec ? 0x40u : 0x20u) | (sceSys ? 0x20000u : 0u),
+                 Afid = f.Afid,
+-                Size = f.Data.Length,
++                Size = f.Size,
+                 LogicalOffset = (ulong)f.LogicalOffset,
+                 ParentInode = (int)f.Parent.Inode,
+                 DirentOffset = f.DirentOffsetInParent,
+@@ -1001,7 +1341,7 @@ public sealed class ProsperoPs5InnerImageAssembler
+         {
+             bool apr = !f.FullPath.StartsWith("/sce_sys/", StringComparison.Ordinal);
+             FI(f.FullPath, f.Inode, dir: false, subtreeApr: apr, afid: f.Afid);
+-            if (apr) FA(f.FullPath, f.Data.Length, f.Afid);
++            if (apr) FA(f.FullPath, f.Size, f.Afid);
+         }
+ 
+         byte[] inodeFltBytes = ProsperoPs5FlatPathTable.ToBytes(inodeFlt);
+@@ -1065,7 +1405,7 @@ public sealed class ProsperoPs5InnerImageAssembler
+ 
+     private byte[] BuildImage(
+         List<FileNode> afidOrder, byte[] metaPlain, long logicalDataEnd,
+-        string? outputPath, long prewrittenDataEnd,
++        string? outputPath, long outputOffset, long prewrittenDataEnd,
+         out long imageLength, out long blockInfoOnDisk, out long metadataOnDisk, out byte[] compressedMeta,
+         out IReadOnlyList<ProsperoInnerMetaBlockChunk> metaBlocks)
+     {
+@@ -1146,13 +1486,13 @@ public sealed class ProsperoPs5InnerImageAssembler
+                    outputPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None,
+                    bufferSize: 1 << 20, FileOptions.SequentialScan))
+         {
+-            output.Position = blockInfoOnDisk;
++            output.Position = checked(outputOffset + blockInfoOnDisk);
+             output.Write(blockInfo);
+-            output.Position = metadataOnDisk;
++            output.Position = checked(outputOffset + metadataOnDisk);
+             output.Write(compressedMeta);
+             long unpaddedLength = checked(metadataOnDisk + compressedMeta.LongLength);
+             imageLength = AlignUp(unpaddedLength, BLK);
+-            output.SetLength(imageLength);
++            output.SetLength(checked(outputOffset + imageLength));
+             output.Flush(flushToDisk: true);
+         }
+         return [];
+diff --git a/src/LibProsperoPkg/PFS/ProsperoPs5InnerMetadata.cs b/src/LibProsperoPkg/PFS/ProsperoPs5InnerMetadata.cs
+index 596cafcfefec0b8ab2792a381b7ebcb173c42ffc..2c81304eeff7964bb20c86e4f0e56d47f5c05d48 100644
+--- a/src/LibProsperoPkg/PFS/ProsperoPs5InnerMetadata.cs
++++ b/src/LibProsperoPkg/PFS/ProsperoPs5InnerMetadata.cs
+@@ -97,9 +97,8 @@ public sealed class ProsperoPs5InnerMetadata
+         for (int t = 0; t < 4; t++) BinaryPrimitives.WriteInt64LittleEndian(dst[(0x18 + t * 8)..], _timeSec);
+         for (int t = 0; t < 4; t++) BinaryPrimitives.WriteUInt32LittleEndian(dst[(0x38 + t * 4)..], _timeNsec);
+         BinaryPrimitives.WriteUInt64LittleEndian(dst[0x60..], n.LogicalOffset);
+-        // db[0] = 0; for the super-root and its direct children (ParentInode == -1) db[1..3] = -1;
+-        // otherwise db[1] = afid (files) / -1 (dirs), db[2] = parent inode, db[3] = dirent offset in parent.
+-        BinaryPrimitives.WriteInt32LittleEndian(dst[0x64..], 0);
++        // The full 0x60..0x67 field is the logical offset, including its high 32 bits.
++        // The following words hold afid, parent inode and the parent dirent offset.
+         int db1 = n.ParentInode < 0 ? -1 : (n.IsDirectory ? -1 : (int)n.Afid);
+         BinaryPrimitives.WriteInt32LittleEndian(dst[0x68..], db1);
+         BinaryPrimitives.WriteInt32LittleEndian(dst[0x6c..], n.ParentInode);
+diff --git a/src/LibProsperoPkg/PKG/ProsperoFihBuilder.cs b/src/LibProsperoPkg/PKG/ProsperoFihBuilder.cs
+index 3985289eaa4bbadf19a49def656e5e532248cebc..4ea36a2ce69aa808eef8785671dfd313a9963e90 100644
+--- a/src/LibProsperoPkg/PKG/ProsperoFihBuilder.cs
++++ b/src/LibProsperoPkg/PKG/ProsperoFihBuilder.cs
+@@ -128,6 +128,26 @@ public static class ProsperoFihBuilder
+         int nwonlySparseAfidCount = 0, int nwonlyEmptyFileCount = 0,
+         int outerSuperblockIndex = -1,
+         IProsperoRetailFinalizationProvider? retailFinalizationProvider = null)
++        => BuildFromSources(
++            cntPath, fihOutputPath, variant, logger, siArchive,
++            siArchiveFactory, siArchiveStreamFactory, nestedImageDigest,
++            nestedImageSize, nestedMetaBaseBlocks, nwonlyContentVersionHi,
++            nwonlyNapsFileCount, nwonlyAppFileCount, nwonlySparseAfidCount,
++            nwonlyEmptyFileCount, outerSuperblockIndex, retailFinalizationProvider,
++            separatePfsPath: null, pfsAlreadyAtOutput: false);
++
++    internal static System.Collections.Generic.IReadOnlyList<string> BuildFromSources(
++        string cntPath, string fihOutputPath, ProsperoFihVariant variant,
++        Action<string>? logger, byte[]? siArchive,
++        Func<byte[], byte[]>? siArchiveFactory,
++        Func<Stream, byte[]>? siArchiveStreamFactory,
++        byte[]? nestedImageDigest,
++        long nestedImageSize, long nestedMetaBaseBlocks,
++        uint nwonlyContentVersionHi, int nwonlyNapsFileCount, int nwonlyAppFileCount,
++        int nwonlySparseAfidCount, int nwonlyEmptyFileCount,
++        int outerSuperblockIndex,
++        IProsperoRetailFinalizationProvider? retailFinalizationProvider,
++        string? separatePfsPath, bool pfsAlreadyAtOutput)
+     {
+         ArgumentException.ThrowIfNullOrEmpty(cntPath);
+         ArgumentException.ThrowIfNullOrEmpty(fihOutputPath);
+@@ -142,10 +162,19 @@ public static class ProsperoFihBuilder
+ 
+         string inputFullPath = Path.GetFullPath(cntPath);
+         string outputFullPath = Path.GetFullPath(fihOutputPath);
++        string? pfsFullPath = separatePfsPath is null ? null : Path.GetFullPath(separatePfsPath);
+         if (string.Equals(
+                 inputFullPath, outputFullPath,
+                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+             throw new ArgumentException("CNT input and FIH output paths must be different.");
++        if (!pfsAlreadyAtOutput && pfsFullPath is not null && string.Equals(
++                pfsFullPath, outputFullPath,
++                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
++            throw new ArgumentException("PFS input and FIH output paths must be different.");
++        if (pfsAlreadyAtOutput && (pfsFullPath is null || !string.Equals(
++                pfsFullPath, outputFullPath,
++                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)))
++            throw new ArgumentException("An in-place PFS must be the FIH output file.");
+ 
+         using var cntStream = new FileStream(
+             inputFullPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+@@ -161,14 +190,39 @@ public static class ProsperoFihBuilder
+             cntHeader.AsSpan(CntPfsImageOffsetField));
+         ulong pfsImageSize = BinaryPrimitives.ReadUInt64BigEndian(
+             cntHeader.AsSpan(CntPfsImageSizeField));
+-        if (pfsImageOffset == 0 || pfsImageSize == 0 ||
+-            pfsImageOffset > (ulong)cntStream.Length ||
+-            pfsImageSize > (ulong)cntStream.Length - pfsImageOffset)
++        if (pfsImageOffset == 0 || pfsImageSize == 0)
+             throw new InvalidDataException("CNT package has no embedded PFS image to finalize.");
+         if (pfsImageOffset > int.MaxValue)
+             throw new InvalidDataException(
+                 "CNT metadata preceding the PFS image exceeds the supported 2-GiB metadata limit.");
+ 
++        using FileStream? separatePfs = pfsFullPath is null
++            ? null
++            : new FileStream(
++                pfsFullPath, FileMode.Open,
++                pfsAlreadyAtOutput ? FileAccess.ReadWrite : FileAccess.Read,
++                pfsAlreadyAtOutput ? FileShare.None : FileShare.Read,
++                bufferSize: 1 << 20, FileOptions.RandomAccess);
++        Stream pfsStream = separatePfs ?? cntStream;
++        long pfsStreamOffset;
++        if (separatePfs is null)
++        {
++            if (pfsImageOffset > (ulong)cntStream.Length ||
++                pfsImageSize > (ulong)cntStream.Length - pfsImageOffset)
++                throw new InvalidDataException("CNT package has no embedded PFS image to finalize.");
++            pfsStreamOffset = checked((long)pfsImageOffset);
++        }
++        else
++        {
++            if ((ulong)cntStream.Length != pfsImageOffset)
++                throw new InvalidDataException("Split CNT metadata length does not match pfs_image_offset.");
++            long expectedLength = checked((long)pfsImageSize +
++                (pfsAlreadyAtOutput ? ProsperoPkgLayout.FihHeaderRegionSize : 0));
++            if (separatePfs.Length != expectedLength)
++                throw new InvalidDataException("Separate PFS length does not match pfs_image_size.");
++            pfsStreamOffset = pfsAlreadyAtOutput ? ProsperoPkgLayout.FihHeaderRegionSize : 0;
++        }
++
+         // Split the CNT into its metadata blob (header + entries + body, everything before the
+         // image) and the shared encrypted PFS image.
+         byte[] metadata = ReadStreamRange(cntStream, 0, checked((int)pfsImageOffset));
+@@ -180,7 +234,7 @@ public static class ProsperoFihBuilder
+ 
+         ulong embeddedCntOffset = (ulong)ProsperoPkgLayout.FihHeaderRegionSize + pfsImageSize;
+         var (sbOffsetInImage, gameDigest, imageDigest) = AnalyzeImageRange(
+-            cntStream, checked((long)pfsImageOffset), checked((long)pfsImageSize),
++            pfsStream, pfsStreamOffset, checked((long)pfsImageSize),
+             outerSuperblockIndex);
+         byte[] header = BuildFihHeaderBlock(
+             variant, pfsImageSize, embeddedCntOffset,
+@@ -229,14 +283,23 @@ public static class ProsperoFihBuilder
+                 $"size=0x{ProsperoPkgLayout.FihRetailFinalizationSize:X}, " +
+                 $"CNT authentication=0x{ProsperoPublisherRsa.ModulusSize:X}, supplemental=0x{si.Length:X}.");
+         }
+-        using (var fs = new FileStream(
+-                   outputFullPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None,
+-                   bufferSize: 1 << 20, FileOptions.SequentialScan))
++        FileStream? createdOutput = null;
++        try
+         {
++            Stream fs = pfsAlreadyAtOutput
++                ? separatePfs!
++                : createdOutput = new FileStream(
++                    outputFullPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None,
++                    bufferSize: 1 << 20, FileOptions.SequentialScan);
++            fs.Position = 0;
+             fs.Write(header, 0, header.Length);                 // 0x00000 .. 0x10000
+-            CopyStreamRange(
+-                cntStream, fs, checked((long)pfsImageOffset), checked((long)pfsImageSize));
++            if (!pfsAlreadyAtOutput)
++                CopyStreamRange(
++                    pfsStream, fs, pfsStreamOffset, checked((long)pfsImageSize));
++            else
++                fs.Position = checked((long)embeddedCntOffset);
+             fs.Write(metadata, 0, metadata.Length);             // embedded CNT
++            fs.SetLength(checked((long)embeddedCntOffset + metadata.Length));
+             fs.Flush();
+ 
+             if (variant == ProsperoFihVariant.Debug && si is null &&
+@@ -267,6 +330,10 @@ public static class ProsperoFihBuilder
+                 log($"Appended SI segment: 0x{si.Length:X} bytes after the embedded CNT.");
+             }
+         }
++        finally
++        {
++            createdOutput?.Dispose();
++        }
+ 
+         warnings.Add(
+             "The finalized image carries a valid embedded CNT and PFS image: FIH 0x30 is " +
+@@ -288,6 +355,27 @@ public static class ProsperoFihBuilder
+         return warnings;
+     }
+ 
++    internal static System.Collections.Generic.IReadOnlyList<string> BuildFromParts(
++        string cntMetadataPath, string pfsImagePath, string fihOutputPath,
++        ProsperoFihVariant variant = ProsperoFihVariant.Debug,
++        Action<string>? logger = null, byte[]? siArchive = null,
++        Func<byte[], byte[]>? siArchiveFactory = null,
++        Func<Stream, byte[]>? siArchiveStreamFactory = null,
++        byte[]? nestedImageDigest = null,
++        long nestedImageSize = 0, long nestedMetaBaseBlocks = 0,
++        uint nwonlyContentVersionHi = 0, int nwonlyNapsFileCount = 0,
++        int nwonlyAppFileCount = 0, int nwonlySparseAfidCount = 0,
++        int nwonlyEmptyFileCount = 0, int outerSuperblockIndex = -1,
++        IProsperoRetailFinalizationProvider? retailFinalizationProvider = null,
++        bool pfsAlreadyAtOutput = false)
++        => BuildFromSources(
++            cntMetadataPath, fihOutputPath, variant, logger, siArchive,
++            siArchiveFactory, siArchiveStreamFactory, nestedImageDigest,
++            nestedImageSize, nestedMetaBaseBlocks, nwonlyContentVersionHi,
++            nwonlyNapsFileCount, nwonlyAppFileCount, nwonlySparseAfidCount,
++            nwonlyEmptyFileCount, outerSuperblockIndex, retailFinalizationProvider,
++            separatePfsPath: pfsImagePath, pfsAlreadyAtOutput);
++
+     /// <summary>
+     /// Builds the 0x10000-byte finalized-image (FIH) header block. This is a SHARED, cycle-free helper used
+     /// by both the standalone FIH writer (<see cref="BuildFromCnt"/>) and the PS5 CNT builder so the
+diff --git a/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs b/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs
+index cbf89f84a8e8d0d9f6821d8c430132a85bc82874..6fb75b96d7c560027bbead9936f900fe6eee5190 100644
+--- a/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs
++++ b/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs
+@@ -100,6 +100,16 @@ public sealed class NapsGenerationRequest
+     public IReadOnlyList<byte[]>? ShufflePatterns { get; init; }
+ }
+ 
++internal sealed class NapsU2cOverflowException(
++    int value, long groupStartLogicalOffset, long targetLogicalOffset)
++    : NotSupportedException(
++        $"NAPS u2c delta value {value} exceeds the single-byte field; this layout size is not supported.")
++{
++    public int Value { get; } = value;
++    public long GroupStartLogicalOffset { get; } = groupStartLogicalOffset;
++    public long TargetLogicalOffset { get; } = targetLogicalOffset;
++}
++
+ /// <summary>
+ /// One placed DATA-region file, as laid out by <c>ProsperoPs5InnerImageAssembler</c>. The naps builder
+ /// derives this file's CblockInfo blocks from its geometry: a raw file becomes
+@@ -518,11 +528,6 @@ public static class ProsperoNapsLayoutBuilder
+ 
+         bool IsTerminal(int index) => index == numCblockInfo - 1;
+ 
+-        static byte ToU2cByte(int value, string field) => value is >= 0 and <= 255
+-            ? (byte)value
+-            : throw new NotSupportedException(
+-                $"NAPS u2c {field} value {value} exceeds the single-byte field; this layout size is not supported.");
+-
+         int Delta(int ublock, int baseIndex)
+         {
+             if (ublock < numUBlocks) return first[ublock] - baseIndex;
+@@ -535,7 +540,15 @@ public static class ProsperoNapsLayoutBuilder
+             int baseG = first[8 * g];
+             var deltas = new byte[7];
+             for (int j = 0; j < deltas.Length; j++)
+-                deltas[j] = ToU2cByte(Delta(8 * g + 1 + j, baseG), "delta");
++            {
++                int delta = Delta(8 * g + 1 + j, baseG);
++                if (delta is < 0 or > byte.MaxValue)
++                    throw new NapsU2cOverflowException(
++                        delta,
++                        (long)g * 8 * UBlock,
++                        (long)(8 * g + 1 + j) * UBlock);
++                deltas[j] = (byte)delta;
++            }
+             u2c.Add(new NapsU2cEntry((uint)baseG, deltas));
+         }
+ 
+diff --git a/src/LibProsperoPkg/PKG/ProsperoNapsMeta.cs b/src/LibProsperoPkg/PKG/ProsperoNapsMeta.cs
+index 402bdbca92269fe11d3b6460d836ccfd9b239252..530bbe69b5c535a6fee6cfd4727c1d885758af8a 100644
+--- a/src/LibProsperoPkg/PKG/ProsperoNapsMeta.cs
++++ b/src/LibProsperoPkg/PKG/ProsperoNapsMeta.cs
+@@ -7,24 +7,27 @@
+ // member by the `naps_meta_%d.dat` naming.
+ //
+ // Records and inputs:
+-// * naps_meta_300/301/302/308.dat -> all four ids carry the same 48-byte
+-// plaintext descriptor record. The record is six little-endian u64 fields and is fully derived from
++// * naps_meta_300/301/302/308.dat -> all four ids carry the same 72-byte
++// plaintext descriptor record. The record is nine little-endian u64 fields and is fully derived from
+ // the finalized inner-image geometry (no key, no console secret), so it is produced exactly here.
+ // * naps_meta_18.dat -> produced by BuildMeta18. The plaintext is a back-to-back TLV record stream
+ // (per-record 16-byte header: 4-byte tag, 1-byte version, 3 zero, u64 payload length) carrying the
+ // inner-image geometry (phdr), the content-file table (file/fstr), the per-block info tables
+ // (ibcl/i2ob/i2op/ihsh/rhsh) with real block digests over the finalized image, the outer digest
+-// (obdg), a fixed tweak marker (twek) and the four 48-byte descriptor records (pgpl/pgil/pgpi/pgpu,
+-// identical to naps_meta_300). The stream is padded to a 16-byte multiple with a trailing zero record
+-// and encrypted with AES-128-XTS under a fixed embedded key set. The whole file is one XTS data unit.
++// (obdg), a fixed tweak marker (twek) and the four 72-byte descriptor records (pgpl/pgil/pgpi/pgpu,
++// identical to naps_meta_300). When needed, a trailing zero record pads the stream to a 16-byte
++// multiple. Publishing Tools 2.79 stores the TLV stream as plaintext.
+ //
+-// naps_meta_300 RECORD (48 bytes, all values little-endian):
++// naps_meta_300 RECORD (72 bytes, all values little-endian):
+ // 0x00 u64 = 0 reserved (record start offset)
+ // 0x08 u64 = 0 reserved
+ // 0x10 u64 = R inner-image leading extent size (= innerImageSize - 0x20000)
+-// 0x18 u64 = 0x3E9 (1001) constant NAPS-meta kind/version id
++// 0x18 u64 = 1 descriptor version
+ // 0x20 u64 = R inner-image leading extent size (repeated)
+-// 0x28 u64 = 0x20000 fixed trailing extent size
++// 0x28 u64 = 0x10000 PFS block size
++// 0x30 u64 = 0x3E9 (1001) constant NAPS-meta kind id
++// 0x38 u64 = R + 0x10000
++// 0x40 u64 = 0x20000 fixed trailing extent size
+ // R = innerImageSize - 0x20000 in the verified publisher APP and AC profiles.
+ 
+ using System;
+@@ -41,7 +44,7 @@ namespace LibProsperoPkg.PKG;
+ /// <summary>
+ /// Public description of one 256-KiB NAPS mapping block supplied to an optional integrity override.
+ /// The library computes the publisher weak checksum, SHA3-256 and rolling hash from
+-/// <see cref="Plaintext"/>. A provider is only needed to override those values or to supply the
++/// <see cref="Plaintext"/> or its file-backed source. A provider is only needed to override those values or to supply the
+ /// physical-block <c>obcc</c> table after the publisher AES-XTS transform.
+ /// </summary>
+ public readonly record struct ProsperoNapsIntegrityBlock(
+@@ -55,7 +58,17 @@ public readonly record struct ProsperoNapsIntegrityBlock(
+     long OnDiskOffset,
+     uint OnDiskLength,
+     ReadOnlyMemory<byte> Plaintext,
+-    byte[] Sha3Digest);
++    byte[] Sha3Digest)
++{
++    /// <summary>Publisher weak checksum over the uncompressed input block.</summary>
++    public ulong InputChecksum { get; init; }
++
++    /// <summary>Publisher rolling hash over the uncompressed input block.</summary>
++    public ulong RollingHash { get; init; }
++
++    internal string? PlaintextSourcePath { get; init; }
++    internal long PlaintextSourceOffset { get; init; }
++}
+ 
+ /// <summary>
+ /// Complete input for producing the protected <c>ihsh</c>, <c>rhsh</c> and <c>obcc</c> portions of
+@@ -79,6 +92,9 @@ public sealed class ProsperoNapsIntegrityContext
+     /// </summary>
+     public string? PhysicalInnerImagePath { get; init; }
+ 
++    /// <summary>Byte offset of the physical image within <see cref="PhysicalInnerImagePath"/>.</summary>
++    public long PhysicalInnerImageOffset { get; init; }
++
+     /// <summary>
+     /// Publisher <c>pfs-image-key</c> returned by <c>sc2 estimate</c> (32 bytes). This is distinct
+     /// from the passcode/content-id EKPFS used by the ordinary inner PFS key schedule.
+@@ -91,6 +107,28 @@ public sealed class ProsperoNapsIntegrityContext
+     /// <summary>Mapping blocks in the exact order used by <c>i2ob/i2op/ihsh/rhsh</c>.</summary>
+     public required IReadOnlyList<ProsperoNapsIntegrityBlock> MappingBlocks { get; init; }
+ 
++    /// <summary>Reads one mapping block when a file-backed build leaves <c>Plaintext</c> empty.</summary>
++    public byte[] ReadPlaintextBlock(int index)
++    {
++        ProsperoNapsIntegrityBlock block = MappingBlocks[index];
++        if (!block.Plaintext.IsEmpty || block.PlainSize == 0)
++            return block.Plaintext.ToArray();
++        bool sourceBacked = !string.IsNullOrWhiteSpace(block.PlaintextSourcePath);
++        string? path = sourceBacked ? block.PlaintextSourcePath : PhysicalInnerImagePath;
++        if (string.IsNullOrWhiteSpace(path) ||
++            (!sourceBacked && block.OnDiskLength != block.PlainSize))
++            throw new InvalidDataException("The mapping block has no readable plaintext source.");
++        var bytes = new byte[checked((int)block.PlainSize)];
++        using var input = new FileStream(
++            path, FileMode.Open, FileAccess.Read, FileShare.Read,
++            bufferSize: 1 << 20, FileOptions.RandomAccess);
++        input.Position = sourceBacked
++            ? block.PlaintextSourceOffset
++            : checked(PhysicalInnerImageOffset + block.OnDiskOffset);
++        input.ReadExactly(bytes);
++        return bytes;
++    }
++
+     /// <summary>Number of physical 64-KiB blocks represented by <c>obdg/obcc</c>.</summary>
+     public int PhysicalInnerBlockCount => checked((int)(InnerImageSize / 0x10000));
+ }
+@@ -124,36 +162,36 @@ public interface IProsperoNapsIntegrityProvider
+ /// <summary>
+ /// Builder for the PS5 <c>naps_meta_*.dat</c> records emitted into the SI segment of a
+ /// <c>nwonly</c> finalized image. In the verified Publishing Tools 2.79 APP/AC profile, the
+-/// four <c>naps_meta_300/301/302/308</c> files contain the same 48-byte descriptor within one
++/// four <c>naps_meta_300/301/302/308</c> files contain the same 72-byte descriptor within one
+ /// package. The descriptor is derived from the inner-image geometry; <c>naps_meta_18.dat</c> is the
+-/// AES-128-XTS TLV metric blob built by <c>BuildMeta18</c> from the finalized image and its
++/// plaintext TLV metric blob built by <c>BuildMeta18</c> from the finalized image and its
+ /// content-file set. See <see cref="ProsperoSiArchive"/>.
+ /// </summary>
+ public static class ProsperoNapsMeta
+ {
+     /// <summary>On-disk size of the <c>naps_meta_300/301/302/308</c> descriptor record, in bytes.</summary>
+-    public const int Meta300Length = 48;
++    public const int Meta300Length = 72;
+ 
+     /// <summary>
+-    /// Constant NAPS-meta kind/version id stored at offset 0x18 of every verified APP/AC
++    /// Constant NAPS-meta kind id stored at offset 0x30 of every verified APP/AC
+     /// <c>naps_meta_300</c> record (<c>0x3E9</c> = 1001).
+     /// </summary>
+     public const ulong Meta300KindId = 0x3E9;
+ 
+     /// <summary>
+-    /// PFS block size (64 KiB) used by the type-18 mapping tables. This is not the value stored at
+-    /// offset 0x28 of <c>naps_meta_300</c>; that field is the fixed 128-KiB trailing extent.
++    /// PFS block size (64 KiB) used by the type-18 mapping tables and stored at offset 0x28 of
++    /// <c>naps_meta_300</c>.
+     /// </summary>
+     public const ulong PfsBlockSize = 0x10000;
+ 
+     /// <summary>Fixed 128-KiB trailing extent encoded by the NAPS meta-300 profile.</summary>
+     public const ulong Meta300TrailingExtentSize = 0x20000;
+ 
+-    /// <summary>The four <c>naps_meta_*</c> ids that share the 48-byte descriptor.</summary>
++    /// <summary>The four <c>naps_meta_*</c> ids that share the 72-byte descriptor.</summary>
+     public static ReadOnlySpan<int> Meta300Ids => [300, 301, 302, 308];
+ 
+     /// <summary>
+-    /// Builds the 48-byte <c>naps_meta_300</c> descriptor (also used verbatim for ids 301,
++    /// Builds the 72-byte <c>naps_meta_300</c> descriptor (also used verbatim for ids 301,
+     /// 302 and 308) from the inner-image data-region size.
+     /// </summary>
+     /// <param name="innerImageDataRegionSize">
+@@ -161,16 +199,19 @@ public static class ProsperoNapsMeta
+     /// inner-image content that precedes the inner image's own metadata block. Equals
+     /// <c>innerImageSize - 0x20000</c> in the verified publisher profile.
+     /// </param>
+-    /// <returns>A fresh 48-byte array containing the descriptor.</returns>
++    /// <returns>A fresh 72-byte array containing the descriptor.</returns>
+     public static byte[] BuildMeta300(ulong innerImageDataRegionSize)
+     {
+         byte[] record = new byte[Meta300Length];
+         Span<byte> s = record;
+         // 0x00, 0x08 already zero.
+         BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x10, 8), innerImageDataRegionSize);
+-        BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x18, 8), Meta300KindId);
++        BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x18, 8), 1);
+         BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x20, 8), innerImageDataRegionSize);
+-        BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x28, 8), Meta300TrailingExtentSize);
++        BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x28, 8), PfsBlockSize);
++        BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x30, 8), Meta300KindId);
++        BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x38, 8), checked(innerImageDataRegionSize + PfsBlockSize));
++        BinaryPrimitives.WriteUInt64LittleEndian(s.Slice(0x40, 8), Meta300TrailingExtentSize);
+         return record;
+     }
+ 
+@@ -202,11 +243,11 @@ public static class ProsperoNapsMeta
+         [0x3C, 0xBA, 0x10, 0x7D, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+ 
+     /// <summary>
+-    /// Builds the encrypted <c>naps_meta_18.dat</c> metric blob for a finalized image. The plaintext TLV
++    /// Builds the plaintext <c>naps_meta_18.dat</c> metric blob for a finalized image. The TLV
+     /// carries the inner-image geometry (phdr), the content-file table (file/fstr), the per-block info
+     /// tables (ibcl/i2ob/i2op/ihsh/rhsh) with real block digests over <paramref name="mountImage"/>, the
+-    /// outer digest (obdg), a fixed marker (twek) and the four 48-byte descriptor records
+-    /// (pgpl/pgil/pgpi/pgpu). The stream is padded to a 16-byte multiple and AES-128-XTS encrypted.
++    /// outer digest (obdg), a fixed marker (twek) and the four 72-byte descriptor records
++    /// (pgpl/pgil/pgpi/pgpu). The stream is padded to a 16-byte multiple.
+     /// </summary>
+     /// <param name="innerImageSize">Block-aligned inner-image size (finalized-image header offset 0xA0).</param>
+     /// <param name="mountImage">The finalized FIH+PFS+CNT mount image; block digests are computed over it.</param>
+@@ -228,7 +269,7 @@ public static class ProsperoNapsMeta
+     /// <paramref name="pfsImageSeed"/> to generate exact <c>obcc</c> values in-process.
+     /// </param>
+     /// <param name="pfsImageSeed">Optional 16-byte publisher PFS image seed.</param>
+-    /// <returns>The encrypted blob (length a multiple of 16), or an empty array when inputs are insufficient.</returns>
++    /// <returns>The plaintext blob (length a multiple of 16), or an empty array when inputs are insufficient.</returns>
+     public static byte[] BuildMeta18(
+         ulong innerImageSize, byte[] mountImage, IReadOnlyList<(string Path, long Size)> contentFiles,
+         LibProsperoPkg.PFS.ProsperoPs5InnerImageResult? inner = null,
+@@ -240,7 +281,7 @@ public static class ProsperoNapsMeta
+         ArgumentNullException.ThrowIfNull(contentFiles);
+         return BuildMeta18Core(
+             innerImageSize, mountImage.LongLength, mountImage, contentFiles, inner,
+-            integrityProvider, pfsImageKey, pfsImageSeed);
++            integrityProvider, pfsImageKey, pfsImageSeed, default);
+     }
+ 
+     /// <summary>
+@@ -260,7 +301,23 @@ public static class ProsperoNapsMeta
+         ArgumentNullException.ThrowIfNull(inner);
+         return BuildMeta18Core(
+             innerImageSize, mountImageSize, [], contentFiles, inner,
+-            integrityProvider, pfsImageKey, pfsImageSeed);
++            integrityProvider, pfsImageKey, pfsImageSeed, default);
++    }
++
++    internal static byte[] BuildMeta18WithPhysicalBlockDigests(
++        ulong innerImageSize, long mountImageSize,
++        IReadOnlyList<(string Path, long Size)> contentFiles,
++        LibProsperoPkg.PFS.ProsperoPs5InnerImageResult inner,
++        ReadOnlyMemory<byte> physicalBlockDigests,
++        IProsperoNapsIntegrityProvider? integrityProvider = null,
++        byte[]? pfsImageKey = null,
++        byte[]? pfsImageSeed = null)
++    {
++        ArgumentNullException.ThrowIfNull(contentFiles);
++        ArgumentNullException.ThrowIfNull(inner);
++        return BuildMeta18Core(
++            innerImageSize, mountImageSize, [], contentFiles, inner,
++            integrityProvider, pfsImageKey, pfsImageSeed, physicalBlockDigests);
+     }
+ 
+     private static byte[] BuildMeta18Core(
+@@ -269,7 +326,8 @@ public static class ProsperoNapsMeta
+         LibProsperoPkg.PFS.ProsperoPs5InnerImageResult? inner,
+         IProsperoNapsIntegrityProvider? integrityProvider,
+         byte[]? pfsImageKey,
+-        byte[]? pfsImageSeed)
++        byte[]? pfsImageSeed,
++        ReadOnlyMemory<byte> physicalBlockDigests)
+     {
+         if (innerImageSize < PfsBlockSize || mountImageSize < Meta18BlockSize)
+             return [];
+@@ -279,12 +337,15 @@ public static class ProsperoNapsMeta
+ 
+         uint innerBlocks = (uint)(innerImageSize / PfsBlockSize);
+         int outerBlocks = checked((int)(mountImageSize / Meta18BlockSize));
++        if (!physicalBlockDigests.IsEmpty &&
++            physicalBlockDigests.Length != checked((int)innerBlocks * 32))
++            throw new InvalidDataException("The precomputed physical-block digest table has the wrong length.");
+ 
+         // nwonly: build ibcl/i2ob/i2op/ihsh/file over the compressed INNER-image NAPS block map so the
+         // installer derives a nonzero, 0x10000-aligned content package_size and clears the 0x80b21185
+         // geometry gate. Legacy inners pass inner==null and keep the outer identity-map behavior.
+         List<Meta18Block>? blocks = inner is not null ? BuildInnerBlocks(inner) : null;
+-        int metaFirstBlockIndex = blocks is null ? -1 : blocks.FindIndex(b => b.Tail == Meta300KindId);
++        int metaFirstBlockIndex = blocks is null ? -1 : blocks.FindIndex(b => !b.IsHole && b.Tail == Meta300KindId);
+         ProsperoNapsIntegrityContext integrityContext =
+             BuildIntegrityContext(
+                 innerImageSize, mountImage, inner, blocks, pfsImageKey, pfsImageSeed);
+@@ -306,14 +367,14 @@ public static class ProsperoNapsMeta
+ 
+         var plain = new List<byte>(4096);
+ 
+-        // phdr: [ver=1, 0x50, physical inner blocks, physical data bytes before the final
+-        // 64-KiB block, 1, blockSize] (six u32).
++        // phdr: [ver=1, 0x50, physical inner blocks, mapping block size, 1,
++        // physical block size] (six u32). The mapping unit is always 256 KiB.
+         {
+             Span<byte> p = stackalloc byte[0x18];
+             WriteU32(p, 0x00, 1);
+             WriteU32(p, 0x04, 0x50);
+             WriteU32(p, 0x08, innerBlocks);
+-            WriteU32(p, 0x0C, checked((uint)(innerImageSize - PfsBlockSize)));
++            WriteU32(p, 0x0C, 0x40000);
+             WriteU32(p, 0x10, 1);
+             WriteU32(p, 0x14, (uint)PfsBlockSize);
+             WriteRecord(plain, "phdr", 1, p);
+@@ -540,20 +601,25 @@ public static class ProsperoNapsMeta
+ 
+         // obdg: one SHA3-256 digest per physical block of pfs_image.dat.
+         {
+-            var body = new byte[checked((int)innerBlocks * 32)];
+-            using Stream? image = inner?.OpenImage();
+-            byte[] block = new byte[Meta18BlockSize];
+-            for (int i = 0; i < innerBlocks; i++)
++            byte[] body = physicalBlockDigests.IsEmpty
++                ? new byte[checked((int)innerBlocks * 32)]
++                : physicalBlockDigests.ToArray();
++            if (physicalBlockDigests.IsEmpty)
+             {
+-                ReadOnlySpan<byte> input = ReadOnlySpan<byte>.Empty;
+-                if (image is not null &&
+-                    image.Length >= checked((long)(i + 1) * Meta18BlockSize))
++                using Stream? image = inner?.OpenImage();
++                byte[] block = new byte[Meta18BlockSize];
++                for (int i = 0; i < innerBlocks; i++)
+                 {
+-                    image.Position = (long)i * Meta18BlockSize;
+-                    image.ReadExactly(block);
+-                    input = block;
++                    ReadOnlySpan<byte> input = ReadOnlySpan<byte>.Empty;
++                    if (image is not null &&
++                        image.Length >= checked((long)(i + 1) * Meta18BlockSize))
++                    {
++                        image.Position = (long)i * Meta18BlockSize;
++                        image.ReadExactly(block);
++                        input = block;
++                    }
++                    ProsperoImageDigests.Sha3_256(input).CopyTo(body, i * 32);
+                 }
+-                ProsperoImageDigests.Sha3_256(input).CopyTo(body, i * 32);
+             }
+             WriteRecord(plain, "obdg", 1, body);
+         }
+@@ -567,7 +633,7 @@ public static class ProsperoNapsMeta
+             1,
+             outerBlockCheckCodes);
+ 
+-        // pgpl/pgil/pgpi/pgpu: the 48-byte descriptor, identical to naps_meta_300.
++        // pgpl/pgil/pgpi/pgpu: the 72-byte descriptor, identical to naps_meta_300.
+         {
+             byte[] desc = BuildMeta300FromInnerImageSize(innerImageSize);
+             WriteRecord(plain, "pgpl", 1, desc);
+@@ -580,22 +646,24 @@ public static class ProsperoNapsMeta
+         WriteRecord(plain, "gith", 1, Encoding.ASCII.GetBytes(
+             "7553c74caeba25754fbd4bee717652da631c08e4\0"));
+ 
+-        // zero: trailing pad record sized so the plaintext ends on a 16-byte boundary.
+-        {
+-            int pad = (16 - (plain.Count % 16)) % 16;
+-            WriteRecord(plain, "zero", 1, new byte[pad]);
+-        }
++        // zero: only present when the preceding records do not already end on a 16-byte boundary.
++        int pad = (16 - (plain.Count % 16)) % 16;
++        if (pad != 0) WriteRecord(plain, "zero", 1, new byte[pad]);
+ 
+-        return AesXtsTransform(plain.ToArray(), decrypt: false);
++        return plain.ToArray();
+     }
+ 
+     /// <summary>
+-    /// Decrypts a publisher <c>naps_meta_18.dat</c> blob to its TLV plaintext. This is the
+-    /// inverse of <c>BuildMeta18</c> and is intended for validation and round-trip tooling.
++    /// Returns a publisher plaintext <c>naps_meta_18.dat</c> TLV, while retaining read support for
++    /// legacy PS5Library AES-XTS output.
+     /// </summary>
+     public static byte[] DecryptMeta18(byte[] encrypted)
+     {
+         ArgumentNullException.ThrowIfNull(encrypted);
++        if (encrypted.Length >= 40 && encrypted.AsSpan(0, 4).SequenceEqual("rdhp"u8) &&
++            encrypted[4] == 1 && encrypted[5] == 0 && encrypted[6] == 0 && encrypted[7] == 0 &&
++            BinaryPrimitives.ReadUInt64LittleEndian(encrypted.AsSpan(8, 8)) == 24)
++            return (byte[])encrypted.Clone();
+         if (encrypted.Length == 0 || encrypted.Length % 16 != 0)
+             throw new InvalidDataException(
+                 "naps_meta_18.dat must be a non-empty multiple of the 16-byte AES-XTS block size.");
+@@ -693,7 +761,8 @@ public static class ProsperoNapsMeta
+     private readonly record struct Meta18Block(
+         ulong Co, uint Cs, uint Ps, uint C0, uint C1, uint Flag,
+         bool IsHole, uint OwnerFlag, ulong Tail, long OnDiskOffset, uint OnDiskLen,
+-        ReadOnlyMemory<byte> Plaintext, long LogicalOffset);
++        ReadOnlyMemory<byte> Plaintext, long LogicalOffset, long PlaintextImageOffset = -1,
++        string? PlaintextSourcePath = null, long PlaintextSourceOffset = -1);
+ 
+     private static int PlacementBlockCount(LibProsperoPkg.PFS.ProsperoPs5InnerPlacement placement)
+     {
+@@ -738,26 +807,34 @@ public static class ProsperoNapsMeta
+             uint ownerFlag = IsExecutableAfid(inner, checked((int)p.Afid)) ? 1u : 0u;
+             if (p.CompressionBlocks is { Count: > 0 } chunks)
+             {
++                if (p.PlainDataStoredInImage)
++                    throw new InvalidDataException("A file-backed inner payload cannot be marked compressed.");
+                 long onDisk = p.OnDiskOffset;
+-                int compressedPlainOffset = 0;
++                long compressedPlainOffset = 0;
+                 foreach (LibProsperoPkg.PFS.ProsperoInnerDataBlockChunk chunk in chunks)
+                 {
+                     uint cs = checked((uint)chunk.CompressedSize);
+                     uint ps = checked((uint)chunk.UncompressedSize);
+-                    if (compressedPlainOffset > p.PlainData.Length - checked((int)ps))
++                    bool sourceBacked = p.PlainDataPath is not null;
++                    if (!sourceBacked && compressedPlainOffset > p.PlainData.Length - checked((int)ps))
+                         throw new InvalidDataException(
+                             $"NAPS placement {i} does not retain the 0x{ps:X}-byte plaintext block at 0x{compressedPlainOffset:X}.");
+-                    uint c0 = chunk.IsMultiChunk
++                    uint c0 = chunk.IsStored ? Math.Min(ps, 0x20000u) : chunk.IsMultiChunk
+                         ? checked((uint)chunk.FirstChunkCompressedSize)
+                         : cs;
+-                    uint c1 = chunk.IsMultiChunk ? cs - c0 : 0;
+-                    uint flag = c1 > 0 ? 0x40450000u : 0x40050000u;
++                    uint c1 = chunk.IsStored || chunk.IsMultiChunk ? cs - c0 : 0;
++                    uint flag = chunk.IsStored ? (c1 > 0 ? 0x40990000u : 0x40090000u)
++                        : c1 > 0 ? 0x40450000u : 0x40050000u;
+                     blocks.Add(new Meta18Block(
+                         Co: (ulong)onDisk, Cs: cs, Ps: ps, C0: c0, C1: c1,
+                         Flag: flag, IsHole: false, OwnerFlag: ownerFlag, Tail: 0,
+                         OnDiskOffset: onDisk, OnDiskLen: cs,
+-                        Plaintext: p.PlainData.Slice(compressedPlainOffset, checked((int)ps)),
+-                        LogicalOffset: checked(p.LogicalOffset + compressedPlainOffset)));
++                        Plaintext: sourceBacked
++                            ? ReadOnlyMemory<byte>.Empty
++                            : p.PlainData.Slice(checked((int)compressedPlainOffset), checked((int)ps)),
++                        LogicalOffset: checked(p.LogicalOffset + compressedPlainOffset),
++                        PlaintextSourcePath: p.PlainDataPath,
++                        PlaintextSourceOffset: sourceBacked ? compressedPlainOffset : -1));
+                     onDisk += cs;
+                     compressedPlainOffset += checked((int)ps);
+                 }
+@@ -773,15 +850,24 @@ public static class ProsperoNapsMeta
+                 uint c0 = Math.Min(ps, 0x20000u);
+                 uint c1 = ps - c0;
+                 long onDisk = p.OnDiskOffset + plainOffset;
+-                if (plainOffset > p.PlainData.Length - checked((int)ps))
+-                    throw new InvalidDataException(
+-                        $"NAPS raw placement {i} does not retain the 0x{ps:X}-byte plaintext block at 0x{plainOffset:X}.");
++                ReadOnlyMemory<byte> plaintext = ReadOnlyMemory<byte>.Empty;
++                long plaintextImageOffset = -1;
++                if (p.PlainDataStoredInImage)
++                    plaintextImageOffset = onDisk;
++                else
++                {
++                    if (plainOffset > p.PlainData.Length - checked((int)ps))
++                        throw new InvalidDataException(
++                            $"NAPS raw placement {i} does not retain the 0x{ps:X}-byte plaintext block at 0x{plainOffset:X}.");
++                    plaintext = p.PlainData.Slice(checked((int)plainOffset), checked((int)ps));
++                }
+                 blocks.Add(new Meta18Block(
+                     Co: (ulong)onDisk, Cs: ps, Ps: ps, C0: c0, C1: c1,
+-                    Flag: 0x40090000u, IsHole: false, OwnerFlag: ownerFlag, Tail: 0,
++                    Flag: c1 > 0 ? 0x40990000u : 0x40090000u, IsHole: false, OwnerFlag: ownerFlag, Tail: 0,
+                     OnDiskOffset: onDisk, OnDiskLen: ps,
+-                    Plaintext: p.PlainData.Slice(checked((int)plainOffset), checked((int)ps)),
+-                    LogicalOffset: checked(p.LogicalOffset + plainOffset)));
++                    Plaintext: plaintext,
++                    LogicalOffset: checked(p.LogicalOffset + plainOffset),
++                    PlaintextImageOffset: plaintextImageOffset));
+                 plainOffset += ps;
+                 if (ps == 0)
+                     break;
+@@ -886,15 +972,25 @@ public static class ProsperoNapsMeta
+         byte[]? pfsImageKey,
+         byte[]? pfsImageSeed)
+     {
+-        var mapped = new List<ProsperoNapsIntegrityBlock>();
++        var mapped = new ProsperoNapsIntegrityBlock[
++            blocks?.Count ?? mountImage.Length / Meta18BlockSize];
+         if (blocks is not null)
+         {
+-            for (int i = 0; i < blocks.Count; i++)
++            using Stream? plaintextImage = blocks.Any(block => block.PlaintextImageOffset >= 0)
++                ? inner?.OpenImage()
++                : null;
++            const int BatchBytes = 64 * 1024 * 1024;
++            byte[]? plaintextBuffer = blocks.Any(block =>
++                    block.PlaintextImageOffset >= 0 || block.PlaintextSourcePath is not null)
++                ? new byte[BatchBytes]
++                : null;
++
++            static ProsperoNapsIntegrityBlock Reduce(
++                int index, Meta18Block block, ReadOnlySpan<byte> plaintext)
+             {
+-                Meta18Block block = blocks[i];
+-                byte[] digest = ProsperoImageDigests.Sha3_256(block.Plaintext.Span);
+-                mapped.Add(new ProsperoNapsIntegrityBlock(
+-                    i,
++                byte[] digest = ProsperoImageDigests.Sha3_256(plaintext);
++                return new ProsperoNapsIntegrityBlock(
++                    index,
+                     block.Co,
+                     block.Cs,
+                     block.Ps,
+@@ -904,7 +1000,94 @@ public static class ProsperoNapsMeta
+                     block.OnDiskOffset,
+                     block.OnDiskLen,
+                     block.Plaintext,
+-                    digest));
++                    digest)
++                {
++                    InputChecksum = ComputeInputChecksum(plaintext),
++                    RollingHash = ComputeRollingHash(plaintext),
++                    PlaintextSourcePath = block.PlaintextSourcePath,
++                    PlaintextSourceOffset = block.PlaintextSourceOffset,
++                };
++            }
++
++            FileStream? plaintextSource = null;
++            string? plaintextSourcePath = null;
++            try
++            {
++                for (int i = 0; i < blocks.Count;)
++                {
++                    Meta18Block first = blocks[i];
++                    bool fromImage = first.PlaintextImageOffset >= 0;
++                    if (!fromImage && first.PlaintextSourcePath is null)
++                    {
++                        mapped[i] = Reduce(i, first, first.Plaintext.Span);
++                        i++;
++                        continue;
++                    }
++
++                    Stream source;
++                    long sourceOffset;
++                    if (fromImage)
++                    {
++                        source = plaintextImage!;
++                        sourceOffset = first.PlaintextImageOffset;
++                    }
++                    else
++                    {
++                        if (!string.Equals(
++                                plaintextSourcePath, first.PlaintextSourcePath,
++                                StringComparison.Ordinal))
++                        {
++                            plaintextSource?.Dispose();
++                            plaintextSource = new FileStream(
++                                first.PlaintextSourcePath!, FileMode.Open, FileAccess.Read, FileShare.Read,
++                                bufferSize: 1 << 20, FileOptions.SequentialScan);
++                            plaintextSourcePath = first.PlaintextSourcePath;
++                        }
++                        source = plaintextSource!;
++                        sourceOffset = first.PlaintextSourceOffset;
++                    }
++
++                    int end = i;
++                    int bytes = 0;
++                    long nextOffset = sourceOffset;
++                    var offsets = new List<int>();
++                    while (end < blocks.Count)
++                    {
++                        Meta18Block candidate = blocks[end];
++                        long candidateOffset = fromImage
++                            ? candidate.PlaintextImageOffset
++                            : candidate.PlaintextSourceOffset;
++                        bool sameSource = fromImage
++                            ? candidate.PlaintextImageOffset >= 0
++                            : candidate.PlaintextImageOffset < 0 && string.Equals(
++                                candidate.PlaintextSourcePath, first.PlaintextSourcePath,
++                                StringComparison.Ordinal);
++                        int length = checked((int)candidate.Ps);
++                        if (!sameSource || candidateOffset != nextOffset ||
++                            length > BatchBytes - bytes)
++                            break;
++                        offsets.Add(bytes);
++                        bytes += length;
++                        nextOffset += length;
++                        end++;
++                    }
++
++                    source.Position = sourceOffset;
++                    source.ReadExactly(plaintextBuffer!.AsSpan(0, bytes));
++                    int batchStart = i;
++                    System.Threading.Tasks.Parallel.For(0, end - batchStart, j =>
++                    {
++                        Meta18Block block = blocks[batchStart + j];
++                        mapped[batchStart + j] = Reduce(
++                            batchStart + j, block,
++                            plaintextBuffer.AsSpan(offsets[j], checked((int)block.Ps)));
++                    });
++                    i = end;
++                }
++            }
++            finally
++            {
++                plaintextSource?.Dispose();
+             }
+         }
+         else
+@@ -912,9 +1095,9 @@ public static class ProsperoNapsMeta
+             int count = mountImage.Length / Meta18BlockSize;
+             for (int i = 0; i < count; i++)
+             {
+-                byte[] digest = ProsperoImageDigests.Sha3_256(
+-                    mountImage.AsSpan(i * Meta18BlockSize, Meta18BlockSize));
+-                mapped.Add(new ProsperoNapsIntegrityBlock(
++                ReadOnlySpan<byte> plaintext = mountImage.AsSpan(i * Meta18BlockSize, Meta18BlockSize);
++                byte[] digest = ProsperoImageDigests.Sha3_256(plaintext);
++                mapped[i] = new ProsperoNapsIntegrityBlock(
+                     i,
+                     (ulong)i * Meta18BlockSize,
+                     Meta18BlockSize,
+@@ -925,7 +1108,11 @@ public static class ProsperoNapsMeta
+                     (long)i * Meta18BlockSize,
+                     Meta18BlockSize,
+                     mountImage.AsMemory(i * Meta18BlockSize, Meta18BlockSize),
+-                    digest));
++                    digest)
++                {
++                    InputChecksum = ComputeInputChecksum(plaintext),
++                    RollingHash = ComputeRollingHash(plaintext),
++                };
+             }
+         }
+ 
+@@ -935,6 +1122,7 @@ public static class ProsperoNapsMeta
+             MountImage = mountImage,
+             PhysicalInnerImage = inner?.Image ?? ReadOnlyMemory<byte>.Empty,
+             PhysicalInnerImagePath = inner?.ImagePath,
++            PhysicalInnerImageOffset = inner?.ImageOffset ?? 0,
+             PfsImageKey = pfsImageKey ?? ReadOnlyMemory<byte>.Empty,
+             PfsImageSeed = pfsImageSeed ?? ReadOnlyMemory<byte>.Empty,
+             MappingBlocks = mapped,
+@@ -946,8 +1134,8 @@ public static class ProsperoNapsMeta
+         var result = new byte[checked(context.MappingBlocks.Count * 8)];
+         for (int i = 0; i < context.MappingBlocks.Count; i++)
+         {
+-            ulong checksum = ComputeInputChecksum(context.MappingBlocks[i].Plaintext.Span);
+-            BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(i * 8, 8), checksum);
++            BinaryPrimitives.WriteUInt64LittleEndian(
++                result.AsSpan(i * 8, 8), context.MappingBlocks[i].InputChecksum);
+         }
+         return result;
+     }
+@@ -957,8 +1145,8 @@ public static class ProsperoNapsMeta
+         var result = new byte[checked(context.MappingBlocks.Count * 8)];
+         for (int i = 0; i < context.MappingBlocks.Count; i++)
+         {
+-            ulong hash = ComputeRollingHash(context.MappingBlocks[i].Plaintext.Span);
+-            BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(i * 8, 8), hash);
++            BinaryPrimitives.WriteUInt64LittleEndian(
++                result.AsSpan(i * 8, 8), context.MappingBlocks[i].RollingHash);
+         }
+         return result;
+     }
+@@ -989,27 +1177,29 @@ public static class ProsperoNapsMeta
+         context.PfsImageSeed.Span.CopyTo(label[4..]);
+         byte[] digest = HMACSHA256.HashData(context.PfsImageKey.Span, label);
+ 
+-        using var xts = new XtsBlockTransform(
+-            digest.AsSpan(16, 16).ToArray(),
+-            digest.AsSpan(0, 16).ToArray());
++        byte[] dataKey = digest.AsSpan(16, 16).ToArray();
++        byte[] tweakKey = digest.AsSpan(0, 16).ToArray();
+         using Stream image = OpenPhysicalInnerImage(context);
+-        var block = new byte[Meta18BlockSize];
+-        for (int i = 0; i < count; i++)
++        const int BatchBlocks = 1024;
++        var batch = new byte[BatchBlocks * Meta18BlockSize];
++        for (int first = 0; first < count; first += BatchBlocks)
+         {
+-            Array.Clear(block);
+-            int read = 0;
+-            while (read < block.Length)
+-            {
+-                int got = image.Read(block, read, block.Length - read);
+-                if (got == 0) break;
+-                read += got;
+-            }
+-            if (read != block.Length)
+-                throw new EndOfStreamException(
+-                    $"Physical pfs_image.dat ended in block {i}: read 0x{read:X} of 0x{block.Length:X} bytes.");
+-            xts.CryptSector(block, (ulong)i, encrypt: true);
+-            BinaryPrimitives.WriteUInt32LittleEndian(
+-                result.AsSpan(i * 4, 4), ProsperoCrc32C.Compute(block));
++            int blocks = Math.Min(BatchBlocks, count - first);
++            image.ReadExactly(batch.AsSpan(0, checked(blocks * Meta18BlockSize)));
++            int batchFirst = first;
++            System.Threading.Tasks.Parallel.For(
++                0, blocks,
++                () => new XtsBlockTransform(dataKey, tweakKey),
++                (i, _, xts) =>
++                {
++                    Span<byte> block = batch.AsSpan(i * Meta18BlockSize, Meta18BlockSize);
++                    xts.CryptSector(block, checked((ulong)(batchFirst + i)), encrypt: true);
++                    BinaryPrimitives.WriteUInt32LittleEndian(
++                        result.AsSpan(checked((batchFirst + i) * 4)),
++                        ProsperoCrc32C.Compute(block));
++                    return xts;
++                },
++                xts => xts.Dispose());
+         }
+         return result;
+     }
+@@ -1017,13 +1207,18 @@ public static class ProsperoNapsMeta
+     private static Stream OpenPhysicalInnerImage(ProsperoNapsIntegrityContext context)
+     {
+         if (!string.IsNullOrWhiteSpace(context.PhysicalInnerImagePath))
+-            return new FileStream(
++        {
++            var file = new FileStream(
+                 context.PhysicalInnerImagePath,
+                 FileMode.Open,
+                 FileAccess.Read,
+                 FileShare.Read,
+                 bufferSize: 1 << 20,
+                 FileOptions.SequentialScan);
++            return new LibProsperoPkg.Util.SubStream(
++                file, context.PhysicalInnerImageOffset,
++                checked((long)context.InnerImageSize), leaveOpen: false);
++        }
+         if (!context.PhysicalInnerImage.IsEmpty)
+             return new MemoryStream(context.PhysicalInnerImage.ToArray(), writable: false);
+         throw new InvalidDataException(
+diff --git a/src/LibProsperoPkg/PKG/ProsperoPackageArchive.cs b/src/LibProsperoPkg/PKG/ProsperoPackageArchive.cs
+index 9620d2058c8e4e7f7552777bea2776932dc337d9..b5fdab88d182bfcd3ac3203aef30a3f2f756d969 100644
+--- a/src/LibProsperoPkg/PKG/ProsperoPackageArchive.cs
++++ b/src/LibProsperoPkg/PKG/ProsperoPackageArchive.cs
+@@ -25,6 +25,7 @@ public readonly record struct ProsperoPackageMap(
+ /// </summary>
+ public static class ProsperoPackageArchive
+ {
++    private static ReadOnlySpan<byte> PprPlaintextSeed => "PPRPLAIN-NOAUTH!"u8;
+     public const int OuterBlockSize = 0x10000;
+ 
+     /// <summary>
+@@ -204,6 +205,15 @@ public static class ProsperoPackageArchive
+     /// </summary>
+     public static byte[] DecodeInnerPfs(string packagePath, string passcode)
+     {
++        ProsperoPackageMap map = Inspect(packagePath);
++        if (map.OuterSuperblockIndex == 0)
++        {
++            using var input = File.OpenRead(packagePath);
++            ProsperoPkg legacyPackage = ProsperoPkgReader.Read(input);
++            using var legacyLogical = new MemoryStream();
++            DecodeLegacyInnerPfs(input, legacyPackage, map, legacyLogical, passcode);
++            return legacyLogical.ToArray();
++        }
+         byte[] outerImage = DecryptOuterPfs(packagePath, passcode);
+         ProsperoPkg package = ProsperoPkgReader.Read(packagePath);
+         int outerSuperblock = ResolveSuperblockIndex(package.Fih!, outerImage.Length / OuterBlockSize);
+@@ -232,16 +242,25 @@ public static class ProsperoPackageArchive
+             outputDirectory, "." + Path.GetFileName(outputFullPath) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+         try
+         {
+-            DecryptOuterPfs(packagePath, outerPath, passcode);
+             ProsperoPackageMap map = Inspect(packagePath);
+-            using var outer = new FileStream(
+-                outerPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+-                bufferSize: 1024 * 1024, FileOptions.RandomAccess);
+             using (var logical = new FileStream(
+                 logicalPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None,
+                 bufferSize: 1024 * 1024, FileOptions.RandomAccess))
+             {
+-                DecodeInnerPfs(outer, map.OuterSuperblockIndex, logical);
++                if (map.OuterSuperblockIndex == 0)
++                {
++                    using var input = File.OpenRead(packagePath);
++                    ProsperoPkg package = ProsperoPkgReader.Read(input);
++                    DecodeLegacyInnerPfs(input, package, map, logical, passcode);
++                }
++                else
++                {
++                    DecryptOuterPfs(packagePath, outerPath, passcode);
++                    using var outer = new FileStream(
++                        outerPath, FileMode.Open, FileAccess.Read, FileShare.Read,
++                        bufferSize: 1024 * 1024, FileOptions.RandomAccess);
++                    DecodeInnerPfs(outer, map.OuterSuperblockIndex, logical);
++                }
+             }
+             File.Move(logicalPath, outputFullPath, overwrite: true);
+         }
+@@ -414,6 +433,12 @@ public static class ProsperoPackageArchive
+             throw new InvalidDataException("Outer PFS superblock ICV mismatch.");
+ 
+         byte[] seed = sb.AsSpan(0x370, 16).ToArray();
++        if (seed.AsSpan().SequenceEqual(PprPlaintextSeed))
++        {
++            CopyRange(input, output, map.OuterPfsOffset, map.OuterPfsSize);
++            output.Flush();
++            return;
++        }
+         byte[] ekpfs = ProsperoPfsKeys.DeriveEkpfs(cnt.ContentId, passcode);
+         var (tweak, data) = ProsperoPfsKeys.DeriveImageEncryptionKeys(ekpfs, seed);
+         ProsperoOuterBlockKind[] kinds = InferBlockKinds(fih, blocks, superblock);
+@@ -441,6 +466,17 @@ public static class ProsperoPackageArchive
+         ProsperoNapsImage.Decompress(packedStream, layout, destination);
+     }
+ 
++    private static void DecodeLegacyInnerPfs(
++        Stream packageStream, ProsperoPkg package, ProsperoPackageMap map,
++        Stream destination, string passcode)
++    {
++        ProsperoPkgHeader cnt = package.Header ?? throw new InvalidDataException("Embedded CNT header is unavailable.");
++        byte[] ekpfs = ProsperoPfsKeys.DeriveEkpfs(cnt.ContentId, passcode);
++        using var source = new LibProsperoPkg.Util.StreamReader(packageStream, map.OuterPfsOffset);
++        var outer = new PfsReader(source, ekpfs: ekpfs);
++        FindFile(outer, "pfs_image.dat").CopyTo(destination, decompress: true);
++    }
++
+     private static long LocateSuperblock(Stream input, int blockSize = OuterBlockSize)
+     {
+         if (!input.CanRead || !input.CanSeek)
+diff --git a/src/LibProsperoPkg/PKG/ProsperoPkg.cs b/src/LibProsperoPkg/PKG/ProsperoPkg.cs
+index 71e4861c57d862dfcb99bf5a02363d42bd08c2f6..cb28ef06d97405c8a384b1b309731446a6587087 100644
+--- a/src/LibProsperoPkg/PKG/ProsperoPkg.cs
++++ b/src/LibProsperoPkg/PKG/ProsperoPkg.cs
+@@ -41,6 +41,9 @@ public sealed class ProsperoPkgHeader
+ 
+     /// <summary>The content type (header offset 0x74).</summary>
+     public uint ContentType { get; init; }
++
++    /// <summary>Content role flags (header offset 0x78), including patch markers.</summary>
++    public uint ContentFlags { get; init; }
+ }
+ 
+ /// <summary>
+diff --git a/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs b/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs
+index d0cebfda9858c455cab922206df380a833efe2f6..1c15ce446aece034f75bcc13f3725852cbeb383a 100644
+--- a/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs
++++ b/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs
+@@ -35,7 +35,7 @@ namespace LibProsperoPkg.PKG;
+ /// <summary>
+ /// Reproducible inputs captured during a CNT build for producing the trailing debug SI segment
+ /// (<c>sce_suppl</c> ZIP). The package builder surfaces these out of
+-/// <see cref="ProsperoPkgBuilder.Build(ProsperoPkgBuildProperties,string,out byte[],out ProsperoSiBuildInputs,Action{string})"/>
++/// <see cref="ProsperoPkgBuilder"/>
+ /// so the finalizer (<see cref="ProsperoFihBuilder.BuildFromCnt"/>) can assemble the segment from the
+ /// finalized mount image via <c>ProsperoSiArchive.BuildDebugSiSegment</c>.
+ /// </summary>
+@@ -89,6 +89,12 @@ internal sealed class ProsperoSiBuildInputs
+     /// <summary>Temporary file owned by the high-level finalizer and deleted after SI generation.</summary>
+     public string? TemporaryInnerImagePath { get; init; }
+ 
++    /// <summary>Separate outer PFS consumed and deleted by the high-level split finalizer.</summary>
++    public string? TemporaryOuterImagePath { get; init; }
++
++    /// <summary>Final FIH file that already contains its outer PFS at offset 0x10000.</summary>
++    public string? PreparedFihPath { get; init; }
++
+     public long NestedMetaBaseBlocks { get; init; }
+     public uint ContentVersionHigh { get; init; }
+     public int AppFileCount { get; init; }
+@@ -187,6 +193,9 @@ public sealed class ProsperoPkgBuildProperties
+     /// </summary>
+     public bool UsePublisherPprNaps { get; init; } = true;
+ 
++    /// <summary>Encrypt the publisher outer PFS. Disable for a kstuff-lite plaintext/no-auth image.</summary>
++    public bool EncryptOuterPfs { get; init; } = true;
++
+     /// <summary>Optional 16-byte key for publisher NAPS outer-block CMAC tags.</summary>
+     public byte[]? NapsOuterBlockCmacKey { get; init; }
+ 
+@@ -247,6 +256,9 @@ public sealed class ProsperoPkgBuildProperties
+     /// Returned records are validated before ordinary CNT entry encryption.
+     /// </summary>
+     public IProsperoLicenseProvider? LicenseProvider { get; init; }
++
++    /// <summary>Reports actual source bytes consumed while assembling the package image.</summary>
++    public Action<long, long>? Progress { get; init; }
+ }
+ 
+ /// <summary>
+@@ -316,7 +328,7 @@ public static class ProsperoPkgBuilder
+     /// Also surfaces the reproducible <see cref="ProsperoSiBuildInputs"/> so the finalizer can assemble the
+     /// trailing debug SI segment (<c>sce_suppl</c>) from the finalized mount image.
+     /// </summary>
+-    internal static string Build(ProsperoPkgBuildProperties props, string outputPath, out byte[]? nestedImageDigest, out ProsperoSiBuildInputs? siInputs, Action<string>? logger = null)
++    internal static string Build(ProsperoPkgBuildProperties props, string outputPath, out byte[]? nestedImageDigest, out ProsperoSiBuildInputs? siInputs, Action<string>? logger = null, bool splitPublisherImage = false, string? preparedFihPath = null)
+     {
+         nestedImageDigest = null;
+         siInputs = null;
+@@ -401,7 +413,7 @@ public static class ProsperoPkgBuilder
+             {
+                 BuildPublisherImage(
+                     props, sourceFolder, outputPath, innerRoot, log,
+-                    out capturedNestedDigest, out capturedSi);
++                    out capturedNestedDigest, out capturedSi, splitPublisherImage, preparedFihPath);
+                 return;
+             }
+             var innerProps = new PfsProperties
+@@ -572,19 +584,28 @@ public static class ProsperoPkgBuilder
+     private static void BuildPublisherImage(
+         ProsperoPkgBuildProperties props, string sourceFolder, string outputPath,
+         FSDir innerRoot, Action<string> log,
+-        out byte[] nestedImageDigest, out ProsperoSiBuildInputs? siInputs)
++        out byte[] nestedImageDigest, out ProsperoSiBuildInputs? siInputs,
++        bool splitPublisherImage, string? preparedFihPath)
+     {
++        siInputs = null;
+         log("Preparing publisher data-first PPR-PFS and NAPS image...");
+         long fileTime = ToUnixSeconds(props.TimeStamp);
+         string publisherTempStem = Path.Combine(
+             Path.GetTempPath(), "libprospero-publisher-" + Guid.NewGuid().ToString("N"));
+         string packedImagePath = publisherTempStem + ".pfs_image.dat";
+         string napsLayoutPath = publisherTempStem + ".naps_pkg_layout.dat";
+-        string outerImagePath = publisherTempStem + ".outer.pfs";
+-        ProsperoPs5InnerImageResult inner =
+-            new ProsperoPs5InnerImageAssembler(
+-                fileTime, 0, props.PublisherAfidAssignments)
+-                .BuildFromFsTreeToFile(innerRoot, packedImagePath);
++        bool directFih = preparedFihPath is not null;
++        if (directFih && (props.EncryptOuterPfs || !splitPublisherImage))
++            throw new ArgumentException(
++                "Direct FIH output requires a split plaintext publisher image.", nameof(preparedFihPath));
++        string outerImagePath = preparedFihPath ?? publisherTempStem + ".outer.pfs";
++        string innerImagePath = directFih ? outerImagePath : packedImagePath;
++        var innerAssembler = new ProsperoPs5InnerImageAssembler(
++            fileTime, 0, props.PublisherAfidAssignments,props.Progress);
++        ProsperoPs5InnerImageResult inner = directFih
++            ? innerAssembler.BuildFromFsTreeToFileAtOffset(
++                innerRoot, innerImagePath, ProsperoPkgLayout.FihHeaderRegionSize)
++            : innerAssembler.BuildFromFsTreeToFile(innerRoot, innerImagePath);
+         byte[] napsLayout = ProsperoNwonlyNapsGenerator.Generate(
+             inner,
+             outerBlockCmacKey: props.NapsOuterBlockCmacKey);
+@@ -632,12 +653,12 @@ public static class ProsperoPkgBuilder
+         bool outerReady = false;
+         try
+         {
+-            outer = ProsperoOuterPfsBuilder.BuildForPackageToFile(
+-                [
++            var outerFiles = new ProsperoOuterFileSource[]
++            {
+                     new ProsperoOuterFileSource
+                     {
+                         Name = "pfs_image.dat",
+-                        Path = packedImagePath,
++                        Path = innerImagePath,
+                         SizeCompressed = inner.Ndblock * BlockSize,
+                         Signed = false,
+                     },
+@@ -647,14 +668,20 @@ public static class ProsperoPkgBuilder
+                         Path = napsLayoutPath,
+                         Signed = true,
+                     },
+-                ],
+-                new ProsperoOuterPfsBuildParameters
++            };
++            var outerParameters = new ProsperoOuterPfsBuildParameters
+                 {
+                     TimestampSeconds = fileTime,
+                     Seed = outerSeed,
+-                },
+-                ekpfs,
+-                outerImagePath);
++                };
++            outer = directFih
++                ? ProsperoOuterPfsBuilder.BuildForPackageToFileAtOffset(
++                    outerFiles, outerParameters, outerImagePath,
++                    ProsperoPkgLayout.FihHeaderRegionSize,
++                    reusedFirstFileLength: inner.ImageLength)
++                : ProsperoOuterPfsBuilder.BuildForPackageToFile(
++                    outerFiles, outerParameters, ekpfs, outerImagePath,
++                    encryptOutput: props.EncryptOuterPfs);
+             outerReady = true;
+         }
+         finally
+@@ -683,28 +710,76 @@ public static class ProsperoPkgBuilder
+         // imagedigs stores each SHA3 digest with its byte order reversed.
+         imagedigsEntry.FileData = ProsperoImageDigests.ToStoredImageDigestTable(outer.ImageDigests);
+ 
+-        bool transferredInnerFile = false;
++        var contentFiles = inner.Nodes
++            // Empty files have inode/dirent metadata but no data-bearing AFID and are omitted
++            // from the publisher NAPS meta18 "file" records.
++            .Where(n => !n.IsDirectory && n.ParentInode >= 0 && n.Size != 0)
++            .OrderBy(n => n.Afid)
++            .Select(n => (Path: n.FullPath.TrimStart('/'), Size: n.Size))
++            .ToList();
++        contentFiles.Add(("*PFSmetadata", outer.PfsSize));
++
++        byte[]? napsMeta18 = props.NapsMeta18;
++        ProsperoPs5InnerImageResult? retainedInner = inner;
++        if (splitPublisherImage)
++        {
++            if (napsMeta18 is null)
++            {
++                long mountImageSize = checked(
++                    ProsperoPkgLayout.FihHeaderRegionSize + outer.PfsSize +
++                    (long)pkg.Header.pfs_image_offset);
++                byte[] generated = directFih
++                    ? ProsperoNapsMeta.BuildMeta18WithPhysicalBlockDigests(
++                        packedAlignedSize, mountImageSize, contentFiles, inner,
++                        outer.ImageDigests.AsMemory(
++                            0, checked((int)(packedAlignedSize / BlockSize) * 32)),
++                        props.NapsIntegrityProvider, pfsImageKey, outerSeed)
++                    : ProsperoNapsMeta.BuildMeta18(
++                        packedAlignedSize, mountImageSize, contentFiles, inner,
++                        props.NapsIntegrityProvider, pfsImageKey, outerSeed);
++                if (generated.Length != 0) napsMeta18 = generated;
++            }
++            retainedInner = null;
++            TryDeleteTemp(packedImagePath);
++        }
++
++        bool transferredOuterFile = false;
+         try
+         {
+-            long totalSize = checked(
+-                (long)(pkg.Header.body_offset + pkg.Header.body_size + pkg.Header.pfs_image_size));
++            long metadataSize = checked((long)pkg.Header.pfs_image_offset);
++            long totalSize = splitPublisherImage
++                ? metadataSize
++                : checked(metadataSize + (long)pkg.Header.pfs_image_size);
+             using var fs = new FileStream(
+                 outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+             fs.SetLength(totalSize);
+-            fs.Position = (long)pkg.Header.pfs_image_offset;
+-            using (var outerStream = new FileStream(
+-                       outerImagePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+-                       bufferSize: 1 << 20, FileOptions.SequentialScan))
++            using var outerStream = new FileStream(
++                outerImagePath, FileMode.Open, FileAccess.Read, FileShare.Read,
++                bufferSize: 1 << 20,
++                splitPublisherImage ? FileOptions.RandomAccess : FileOptions.SequentialScan);
++            if (!splitPublisherImage)
++            {
++                fs.Position = metadataSize;
+                 outerStream.CopyTo(fs);
+-            log(
+-                $"Writing publisher outer PFS at 0x{pkg.Header.pfs_image_offset:X} " +
+-                $"({outer.PfsSize:N0} bytes)...");
++                log(
++                    $"Writing publisher outer PFS at 0x{pkg.Header.pfs_image_offset:X} " +
++                    $"({outer.PfsSize:N0} bytes)...");
++            }
++            else
++            {
++                log(directFih
++                    ? $"Wrote the {outer.PfsSize:N0}-byte outer PFS directly into the final package."
++                    : $"Prepared split publisher metadata; finalizing from the {outer.PfsSize:N0}-byte outer PFS.");
++            }
+ 
+             ProsperoPfsImageXmlOptions siXml = FinishContainer(
+                 pkg, fs, props, nestedImageDigest, log, napsLayout.Length, nestedMetaBaseBlocks,
+                 contentVersionHigh, (int)napsFileCount, appFileCount,
+                 inner.SparseAfidHoles.Count, inner.EmptyFileLogicalOffsets.Count,
+-                outer.SuperblockIndex);
++                outer.SuperblockIndex,
++                separatePfsImage: splitPublisherImage ? outerStream : null,
++                separatePfsOffset: directFih ? ProsperoPkgLayout.FihHeaderRegionSize : 0);
++            if (directFih) siXml.PfsBlockCrc32C = outer.BlockCrc32C;
+             byte[]? playGoChunkDat =
+                 (pkg.Entries.FirstOrDefault(e => (uint)e.Id == PlayGoChunkDatEntryId)
+                     as GenericEntry)?.FileData;
+@@ -718,15 +793,6 @@ public static class ProsperoPkgBuilder
+                 Outer1Size = mountImageTotal - (long)packedAlignedSize,
+             };
+ 
+-            var contentFiles = inner.Nodes
+-                // Empty files have inode/dirent metadata but no data-bearing AFID and are omitted
+-                // from the publisher NAPS meta18 "file" records.
+-                .Where(n => !n.IsDirectory && n.ParentInode >= 0 && n.Size != 0)
+-                .OrderBy(n => n.Afid)
+-                .Select(n => (Path: n.FullPath.TrimStart('/'), Size: n.Size))
+-                .ToList();
+-            contentFiles.Add(("*PFSmetadata", outer.PfsSize));
+-
+             siInputs = new ProsperoSiBuildInputs
+             {
+                 Xml = siXml,
+@@ -736,7 +802,7 @@ public static class ProsperoPkgBuilder
+                 FihNapsFileCount = napsFileCount,
+                 SparseAfidCount = inner.SparseAfidHoles.Count,
+                 EmptyFileCount = inner.EmptyFileLogicalOffsets.Count,
+-                NapsMeta18 = props.NapsMeta18,
++                NapsMeta18 = napsMeta18,
+                 NapsIntegrityProvider = props.NapsIntegrityProvider,
+                 NapsPfsImageKey = pfsImageKey,
+                 NapsPfsImageSeed = outerSeed,
+@@ -744,20 +810,22 @@ public static class ProsperoPkgBuilder
+                 // seven NAPS/PlayGo records and no common/etc/pfsimage.xml.
+                 IncludePfsImageXml = false,
+                 ContentFiles = contentFiles,
+-                InnerImage = inner,
+-                TemporaryInnerImagePath = packedImagePath,
++                InnerImage = retainedInner,
++                TemporaryInnerImagePath = directFih ? null : packedImagePath,
++                TemporaryOuterImagePath = splitPublisherImage && !directFih ? outerImagePath : null,
++                PreparedFihPath = directFih ? outerImagePath : null,
+                 NestedMetaBaseBlocks = nestedMetaBaseBlocks,
+                 ContentVersionHigh = contentVersionHigh,
+                 AppFileCount = appFileCount,
+                 OuterSuperblockIndex = outer.SuperblockIndex,
+             };
+-            transferredInnerFile = true;
++            transferredOuterFile = splitPublisherImage && !directFih;
+         }
+         finally
+         {
+-            TryDeleteTemp(outerImagePath);
+-            if (!transferredInnerFile)
+-                TryDeleteTemp(packedImagePath);
++            if (!directFih && !transferredOuterFile) TryDeleteTemp(outerImagePath);
++            if (directFih && siInputs is null) TryDeleteTemp(outerImagePath);
++            if (siInputs is null) TryDeleteTemp(packedImagePath);
+         }
+     }
+ 
+@@ -1477,21 +1545,28 @@ public static class ProsperoPkgBuilder
+         // playgo-ficm.dat (0x2011) — NOT inner-PFS files. imagedigs is laid out as a placeholder sized
+         // to the outer block count and filled with the captured per-block digests after the image is
+         // written. The PlayGo file/inode count drives playgo-ficm.dat (count) and playgo-hash-table.dat
+-        // (count / 2), matching reference samples. Any entry the source folder already
+-        // supplied (e.g. a hand-authored playgo-chunk.dat) is respected and not regenerated.
++        // (count / 2), matching reference samples. Source PlayGo metadata is never reused because
++        // its geometry belongs to the old image.
+         if (!noData)
+         {
++            const int playgoChunkCount = LibProsperoPkg.PlayGo.ProsperoPlayGo.DefaultChunkCount;
+             foreach (var (id, name, data) in new (uint Id, string? Name, byte[] Data)[]
+             {
+                 (ImagedigsEntryId, null, new byte[imagedigsSize]),
+                 (0x1001u, "playgo-chunk.dat", LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildChunkDat(
+                     props.ContentId, mchunk0Size, mchunk1Size, publisherNwonly,
+                     includePublisherLabels:
+-                        publisherNwonly && props.VolumeType == ProsperoVolumeType.Application)),
++                        publisherNwonly && props.VolumeType == ProsperoVolumeType.Application,
++                    chunkCount: playgoChunkCount)),
+                 (0x2010u, "playgo-hash-table.dat", playgoPaths is not null
+                     ? LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildHashTable(playgoPaths)
+                     : LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildHashTable(playgoFileCount / 2)),
+-                (0x2011u, "playgo-ficm.dat", LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildFicm(playgoFileCount)),
++                (0x2011u, "playgo-ficm.dat", publisherNwonly
++                    ? LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildFicm(
++                        LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildAutomaticFileChunkIds(
++                            checked((int)(playgoFileCount / 2)), playgoChunkCount))
++                    : LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildFicm(playgoFileCount)),
++                (0x3000u, "playgo-scenario.json", LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildScenarioJson()),
+             })
+             {
+                 if (!pkg.Entries.Any(e => (uint)e.Id == id))
+@@ -1522,7 +1597,7 @@ public static class ProsperoPkgBuilder
+         uint id = (uint)entry.Id;
+         if (id == 0x2000) return 0;                    // param.json
+         if (id is 0x040A or 0x1001) return 2;          // image digests + chunk descriptor
+-        if (id is 0x2010 or 0x2011) return 4;          // PlayGo tails
++        if (id is 0x2010 or 0x2011 or 0x3000) return 4; // PlayGo tails
+         if (id is >= 0x1200 and < 0x2000 || id is 0x1006 or 0x100D) return 3; // media
+         return 1;                                      // backend-authored sce_sys blobs
+     }
+@@ -1589,8 +1664,7 @@ public static class ProsperoPkgBuilder
+         ulong containerSize = pkg.Header.pfs_image_offset;
+         if (pkg.Header.content_type == ContentTypeGd)
+             pkg.Header.promote_size = checked((uint)containerSize);
+-        bool publisherProfile = pkg.EntryKeys.Length == 0xB80;
+-        ulong leadingFihSize = publisherProfile ? ProsperoImageDigests.FihRelativeImageOffset : 0;
++        ulong leadingFihSize = noData ? 0 : ProsperoImageDigests.FihRelativeImageOffset;
+         pkg.Header.package_size = pkg.Header.mount_image_size = noData
+             ? 0
+             : leadingFihSize + pkg.Header.pfs_image_size + containerSize;
+@@ -1604,7 +1678,7 @@ public static class ProsperoPkgBuilder
+                 .DefaultIfEmpty(pkg.Header.body_offset + pkg.Header.body_size)
+                 .First();
+         }
+-        else if (publisherProfile)
++        else
+         {
+             MetaEntry mandatory = pkg.Metas.Metas.First(m => (uint)m.id == ImagedigsEntryId);
+             pkg.Header.mandatory_size = mandatory.DataOffset;
+@@ -1650,7 +1724,8 @@ public static class ProsperoPkgBuilder
+         Action<string> log, long nestedImageSize = 0, long nestedMetaBaseBlocks = 0,
+         uint nwonlyContentVersionHi = 0, int nwonlyNapsFileCount = 0,
+         int nwonlyAppFileCount = 0, int nwonlySparseAfidCount = 0,
+-        int nwonlyEmptyFileCount = 0, int knownOuterSuperblockIndex = -1)
++        int nwonlyEmptyFileCount = 0, int knownOuterSuperblockIndex = -1,
++        Stream? separatePfsImage = null, long separatePfsOffset = 0)
+     {
+         // Read the outer PFS image (encrypted blocks + plaintext superblock) so the PS5 mount digests can be
+         // computed for the mount image — both are SHA3-256, NOT SHA-256:
+@@ -1659,24 +1734,27 @@ public static class ProsperoPkgBuilder
+         // The FIH block is cycle-free here (it depends only on the image + sizes, never on the CNT digest
+         // table) so it is identical to the one ProsperoFihBuilder.BuildFromCnt writes when finalizing.
+         log("Calculating PFS image digests (SHA3-256)...");
+-        long imageOffset = checked((long)pkg.Header.pfs_image_offset);
++        Stream imageStream = separatePfsImage ?? s;
++        long imageOffset = separatePfsImage is null
++            ? checked((long)pkg.Header.pfs_image_offset)
++            : separatePfsOffset;
+         long imageSize = checked((long)pkg.Header.pfs_image_size);
+         long sbOffset = knownOuterSuperblockIndex >= 0
+             ? checked((long)knownOuterSuperblockIndex * ProsperoImageDigests.BlockSize)
+-            : LocateSuperblockInRange(s, imageOffset, imageSize);
++            : LocateSuperblockInRange(imageStream, imageOffset, imageSize);
+         byte[]? sblockDigest = null;
+         byte[] imageDigest;
+         if (sbOffset >= 0)
+         {
+             byte[] superblock = ReadStreamRange(
+-                s, checked(imageOffset + sbOffset), ProsperoImageDigests.BlockSize);
++                imageStream, checked(imageOffset + sbOffset), ProsperoImageDigests.BlockSize);
+             sblockDigest = ProsperoImageDigests.ComputeSblockDigest(superblock);
+             imageDigest = sblockDigest;
+             pkg.Header.image_seed = superblock.AsSpan(PfsSeedOffset, 16).ToArray();
+         }
+         else
+         {
+-            imageDigest = HashStreamRange(s, imageOffset, imageSize);
++            imageDigest = HashStreamRange(imageStream, imageOffset, imageSize);
+         }
+         pkg.Header.pfs_image_digest = imageDigest;
+         byte[] fihBlock = ProsperoFihBuilder.BuildFihHeaderBlock(
+@@ -2527,7 +2605,6 @@ public static class ProsperoPkgBuilder
+         ("pic2.png", 0x2040),
+         ("snd0.at9", 0x1240),
+         ("save_data.png", 0x100D),
+-        ("playgo-chunk.dat", 0x1001),
+     ];
+ 
+     // sce_sys images that are re-encoded as a same-named *.dds (BC7) sibling,
+@@ -2543,9 +2620,9 @@ public static class ProsperoPkgBuilder
+     ];
+ 
+     // Entry ids that are produced by dedicated builders and must not be re-emitted from a
+-    // supplied sce_sys file: param.sfo (PS4, unused on PS5) and the PlayGo chunk descriptor,
+-    // which is regenerated when absent.
+-    private static readonly HashSet<uint> GeneratedEntryIds = [0x1000];
++    // supplied sce_sys file: param.sfo (PS4, unused on PS5) and PlayGo metadata, whose ranges
++    // must describe the newly packed image rather than the source dump's previous geometry.
++    private static readonly HashSet<uint> GeneratedEntryIds = [0x1000, 0x1001, 0x2010, 0x2011, 0x3000];
+ 
+     private static IEnumerable<Entry> CollectMediaEntries(
+         string sourceFolder, ProsperoVolumeType volumeType, string contentId,
+diff --git a/src/LibProsperoPkg/PKG/ProsperoPkgReader.cs b/src/LibProsperoPkg/PKG/ProsperoPkgReader.cs
+index c636cc81407126edd45a377d3bf1f50aef013c45..4d8ec307e9b8b8f38576cd840d96729fb4263d06 100644
+--- a/src/LibProsperoPkg/PKG/ProsperoPkgReader.cs
++++ b/src/LibProsperoPkg/PKG/ProsperoPkgReader.cs
+@@ -130,6 +130,7 @@ public static class ProsperoPkgReader
+             ContentId = ReadNulTrimmedAscii(span.Slice(0x40, ProsperoPkgLayout.ContentIdSize)),
+             DrmType = BinaryPrimitives.ReadUInt32BigEndian(span[0x70..]),
+             ContentType = BinaryPrimitives.ReadUInt32BigEndian(span[0x74..]),
++            ContentFlags = BinaryPrimitives.ReadUInt32BigEndian(span[0x78..]),
+         };
+     }
+ 
+diff --git a/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs b/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
+index 040288734c33674892ce632b39b58362f2d1f1c0..3c2bf76f75f7ecda7e8661efee76856baaba2b52 100644
+--- a/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
++++ b/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
+@@ -11,10 +11,11 @@
+ // pfsimage.xml:
+ //
+ // common/etc/naps_meta_18.dat 3440 B (per-package metric blob)
+-// common/etc/naps_meta_300/301/302/308.dat 48 B each, byte-identical
++// common/etc/naps_meta_300/301/302/308.dat 72 B each, byte-identical
+ // common/etc/pfsimage.xml optional rich package-configuration descriptor
+ // common/etc/playgo-chunk.dat 416 B copied from the inner PFS
+ // config/<content-id>/playgo-chunk.crc 68 B
++// config/<content-id>/playgo-scenario.json 370 B copied byte-identically from the CNT
+ //
+ // Records and external inputs:
+ // * ZIP container framing, STORED entries and the exact member paths -> reproduced.
+@@ -23,7 +24,7 @@
+ // reproduced from values the caller/builder already knows.
+ // * playgo-chunk.dat -> reproduced (it is copied verbatim from the inner PFS the builder makes).
+ // * naps_meta_300/301/302/308.dat -> reproduced byte-exact by ProsperoNapsMeta.BuildMeta300 (a
+-// plaintext 48-byte descriptor derived from the inner-image geometry; validated against three reference
++// plaintext 72-byte descriptor derived from the inner-image geometry; validated against the SDK output
+ // debug packages).
+ // * Every pfsimage.xml digest is reproducible and is supplied by the high-level builder:
+ // game-digest (== inner sblock-digest, SHA3-256 of the plaintext outer superblock), param-digest
+@@ -34,8 +35,8 @@
+ // digests, ProsperoPkgBuilder.ComputeGeneralDigests, Validated byte-exact against the reference debug
+ // packages). Direct low-level callers can pass these through ProsperoPfsImageXmlOptions; omission
+ // produces explicit warnings and zero placeholders.
+-// * naps_meta_18.dat is generated and AES-XTS encrypted from the built image geometry, locally
+-// derived PFS image key and seed. playgo-chunk.crc is generated from the finalized mount image.
++// * naps_meta_18.dat is generated as the SDK plaintext TLV stream from the built image geometry.
++// playgo-chunk.crc is generated from the finalized mount image.
+ // Publisher-authored values may still be supplied as byte-exact overrides.
+ // See LibProsperoPKG/docs/implementation-status.md.
+ 
+@@ -145,6 +146,8 @@ public sealed class ProsperoPfsImageXmlOptions
+     /// <summary>Shared PFS image size in bytes.</summary>
+     public long PfsImageSize { get; set; }
+ 
++    internal byte[]? PfsBlockCrc32C { get; set; }
++
+     /// <summary>Inner-PFS superblock seed (16 bytes), stamped into the encrypted image header.</summary>
+     public byte[]? PfsImageSeed { get; set; }
+ 
+@@ -270,7 +273,7 @@ public static class ProsperoSiArchive
+     public const string NapsMeta18Path = "common/etc/naps_meta_18.dat";
+ 
+     /// <summary>
+-    /// The four record ids whose files share one byte-identical 48-byte payload within a verified
++    /// The four record ids whose files share one byte-identical 72-byte payload within a verified
+     /// Publishing Tools 2.79 APP/AC <c>nwonly</c> package, in file order.
+     /// </summary>
+     public static ReadOnlySpan<int> NapsMeta300Ids => [300, 301, 302, 308];
+@@ -282,7 +285,8 @@ public static class ProsperoSiArchive
+     /// only when supplied and are never fabricated. The per-content-id <c>playgo-chunk.crc</c> is
+     /// either supplied verbatim via <paramref name="playGoChunkCrc"/> or, when
+     /// <paramref name="finalizedMountImage"/> is given instead, computed reproducibly from it with
+-    /// CRC-32C (see <c>ProsperoPlayGo.BuildChunkCrc</c>).
++    /// CRC-32C (see <c>ProsperoPlayGo.BuildChunkCrc</c>). When PlayGo metadata is present, the same
++    /// SDK scenario bytes used by the CNT are also written under the content-specific config path.
+     /// </summary>
+     public static IReadOnlyList<ProsperoSiMember> BuildMembers(
+         string contentId,
+@@ -305,7 +309,7 @@ public static class ProsperoSiArchive
+         var members = new List<ProsperoSiMember>();
+ 
+         // The reference member order in Downloads.pkg is naps_meta_* first, then pfsimage.xml, then
+-        // playgo-chunk.dat, then the per-content-id playgo-chunk.crc.
++        // playgo-chunk.dat, then the per-content-id playgo-chunk.crc and scenario metadata.
+         if (napsMeta18 is not null)
+             members.Add(new(NapsMeta18Path, napsMeta18));
+         if (napsMeta300 is not null)
+@@ -321,6 +325,8 @@ public static class ProsperoSiArchive
+             members.Add(new(PlayGoChunkDatPath, playGoChunkDat));
+         if (playGoChunkCrc is not null)
+             members.Add(new($"config/{contentId}/playgo-chunk.crc", playGoChunkCrc));
++        if (playGoChunkDat is not null)
++            members.Add(new($"config/{contentId}/playgo-scenario.json", ProsperoPlayGo.BuildScenarioJson()));
+ 
+         return members;
+     }
+@@ -342,6 +348,8 @@ public static class ProsperoSiArchive
+     ///   (the CNT's PlayGo chunk descriptor) when present.</item>
+     ///   <item><c>config/&lt;content-id&gt;/playgo-chunk.crc</c> computed by CRC-32C over the finalized
+     ///   mount image.</item>
++    ///   <item><c>config/&lt;content-id&gt;/playgo-scenario.json</c> copied byte-identically from the
++    ///   generated CNT scenario metadata.</item>
+     /// </list>
+     /// A caller-supplied publisher <c>naps_meta_18.dat</c> can be preserved verbatim; when omitted,
+     /// the reproducible serializer output is used where the selected profile supports it.
+@@ -416,7 +424,7 @@ public static class ProsperoSiArchive
+             pfsImageXml.ContentId,
+             xmlBytes,
+             playGoChunkDat: playGoChunkDat,
+-            napsMeta18: napsMeta18,           // protected per-package metric blob: preserve only.
++            napsMeta18: napsMeta18,           // preserve a supplied publisher metric blob verbatim.
+             napsMeta300: napsMeta300,
+             playGoChunkCrc: null,
+             finalizedMountImage: mountImage); // computes playgo-chunk.crc reproducibly (CRC-32C).
+@@ -488,7 +496,10 @@ public static class ProsperoSiArchive
+         try
+         {
+             mountImage.Position = 0;
+-            playGoChunkCrc = ProsperoPlayGo.BuildChunkCrc(mountImage, mountImage.Length);
++            playGoChunkCrc = pfsImageXml.PfsBlockCrc32C is { Length: > 0 } pfsCrc
++                ? ProsperoPlayGo.BuildChunkCrc(
++                    mountImage, mountImage.Length, pfsImageXml.PfsImageOffset, pfsCrc)
++                : ProsperoPlayGo.BuildChunkCrc(mountImage, mountImage.Length);
+         }
+         finally
+         {
+diff --git a/src/LibProsperoPkg/PlayGo/ProsperoPlayGo.cs b/src/LibProsperoPkg/PlayGo/ProsperoPlayGo.cs
+index 7a4f7c56f67260cf997e78c8b62d27dc4d46f9c9..6af0be5504d089c8e6af2734faa272d2f1082424 100644
+--- a/src/LibProsperoPkg/PlayGo/ProsperoPlayGo.cs
++++ b/src/LibProsperoPkg/PlayGo/ProsperoPlayGo.cs
+@@ -30,6 +30,8 @@ namespace LibProsperoPkg.PlayGo;
+ /// </summary>
+ public static class ProsperoPlayGo
+ {
++    public const int DefaultChunkCount = 100;
++
+     /// <summary>The fixed size of a PS5 <c>playgo-chunk.dat</c> for the single-chunk profile.</summary>
+     public const int ChunkDatSize = 0x1A0; // 416
+ 
+@@ -112,6 +114,54 @@ public static class ProsperoPlayGo
+         return crc;
+     }
+ 
++    internal static byte[] BuildChunkCrc(
++        Stream finalizedMountImage, long length, long knownOffset, ReadOnlySpan<byte> knownCrc)
++    {
++        ArgumentNullException.ThrowIfNull(finalizedMountImage);
++        if (!finalizedMountImage.CanRead || !finalizedMountImage.CanSeek)
++            throw new ArgumentException(
++                "Finalized mount-image stream must be readable and seekable.",
++                nameof(finalizedMountImage));
++        if (length < 0 || length > finalizedMountImage.Length - finalizedMountImage.Position)
++            throw new ArgumentOutOfRangeException(nameof(length));
++        if (knownOffset < 0 || knownOffset % ChunkCrcBlockSize != 0 || knownCrc.Length % 4 != 0)
++            throw new ArgumentOutOfRangeException(nameof(knownOffset));
++
++        long blockCount64 = checked(
++            (length + ChunkCrcBlockSize - 1) / ChunkCrcBlockSize);
++        int knownStart = checked((int)(knownOffset / ChunkCrcBlockSize));
++        int knownBlocks = knownCrc.Length / 4;
++        if ((long)knownStart + knownBlocks > blockCount64 ||
++            knownOffset + (long)knownBlocks * ChunkCrcBlockSize > length)
++            throw new ArgumentOutOfRangeException(nameof(knownCrc));
++        if (blockCount64 > int.MaxValue / 4)
++            throw new InvalidDataException("Mount image has too many blocks for a CRC table.");
++
++        byte[] crc = new byte[checked((int)blockCount64 * 4)];
++        knownCrc.CopyTo(crc.AsSpan(knownStart * 4));
++        byte[] block = new byte[ChunkCrcBlockSize];
++        long originalPosition = finalizedMountImage.Position;
++        try
++        {
++            for (int i = 0; i < (int)blockCount64; i++)
++            {
++                if (i >= knownStart && i < knownStart + knownBlocks) continue;
++                int count = (int)Math.Min(
++                    block.Length, length - (long)i * ChunkCrcBlockSize);
++                finalizedMountImage.Position = checked(
++                    originalPosition + (long)i * ChunkCrcBlockSize);
++                finalizedMountImage.ReadExactly(block.AsSpan(0, count));
++                uint value = ProsperoCrc32C.Compute(block.AsSpan(0, count));
++                BinaryPrimitives.WriteUInt32LittleEndian(crc.AsSpan(i * 4), value);
++            }
++        }
++        finally
++        {
++            finalizedMountImage.Position = originalPosition;
++        }
++        return crc;
++    }
++
+     /// <summary>
+     /// Builds the PS5 <c>sce_sys/playgo-chunk.dat</c> (<c>plgx</c> container, version 0x1000) for the
+     /// single-image / single-chunk / single-scenario profile used by PS5 system applications.
+@@ -135,10 +185,24 @@ public static class ProsperoPlayGo
+     public static byte[] BuildChunkDat(
+         string contentId, ulong chunkDataSize = 0, ulong chunkTailSize = 0,
+         bool publisherNwonly = false, bool includePublisherLabels = false)
++        => BuildChunkDat(
++            contentId, chunkDataSize, chunkTailSize,
++            publisherNwonly, includePublisherLabels, 1);
++
++    /// <summary>Builds <c>playgo-chunk.dat</c> with an explicit chunk count.</summary>
++    public static byte[] BuildChunkDat(
++        string contentId, ulong chunkDataSize, ulong chunkTailSize,
++        bool publisherNwonly, bool includePublisherLabels, int chunkCount)
+     {
+         ArgumentException.ThrowIfNullOrEmpty(contentId);
+         if (contentId.Length != 36)
+             throw new ArgumentException("Content id must be exactly 36 characters.", nameof(contentId));
++        if (chunkCount is < 1 or > 255)
++            throw new ArgumentOutOfRangeException(nameof(chunkCount));
++        if (chunkCount > 1)
++            return BuildMultiChunkDat(
++                contentId, SplitMainExtent(chunkDataSize, chunkCount), chunkTailSize,
++                publisherNwonly, includePublisherLabels);
+ 
+         byte[] d = new byte[ChunkDatSize];
+         var s = d.AsSpan();
+@@ -210,6 +274,157 @@ public static class ProsperoPlayGo
+         return d;
+     }
+ 
++    private static byte[] BuildMultiChunkDat(
++        string contentId, IReadOnlyList<ulong> mainSizes, ulong tailSize,
++        bool publisherNwonly, bool includePublisherLabels)
++    {
++        int chunkCount = mainSizes.Count;
++        int[] mainIndexes = new int[chunkCount];
++        int mainCount = 0;
++        for (int i = 0; i < chunkCount; i++)
++            mainIndexes[i] = mainSizes[i] == 0 ? -1 : mainCount++;
++        int mchunkCount = checked(mainCount + 1);
++
++        bool emptyLabels = publisherNwonly && !includePublisherLabels;
++        string[] chunkLabels = Enumerable.Range(0, chunkCount).Select(i => $"Chunk #{i}").ToArray();
++        int[] labelOffsets = new int[chunkCount];
++        int chunkLabelsSize = emptyLabels ? 1 : 0;
++        if (!emptyLabels)
++            for (int i = 0; i < chunkCount; i++)
++            {
++                labelOffsets[i] = chunkLabelsSize;
++                chunkLabelsSize = checked(chunkLabelsSize + Encoding.ASCII.GetByteCount(chunkLabels[i]) + 1);
++            }
++
++        int chunkAttrsOffset = 0x100;
++        int chunkAttrsSize = checked(chunkCount * 0x20);
++        int chunkMchunksOffset = checked(chunkAttrsOffset + chunkAttrsSize);
++        int chunkMchunksSize = checked(mchunkCount * 4);
++        int chunkLabelsOffset = Align16(checked(chunkMchunksOffset + chunkMchunksSize));
++        int mchunkAttrsOffset = Align16(checked(chunkLabelsOffset + chunkLabelsSize));
++        int mchunkAttrsSize = checked(mchunkCount * 0x10);
++        int scenarioAttrsOffset = checked(mchunkAttrsOffset + mchunkAttrsSize);
++        int scenarioChunksOffset = checked(scenarioAttrsOffset + 0x20);
++        int scenarioChunksSize = checked(chunkCount * 2);
++        int scenarioLabelsOffset = Align16(checked(scenarioChunksOffset + scenarioChunksSize));
++        int scenarioLabelsSize = emptyLabels ? 1 : "Scenario #0".Length + 1;
++        int fileSize = Align16(checked(scenarioLabelsOffset + scenarioLabelsSize));
++
++        byte[] d = new byte[fileSize];
++        Span<byte> s = d;
++        Encoding.ASCII.GetBytes("plgx").CopyTo(s);
++        BinaryPrimitives.WriteUInt16LittleEndian(s[0x04..], 0x1000);
++        BinaryPrimitives.WriteUInt16LittleEndian(s[0x08..], 1);
++        BinaryPrimitives.WriteUInt16LittleEndian(s[0x0A..], checked((ushort)chunkCount));
++        BinaryPrimitives.WriteUInt16LittleEndian(s[0x0E..], 1);
++        BinaryPrimitives.WriteUInt32LittleEndian(s[0x10..], checked((uint)fileSize));
++        BinaryPrimitives.WriteUInt16LittleEndian(s[0x16..], 1);
++        s[0x1E] = 0x85;
++        BinaryPrimitives.WriteUInt32LittleEndian(s[0x20..], checked((uint)mchunkCount));
++        s[0x24] = 1;
++        s[0x30] = 0x11;
++        BinaryPrimitives.WriteUInt64LittleEndian(s[0x38..], ulong.MaxValue);
++        Encoding.ASCII.GetBytes(contentId).CopyTo(s[0x40..]);
++
++        WritePtr(s, 0xC0, checked((uint)chunkAttrsOffset), checked((uint)chunkAttrsSize));
++        WritePtr(s, 0xC8, checked((uint)chunkMchunksOffset), checked((uint)chunkMchunksSize));
++        WritePtr(s, 0xD0, checked((uint)chunkLabelsOffset), checked((uint)chunkLabelsSize));
++        WritePtr(s, 0xD8, checked((uint)mchunkAttrsOffset), checked((uint)mchunkAttrsSize));
++        WritePtr(s, 0xE0, checked((uint)scenarioAttrsOffset), 0x20);
++        WritePtr(s, 0xE8, checked((uint)scenarioChunksOffset), checked((uint)scenarioChunksSize));
++        WritePtr(s, 0xF0, checked((uint)scenarioLabelsOffset), checked((uint)scenarioLabelsSize));
++
++        int refsOffset = 0;
++        for (int i = 0; i < chunkCount; i++)
++        {
++            int at = checked(chunkAttrsOffset + i * 0x20);
++            s[at] = 0x80;
++            s[at + 2] = 3;
++            BinaryPrimitives.WriteUInt16LittleEndian(
++                s[(at + 4)..], checked((ushort)((mainIndexes[i] >= 0 ? 1 : 0) + (i == 0 ? 1 : 0))));
++            s[at + 8] = 0x11;
++            BinaryPrimitives.WriteUInt64LittleEndian(s[(at + 0x10)..], ulong.MaxValue);
++            BinaryPrimitives.WriteUInt32LittleEndian(s[(at + 0x18)..], checked((uint)refsOffset));
++            BinaryPrimitives.WriteUInt32LittleEndian(s[(at + 0x1C)..], checked((uint)labelOffsets[i]));
++            if (mainIndexes[i] >= 0)
++            {
++                BinaryPrimitives.WriteUInt32LittleEndian(
++                    s[(chunkMchunksOffset + refsOffset)..], checked((uint)mainIndexes[i]));
++                refsOffset += 4;
++            }
++            if (i == 0)
++            {
++                BinaryPrimitives.WriteUInt32LittleEndian(
++                    s[(chunkMchunksOffset + refsOffset)..], checked((uint)mainCount));
++                refsOffset += 4;
++            }
++            if (!emptyLabels)
++                Encoding.ASCII.GetBytes(chunkLabels[i]).CopyTo(s[(chunkLabelsOffset + labelOffsets[i])..]);
++        }
++
++        ulong rangeOffset = 0;
++        for (int i = 0; i < chunkCount; i++)
++            if (mainIndexes[i] >= 0)
++            {
++                int at = checked(mchunkAttrsOffset + mainIndexes[i] * 0x10);
++                BinaryPrimitives.WriteUInt64LittleEndian(s[at..], rangeOffset);
++                BinaryPrimitives.WriteUInt64LittleEndian(s[(at + 8)..], mainSizes[i]);
++                rangeOffset = checked(rangeOffset + mainSizes[i]);
++            }
++        int tailAt = checked(mchunkAttrsOffset + mainCount * 0x10);
++        BinaryPrimitives.WriteUInt64LittleEndian(s[tailAt..], rangeOffset);
++        BinaryPrimitives.WriteUInt64LittleEndian(s[(tailAt + 8)..], tailSize);
++
++        BinaryPrimitives.WriteUInt64LittleEndian(s[scenarioAttrsOffset..], 0x21);
++        BinaryPrimitives.WriteUInt16LittleEndian(s[(scenarioAttrsOffset + 0x14)..], checked((ushort)chunkCount));
++        BinaryPrimitives.WriteUInt16LittleEndian(s[(scenarioAttrsOffset + 0x16)..], checked((ushort)chunkCount));
++        for (int i = 0; i < chunkCount; i++)
++            BinaryPrimitives.WriteUInt16LittleEndian(s[(scenarioChunksOffset + i * 2)..], checked((ushort)i));
++        if (!emptyLabels)
++            Encoding.ASCII.GetBytes("Scenario #0").CopyTo(s[scenarioLabelsOffset..]);
++        return d;
++    }
++
++    private static ulong[] SplitMainExtent(ulong size, int chunkCount)
++    {
++        ulong blocks = size / ChunkCrcBlockSize;
++        ulong remainder = size % ChunkCrcBlockSize;
++        ulong[] sizes = new ulong[chunkCount];
++        ulong perChunk = blocks / (ulong)chunkCount;
++        ulong extra = blocks % (ulong)chunkCount;
++        for (int i = 0; i < chunkCount; i++)
++            sizes[i] = checked((perChunk + ((ulong)i < extra ? 1UL : 0UL)) * ChunkCrcBlockSize);
++        sizes[^1] = checked(sizes[^1] + remainder);
++        return sizes;
++    }
++
++    private static int Align16(int value) => checked(value + 15) & ~15;
++
++    /// <summary>
++    /// Builds the default one-chunk PlayGo scenario emitted by Publishing Tools 2.79.
++    /// Keep the CRLF formatting: the same bytes are stored in both CNT and SI.
++    /// </summary>
++    public static byte[] BuildScenarioJson() => Encoding.UTF8.GetBytes(
++        "{\r\n" +
++        "  \"chunkDefaultLanguage\": \"en-US\",\r\n" +
++        "  \"chunkSupportedLanguages\": [\r\n" +
++        "    \"en-US\"\r\n" +
++        "  ],\r\n" +
++        "  \"scenarioCount\": 1,\r\n" +
++        "  \"scenarioDefaultId\": 0,\r\n" +
++        "  \"scenarioDefaultLanguage\": \"en-US\",\r\n" +
++        "  \"scenarios\": [\r\n" +
++        "    {\r\n" +
++        "      \"id\": 0,\r\n" +
++        "      \"type\": \"playmode\",\r\n" +
++        "      \"en-US\": {\r\n" +
++        "        \"title\": \"Scenario #0\",\r\n" +
++        "        \"description\": \"Default play scenario\"\r\n" +
++        "      }\r\n" +
++        "    }\r\n" +
++        "  ]\r\n" +
++        "}\r\n");
++
+     /// <summary>
+     /// Builds the PS5 <c>sce_sys/playgo-ficm.dat</c>. The file is a 16-byte header followed by a
+     /// <paramref name="fileCount"/>-byte per-file array (zero-filled in the reference samples), so its
+@@ -230,6 +445,24 @@ public static class ProsperoPlayGo
+         return d;
+     }
+ 
++    public static byte[] BuildFicm(IReadOnlyList<byte> fileChunkIds)
++    {
++        ArgumentNullException.ThrowIfNull(fileChunkIds);
++        byte[] d = BuildFicm(checked((uint)fileChunkIds.Count * 2));
++        for (int i = 0; i < fileChunkIds.Count; i++) d[FicmHeaderSize + i * 2] = fileChunkIds[i];
++        return d;
++    }
++
++    public static byte[] BuildAutomaticFileChunkIds(int fileCount, int chunkCount)
++    {
++        if (fileCount < 1) throw new ArgumentOutOfRangeException(nameof(fileCount));
++        if (chunkCount is < 1 or > 255) throw new ArgumentOutOfRangeException(nameof(chunkCount));
++        byte[] ids = new byte[fileCount];
++        for (int i = 0; i < fileCount; i++)
++            ids[i] = checked((byte)Math.Min(chunkCount - 1, (long)i * chunkCount / fileCount));
++        return ids;
++    }
++
+     /// <summary>The fixed size of the <c>playgo-hash-table.dat</c> header + 16-byte prefix
+     /// (the per-chunk constant table follows at this offset).</summary>
+     public const int HashTableTableOffset = 0x38;
+diff --git a/src/LibProsperoPkg/ProsperoPackageBuilder.cs b/src/LibProsperoPkg/ProsperoPackageBuilder.cs
+index 51c3fe01ecc84d718a075fbeab033c9aef8ea24f..32bca8b94d3d4299d993b6f5ca3463c01709ca6d 100644
+--- a/src/LibProsperoPkg/ProsperoPackageBuilder.cs
++++ b/src/LibProsperoPkg/ProsperoPackageBuilder.cs
+@@ -172,6 +172,9 @@ public sealed class ProsperoBuildOptions
+     /// </summary>
+     public bool UsePublisherPprNaps { get; set; } = true;
+ 
++    /// <summary>Encrypt the publisher outer PFS. Disable for a kstuff-lite plaintext/no-auth image.</summary>
++    public bool EncryptOuterPfs { get; set; } = true;
++
+     /// <summary>
+     /// Optional 16-byte publishing CMAC key for NAPS outer-block digest slots. Keyed profiles
+     /// require the matching key, while the verified Publishing Tools 2.79 debug/AC profile
+@@ -261,6 +264,9 @@ public sealed class ProsperoBuildOptions
+     /// established by <c>img_info</c>/<c>img_verify</c>.
+     /// </summary>
+     public bool RequirePublisherCompatibility { get; set; }
++
++    /// <summary>Reports actual source bytes consumed while assembling the package image.</summary>
++    public Action<long, long>? Progress { get; set; }
+ }
+ 
+ /// <summary>The result of a build: the output path plus any non-fatal warnings.</summary>
+@@ -602,6 +608,7 @@ public static class ProsperoPackageBuilder
+             CompressInnerImage = options.CompressInnerImage,
+             InnerCompression = options.InnerCompression,
+             UsePublisherPprNaps = options.UsePublisherPprNaps,
++            EncryptOuterPfs = options.EncryptOuterPfs,
+             NapsOuterBlockCmacKey = napsCmacKey,
+             NapsMeta18 = napsMeta18,
+             NapsIntegrityProvider = options.NapsIntegrityProvider,
+@@ -614,6 +621,7 @@ public static class ProsperoPackageBuilder
+             DeterministicBuild = options.DeterministicBuild,
+             MetadataSigner = options.MetadataSigner,
+             LicenseProvider = options.LicenseProvider,
++            Progress = options.Progress,
+         };
+ 
+         bool usesNaps = options.UsePublisherPprNaps &&
+@@ -626,12 +634,28 @@ public static class ProsperoPackageBuilder
+                 "NAPS outer-block CMAC is disabled: Publishing Tools 2.79 debug/AC leaves the " +
+                 "eight-byte tags zero unless a keyed profile is explicitly selected.");
+         log("Building the PS5 package...");
+-        LibProsperoPkg.PKG.ProsperoPkgBuilder.Build(buildProps, cntPath, out byte[]? nestedImageDigest, out var siInputs, log);
++        bool splitPublisherImage = wantsFih && usesNaps && !wantsRetail;
++        bool directPublisherImage = splitPublisherImage && !options.EncryptOuterPfs &&
++                                    options.NapsIntegrityProvider is null;
++        byte[]? nestedImageDigest;
++        LibProsperoPkg.PKG.ProsperoSiBuildInputs? siInputs;
++        try
++        {
++            LibProsperoPkg.PKG.ProsperoPkgBuilder.Build(
++                buildProps, cntPath, out nestedImageDigest, out siInputs, log,
++                splitPublisherImage, directPublisherImage ? finalPath : null);
++        }
++        catch
++        {
++            if (directPublisherImage) TryDelete(finalPath);
++            throw;
++        }
+ 
+         if (!File.Exists(cntPath))
+             throw new InvalidOperationException("The PS5 PKG builder did not produce an output package.");
+ 
+         // Verify the produced container with the reader.
++        bool finalized = false;
+         try
+         {
+             var type = ProsperoPkgReader.DetectType(cntPath);
+@@ -675,12 +699,15 @@ public static class ProsperoPackageBuilder
+                     siInputs.InnerImage, siInputs.NapsIntegrityProvider,
+                     siInputs.NapsPfsImageKey, siInputs.NapsPfsImageSeed);
+ 
+-            var fihWarnings = LibProsperoPkg.PKG.ProsperoFihBuilder.BuildFromCnt(
++            string? pfsPath = siInputs?.PreparedFihPath ?? siInputs?.TemporaryOuterImagePath;
++            var fihWarnings = LibProsperoPkg.PKG.ProsperoFihBuilder.BuildFromSources(
+                 cntPath, finalPath,
+                 wantsRetail
+                     ? LibProsperoPkg.PKG.ProsperoFihVariant.Official
+                     : LibProsperoPkg.PKG.ProsperoFihVariant.Debug,
+                 log,
++                siArchive: null,
++                siArchiveFactory: null,
+                 siArchiveStreamFactory: siFactory,
+                 nestedImageDigest: nestedImageDigest,
+                 nestedImageSize: checked((long)(siInputs?.NapsLayoutSize ?? 0)),
+@@ -691,7 +718,9 @@ public static class ProsperoPackageBuilder
+                 nwonlySparseAfidCount: siInputs?.SparseAfidCount ?? 0,
+                 nwonlyEmptyFileCount: siInputs?.EmptyFileCount ?? 0,
+                 outerSuperblockIndex: siInputs?.OuterSuperblockIndex ?? -1,
+-                retailFinalizationProvider: options.RetailFinalizationProvider);
++                retailFinalizationProvider: options.RetailFinalizationProvider,
++                separatePfsPath: pfsPath,
++                pfsAlreadyAtOutput: siInputs?.PreparedFihPath is not null);
+             warnings.AddRange(fihWarnings);
+ 
+             var fihType = ProsperoPkgReader.DetectType(finalPath);
+@@ -702,6 +731,7 @@ public static class ProsperoPackageBuilder
+                 warnings.Add($"Produced FIH image was detected as {fihType}, expected {expectedType}.");
+             else
+                 log($"Validated output container: {expectedType} PS5 FIH image.");
++            finalized = true;
+         }
+         finally
+         {
+@@ -709,6 +739,10 @@ public static class ProsperoPackageBuilder
+             TryDelete(cntPath);
+             if (siInputs?.TemporaryInnerImagePath is string temporaryInner)
+                 TryDelete(temporaryInner);
++            if (siInputs?.TemporaryOuterImagePath is string temporaryOuter)
++                TryDelete(temporaryOuter);
++            if (!finalized && siInputs?.PreparedFihPath is not null)
++                TryDelete(finalPath);
+         }
+ 
+         log(wantsRetail ? "Done (Retail FIH)." : "Done (debug FIH).");
+diff --git a/src/LibProsperoPkg/Util/SubStream.cs b/src/LibProsperoPkg/Util/SubStream.cs
+index 8b0763ea90d0aac9ee98702c28fec529391d6447..dd7ff2f905a2dfae059f1559f0b3bd087adb30e8 100644
+--- a/src/LibProsperoPkg/Util/SubStream.cs
++++ b/src/LibProsperoPkg/Util/SubStream.cs
+@@ -35,15 +35,22 @@ public class SubStream : Stream
+     /// Creates a non-owning read-only window into a stream
+     /// </summary>
+     public SubStream(Stream s, long offset, long length)
++        : this(s, offset, length, leaveOpen: true)
++    {
++    }
++
++    internal SubStream(Stream s, long offset, long length, bool leaveOpen)
+     {
+         this.parent = s;
+         this.offset = offset;
+         Length = length;
++        this.leaveOpen = leaveOpen;
+     }
+ 
+     private Stream parent;
+     private long offset;
+     private long position;
++    private readonly bool leaveOpen;
+ 
+     public override int Read(byte[] buffer, int offset, int count)
+     {
+@@ -57,6 +64,22 @@ public class SubStream : Stream
+         return bytes_read;
+     }
+ 
++    public override int Read(Span<byte> buffer)
++    {
++        parent.Seek(offset + Position, SeekOrigin.Begin);
++        if (buffer.Length + Position > Length)
++            buffer = buffer[..checked((int)(Length - Position))];
++        int bytesRead = parent.Read(buffer);
++        position += bytesRead;
++        return bytesRead;
++    }
++
++    protected override void Dispose(bool disposing)
++    {
++        if (disposing && !leaveOpen) parent.Dispose();
++        base.Dispose(disposing);
++    }
++
+     public override long Seek(long offset, SeekOrigin origin)
+     {
+         switch (origin)
+diff --git a/src/LibProsperoPkg/Util/XtsBlockTransform.cs b/src/LibProsperoPkg/Util/XtsBlockTransform.cs
+index 2260b226e892c998b6fd4e479d5d5a06e0607d4f..93cbf54c7c6902f464c381c333ab9fedfa7b6a25 100644
+--- a/src/LibProsperoPkg/Util/XtsBlockTransform.cs
++++ b/src/LibProsperoPkg/Util/XtsBlockTransform.cs
+@@ -62,6 +62,9 @@ public sealed class XtsBlockTransform : IDisposable
+     /// <param name="sectorNum">Sector index number</param>
+     /// <param name="encrypt">If this is set to true, encrypt the sector</param>
+     public void CryptSector(byte[] sector, ulong sectorNum, bool encrypt = false)
++        => CryptSector(sector.AsSpan(), sectorNum, encrypt);
++
++    internal void CryptSector(Span<byte> sector, ulong sectorNum, bool encrypt = false)
+     {
+         // Reset tweak to sector number (little-endian, high half zeroed).
+         BinaryPrimitives.WriteUInt64LittleEndian(tweak, sectorNum);

@@ -1,0 +1,9 @@
+Inter 4.1, unchanged upstream OpenType files.
+Copyright (c) 2016 The Inter Project Authors.
+Source: https://github.com/rsms/inter/releases/tag/v4.1
+Archive: https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip
+License: SIL Open Font License 1.1; included in OFL.txt.
+
+SHA-256:
+d4f2b9e148059a15f014cb0f0b8fea8cd11bfa447dd483bedf1b0adc0e2ba799  Inter-Regular.otf
+0a4d30778fa2dc239368d90fd854b88b27e7ede737450da72686a90eca66f02c  Inter-SemiBold.otf

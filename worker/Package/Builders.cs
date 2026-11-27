@@ -1,25 +1,373 @@
+using System.Buffers.Binary;
+using System.Text;
 using LibProsperoPkg;
+using LibProsperoPkg.Content;
+using LibProsperoPkg.GP5;
+using LibProsperoPkg.PKG;
 using UFS2Tool;
+
 namespace PS5Library.Worker;
+
 public sealed class ProsperoPackageBuilderAdapter : IPackageBuilder
 {
-    public string Version=>"LibProsperoPKG 2.6.0 / 748eabf1b7d17819528cabf367d8e27109d8fce3";
-    public string Format=>"pkg";
-    public string Build(string staging,string output,Identity identity)
+    public string Version =>
+        "LibProsperoPKG drakmor / 5e26c8ae65f4b3cf88dcc7c84226ea9718c38e5e+ps5library-streaming-kraken-v1";
+    public string Format => "pkg";
+
+    public string Build(
+        string source,
+        string output,
+        Identity identity,
+        Action<long, long>? progress = null,
+        string? backport = null,
+        ElfSdk? sdk = null
+    )
     {
-        var result=ProsperoPackageBuilder.Build(new ProsperoBuildOptions { SourceFolder=staging,OutputFolder=output,TitleId=identity.TitleId,ContentId=identity.ContentId,Version=identity.Version,Title=identity.Title,GenerateParamJsonIfMissing=false,LicenseFree=true,OutputFormat=ProsperoOutputFormat.DebugImage },Console.Error.WriteLine);
-        foreach(var warning in result.Warnings) Console.Error.WriteLine(warning);
+        var sceSys = Path.Combine(source, "sce_sys");
+        var licenseDat = Path.Combine(sceSys, "license.dat");
+        var licenseInfo = Path.Combine(sceSys, "license.info");
+        var hasLicenseDat = File.Exists(licenseDat);
+        var hasLicenseInfo = File.Exists(licenseInfo);
+        var omitOpaqueLicense = false;
+        if (hasLicenseDat != hasLicenseInfo)
+            throw new WorkerError(
+                "INCOMPLETE_INPUT",
+                "sce_sys/license.dat and license.info must be supplied together."
+            );
+        if (hasLicenseDat)
+        {
+            var dat = File.ReadAllBytes(licenseDat);
+            var info = File.ReadAllBytes(licenseInfo);
+            var datValid = ProsperoSystemFiles.ValidateLicenseDat(
+                dat,
+                identity.ContentId,
+                out var datError
+            );
+            var infoValid = ProsperoSystemFiles.ValidateLicenseInfo(
+                info,
+                identity.ContentId,
+                out var infoError
+            );
+            if (!datValid || !infoValid)
+            {
+                omitOpaqueLicense =
+                    dat.Length == ProsperoSystemFiles.LicenseDatSize
+                    && info.Length == ProsperoSystemFiles.LicenseInfoSize
+                    && !dat.AsSpan(0, 4).SequenceEqual("RIF\0"u8)
+                    && !info.AsSpan(0, identity.ContentId.Length)
+                        .SequenceEqual(Encoding.ASCII.GetBytes(identity.ContentId));
+                if (!omitOpaqueLicense)
+                    throw new WorkerError(
+                        "CORRUPT_INPUT",
+                        $"Invalid supplied license records: {datError ?? infoError}"
+                    );
+                Console.Error.WriteLine(
+                    "Skipping opaque retail sce_sys license records; the source dump is unchanged."
+                );
+            }
+        }
+        var project = Gp5Project.Create(Gp5VolumeType.prospero_app);
+        var normalized = Path.Combine(output, "gp5-assets", "normalized-self");
+        var files = Files
+            .Enumerate(source)
+            .ToDictionary(
+                file => Path.GetRelativePath(source, file).Replace('\\', '/'),
+                StringComparer.OrdinalIgnoreCase
+            );
+        var replacements = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (backport is not null)
+            foreach (var file in Files.Enumerate(backport))
+            {
+                var destination = Path.GetRelativePath(backport, file).Replace('\\', '/');
+                if (Backports.LibraryPath(destination))
+                    continue;
+                var slash = destination.IndexOf('/');
+                if (slash >= 0 && Files.ExcludedFromBase(destination[..slash]))
+                    throw new WorkerError(
+                        "UNSUPPORTED_INPUT",
+                        "Cannot embed excluded backport path: " + destination
+                    );
+                files[destination] = file;
+                replacements.Add(destination);
+            }
+        foreach (var (destination, file) in files.OrderBy(item => item.Key, StringComparer.Ordinal))
+        {
+            var slash = destination.IndexOf('/');
+            if (slash >= 0 && Files.ExcludedFromBase(destination[..slash]))
+                continue;
+            if (
+                !replacements.Contains(destination)
+                && (
+                    new[] { ".gp4", ".gp5", ".esbak" }.Contains(
+                        Path.GetExtension(file),
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                    || GeneratedServiceFile(destination)
+                    || HostArtifact(destination)
+                )
+            )
+                continue;
+            if (omitOpaqueLicense && destination is "sce_sys/license.dat" or "sce_sys/license.info")
+                continue;
+            project.Files.Add(
+                new Gp5File
+                {
+                    SourcePath = NormalizeSelf(
+                        file,
+                        Files.SafeRelative(normalized, destination),
+                        replacements.Contains(destination) ? sdk : null
+                    ),
+                    DestinationPath = destination,
+                }
+            );
+        }
+        Gp5Project.WriteTo(project, Path.Combine(output, "source.gp5"));
+        var finalizing = false;
+        Action<long, long>? buildProgress = progress is null
+            ? null
+            : (completed, total) =>
+            {
+                progress(completed, total);
+                if (!finalizing && completed == total)
+                {
+                    finalizing = true;
+                    Progress.Stage("Finalizing package", 3, package: "FINALIZING");
+                }
+            };
+        var result = ProsperoPackageBuilder.Build(
+            new ProsperoBuildOptions
+            {
+                SourceFolder = output,
+                OutputFolder = output,
+                TitleId = identity.TitleId,
+                ContentId = identity.ContentId,
+                Version = identity.Version,
+                Title = identity.Title,
+                GenerateParamJsonIfMissing = false,
+                OutputFormat = ProsperoOutputFormat.DebugImage,
+                UsePublisherPprNaps = true,
+                EncryptOuterPfs = false,
+                OuterPfsSeed = Encoding.ASCII.GetBytes("PPRPLAIN-NOAUTH!"),
+                Progress = buildProgress,
+            },
+            Console.Error.WriteLine
+        );
+        foreach (var warning in result.Warnings)
+            Console.Error.WriteLine(warning);
         return result.OutputPath;
     }
+
+    static bool HostArtifact(string path) =>
+        path.Equals("ampr_emu.index", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("ampr_emu.index.tmp", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("entitlements.txt", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("entitlement_key.dat", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("playgo.log", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("playlgo.log", StringComparison.OrdinalIgnoreCase);
+
+    static bool GeneratedServiceFile(string path) =>
+        path.StartsWith("sce_sys/about/", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/keystone", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/pfs-version.dat", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/imagedigs.dat", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/param.sfo", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/playgo-chunk.dat", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/playgo-hash-table.dat", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/playgo-ficm.dat", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/playgo-scenario.json", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/playgo-manifest.xml", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/playgo-chunk.crc", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/pfsimage.xml", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("sce_sys/pfs-region-hints.json", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith("sce_sys/origin-", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith("sce_sys/target-", StringComparison.OrdinalIgnoreCase);
+
+    static string NormalizeSelf(string source, string destination, ElfSdk? sdk = null)
+    {
+        using var input = new FileStream(
+            source,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            1024 * 1024,
+            FileOptions.SequentialScan
+        );
+        if (input.Length < 0x20)
+            return source;
+        Span<byte> header = stackalloc byte[0x20];
+        input.ReadExactly(header);
+        var magic = BinaryPrimitives.ReadUInt32LittleEndian(header);
+        if (magic == 0x464c457f && sdk is not null)
+        {
+            var version = new byte[8];
+            BinaryPrimitives.WriteUInt32BigEndian(version, sdk.Ps5);
+            version[7] = 1;
+            var self = ProsperoFself.MakeFself(
+                File.ReadAllBytes(source),
+                new FselfOptions
+                {
+                    SceVersionName = "ps5library-backport",
+                    SceVersionRecord = version,
+                }
+            );
+            LowerVersions(
+                self.AsSpan(
+                    checked((int)BinaryPrimitives.ReadUInt64LittleEndian(self.AsSpan(0x10)))
+                ),
+                sdk
+            );
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.WriteAllBytes(destination, self);
+            return destination;
+        }
+        var rewrite = magic == LibProsperoPkg.Content.ProsperoFself.OrbisMagic;
+        if (!rewrite && magic != LibProsperoPkg.Content.ProsperoFself.Magic)
+            return source;
+        long trailer = input.Length;
+        var padding = 0;
+        byte[]? versionRecords = null;
+        var boundary = BinaryPrimitives.ReadUInt64LittleEndian(header[0x10..]);
+        if (boundary >= 0x20 && boundary <= (ulong)input.Length)
+        {
+            var start = (long)Math.Max(0, boundary - 15);
+            var length = input.Length - start;
+            if (length <= 64 * 1024 * 1024)
+            {
+                var tail = new byte[length];
+                input.Position = start;
+                input.ReadExactly(tail);
+                var local = checked((int)(boundary - (ulong)start));
+                for (var back = 0; back <= Math.Min(15, local); back++)
+                    if (CompleteVersion(tail.AsSpan(local - back)))
+                    {
+                        trailer = checked((long)boundary - back);
+                        padding = back;
+                        versionRecords = tail.AsSpan(local - back).ToArray();
+                        break;
+                    }
+            }
+        }
+        var versionChanged =
+            sdk is not null && versionRecords is not null && LowerVersions(versionRecords, sdk);
+        if (!rewrite && padding == 0 && !versionChanged)
+            return source;
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        input.Position = 0;
+        using var output = new FileStream(
+            destination,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            1024 * 1024,
+            FileOptions.SequentialScan
+        );
+        var buffer = new byte[1024 * 1024];
+        var remaining = trailer;
+        while (remaining > 0)
+        {
+            var read = input.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+            if (read == 0)
+                throw new EndOfStreamException();
+            output.Write(buffer, 0, read);
+            remaining -= read;
+        }
+        if (rewrite)
+        {
+            output.Position = 0;
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                header,
+                LibProsperoPkg.Content.ProsperoFself.Magic
+            );
+            output.Write(header[..4]);
+            output.Position = trailer;
+        }
+        if (padding > 0)
+            output.Write(new byte[padding]);
+        if (versionChanged)
+            output.Write(versionRecords!);
+        else
+            input.CopyTo(output);
+        return destination;
+
+        // These duplicated version tuples are outside SELF content segments and their digest.
+        // A stale trailer otherwise makes the publisher raise param.json back to the old SDK.
+        static bool LowerVersions(Span<byte> records, ElfSdk sdk)
+        {
+            if (!CompleteVersion(records))
+                throw new WorkerError("UNSUPPORTED_INPUT", "Invalid SELF SDK trailer.");
+            var major = (byte)(sdk.Ps5 >> 24);
+            var minor = (byte)(sdk.Ps5 >> 16);
+            var changed = false;
+            for (var offset = 0; offset < records.Length; )
+            {
+                var payload = BinaryPrimitives.ReadUInt16LittleEndian(records[(offset + 2)..]);
+                var version = offset + 5 + payload - 17;
+                if (
+                    records[version] > major
+                    || records[version] == major && records[version + 1] > minor
+                )
+                {
+                    records[version] = records[version + 8] = major;
+                    records[version + 1] = records[version + 9] = minor;
+                    changed = true;
+                }
+                offset += payload + 4;
+            }
+            return changed;
+        }
+
+        static bool CompleteVersion(ReadOnlySpan<byte> records)
+        {
+            if (records.Length == 0)
+                return false;
+            var offset = 0;
+            while (offset < records.Length)
+            {
+                if (records.Length - offset < 5 || records[offset] != 0 || records[offset + 1] != 0)
+                    return false;
+                var payload = BinaryPrimitives.ReadUInt16LittleEndian(records[(offset + 2)..]);
+                var size = payload + 4;
+                if (payload < 18 || size > records.Length - offset || records[offset + 4] != 8)
+                    return false;
+                var nameSize = payload - 17;
+                var name = records.Slice(offset + 5, nameSize);
+                var version = offset + 5 + nameSize;
+                if (
+                    name.Length == 0
+                    || name[^1] != (byte)':'
+                    || name[..^1].IndexOfAnyExceptInRange((byte)0x20, (byte)0x7e) >= 0
+                    || !records.Slice(version, 8).SequenceEqual(records.Slice(version + 8, 8))
+                )
+                    return false;
+                offset += size;
+            }
+            return true;
+        }
+    }
 }
+
 public sealed class UFS2ImageBuilderAdapter : IPackageBuilder
 {
-    public string Version=>"UFS2Tool 4.1.0 / b5307a60d5b4e3a68ba680e0e33cfadf05017c77";
-    public string Format=>"ffpkg";
-    public string Build(string staging,string output,Identity identity)
+    public string Version => "UFS2Tool 4.1.0 / b5307a60d5b4e3a68ba680e0e33cfadf05017c77";
+    public string Format => "ffpkg";
+
+    public string Build(
+        string staging,
+        string output,
+        Identity identity,
+        Action<long, long>? progress = null,
+        string? backport = null,
+        ElfSdk? sdk = null
+    )
     {
-        var filename=Path.Combine(output,identity.TitleId+".ffpkg");
-        new Ufs2ImageCreator { FilesystemFormat=2,InputDirectory=staging,VolumeName=identity.TitleId }.MakeFsImage(filename,staging,freeblockpc:5,minimumSize:32*1024*1024);
+        var filename = Path.Combine(output, identity.TitleId + ".ffpkg");
+        new Ufs2ImageCreator
+        {
+            FilesystemFormat = 2,
+            InputDirectory = staging,
+            VolumeName = identity.TitleId,
+            CopyProgress = progress,
+        }.MakeFsImage(filename, staging, freeblockpc: 5, minimumSize: 32 * 1024 * 1024);
         return filename;
     }
 }
