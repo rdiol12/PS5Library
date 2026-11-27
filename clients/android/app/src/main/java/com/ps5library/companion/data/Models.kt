@@ -44,6 +44,11 @@ data class Acknowledgement(
     val id: String? = null,
 )
 
+@Serializable
+data class Invitation(
+    val token: String,
+)
+
 // ---------------------------------------------------------------------------
 // Catalog
 // ---------------------------------------------------------------------------

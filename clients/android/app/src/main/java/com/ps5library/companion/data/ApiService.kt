@@ -46,4 +46,7 @@ interface ApiService {
 
     @POST("api/v1/installations")
     suspend fun requestInstallation(@Body body: InstallationRequest): Acknowledgement
+
+    @POST("api/v1/admin/invites")
+    suspend fun createInvite(): Invitation
 }

@@ -82,8 +82,8 @@ struct AutoMusicView: View {
     @State private var looper: AVPlayerLooper?
     @State private var file: URL?
     var body: some View {
-        Label("Game music plays automatically.", systemImage: "music.note")
-            .font(.caption).foregroundStyle(.secondary)
+        Color.clear
+            .frame(width: 0, height: 0)
             .task(id: game.id) { await load() }
             .onDisappear { cleanup() }
             .onChange(of: scenePhase) { _, phase in
@@ -727,6 +727,7 @@ struct GameDetails: View {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .stroke(.white.opacity(0.1))
                 }
+                .background { AutoMusicView(game: game) }
                 VStack(alignment: .leading, spacing: 12) {
                     if let job = activeJob {
                         GamePrepProgress(job: job)
@@ -751,20 +752,19 @@ struct GameDetails: View {
                         minHeight: 50
                     ).disabled(saving || store.offline)
                 }
-                VStack(alignment: .leading, spacing: 12) {
-                    SectionHeading(title: "About")
-                    Text(game.description ?? "Description unavailable.").font(.body).lineSpacing(4)
-                        .foregroundStyle(.white.opacity(0.94))
-                    if let publisher = game.publisher,!publisher.isEmpty {
-                        Label(
-                            publisher,
-                            systemImage: "building.2"
-                        ).font(.footnote).foregroundStyle(secondaryText)
-                    }
-                }.cinematicCard()
-                GameMediaView(game: store.data.games.first(where: { $0.id == game.id }) ?? game)
-                    .id((store.account?.id ?? "") + game.id)
-                    .frame(maxWidth: .infinity, alignment: .leading).cinematicCard()
+                if let description = game.description, !description.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SectionHeading(title: "About")
+                        Text(description).font(.body).lineSpacing(4)
+                            .foregroundStyle(.white.opacity(0.94))
+                        if let publisher = game.publisher,!publisher.isEmpty {
+                            Label(
+                                publisher,
+                                systemImage: "building.2"
+                            ).font(.footnote).foregroundStyle(secondaryText)
+                        }
+                    }.cinematicCard()
+                }
                 VStack(alignment: .leading, spacing: 12) {
                     SectionHeading(title: "Available releases", detail: "\(game.releases.count)")
                     ForEach(game.releases) { release in
@@ -3463,6 +3463,9 @@ struct InvitationView: View { @EnvironmentObject var store: Store
         if !invitation.isEmpty {
             Text("Single use · expires in 7 days").font(.caption)
             Text(invitation).font(.caption.monospaced()).textSelection(.enabled)
+            ShareLink(item: "Join my PS5Library — invite code: \(invitation)") {
+                Label("Share invite", systemImage: "square.and.arrow.up")
+            }
         }
     }
 }

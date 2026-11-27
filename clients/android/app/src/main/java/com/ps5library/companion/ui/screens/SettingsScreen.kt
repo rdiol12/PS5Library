@@ -10,7 +10,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import android.content.Intent
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -44,6 +48,50 @@ fun SettingsScreen(
     ) {
         if (account != null) {
             AccountCard(account, liveConnected = liveConnected, offline = offline)
+        }
+
+        if (account?.role == "ADMIN") {
+            val context = LocalContext.current
+            val invite by session.inviteToken.collectAsStateWithLifecycle()
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("Invite a friend", style = MaterialTheme.typography.titleMedium)
+                    Button(onClick = session::createInvite, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.PersonAdd, contentDescription = null)
+                        Text("Create invitation", modifier = Modifier.padding(start = 8.dp))
+                    }
+                    invite?.let { token ->
+                        Text(
+                            token,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Button(
+                            onClick = {
+                                val send = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(
+                                        Intent.EXTRA_TEXT,
+                                        "Join my PS5Library — invite code: $token",
+                                    )
+                                }
+                                context.startActivity(Intent.createChooser(send, "Share invite"))
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Filled.Share, contentDescription = null)
+                            Text("Share code", modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+            }
         }
 
         Button(

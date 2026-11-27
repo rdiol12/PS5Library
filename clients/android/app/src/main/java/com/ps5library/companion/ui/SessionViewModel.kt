@@ -200,6 +200,19 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         _installPlan.value = null
     }
 
+    private val _inviteToken = MutableStateFlow<String?>(null)
+    val inviteToken: StateFlow<String?> = _inviteToken.asStateFlow()
+
+    fun createInvite() {
+        viewModelScope.launch {
+            try {
+                _inviteToken.value = repository.createInvite()?.token
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Could not create an invitation."
+            }
+        }
+    }
+
     fun submitInstall(
         sourceReleaseId: String,
         consoleId: String,

@@ -173,6 +173,10 @@ class Repository(private val context: Context) {
         Unit
     }
 
+    suspend fun createInvite(): Invitation? = withContext(Dispatchers.IO) {
+        client?.service?.createInvite()
+    }
+
     suspend fun logout() {
         val api = client
         client = null

@@ -158,7 +158,7 @@ private fun GameDetailContent(game: Game, session: SessionViewModel, modifier: M
                 )
             }
 
-            if (game.description != null) {
+            game.description?.takeIf { it.isNotBlank() }?.let { about ->
                 Text(
                     "About",
                     style = MaterialTheme.typography.titleMedium,
@@ -166,7 +166,7 @@ private fun GameDetailContent(game: Game, session: SessionViewModel, modifier: M
                     modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
                 )
                 Text(
-                    game.description,
+                    about,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
