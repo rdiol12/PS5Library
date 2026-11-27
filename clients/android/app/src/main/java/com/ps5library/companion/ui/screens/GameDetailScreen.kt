@@ -89,6 +89,7 @@ fun GameDetailScreen(
         }
         GameDetailContent(
             game = game,
+            session = session,
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize()
@@ -99,7 +100,7 @@ fun GameDetailScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun GameDetailContent(game: Game, modifier: Modifier = Modifier) {
+private fun GameDetailContent(game: Game, session: SessionViewModel, modifier: Modifier = Modifier) {
     Column(modifier = modifier) {
         Box(
             modifier = Modifier
