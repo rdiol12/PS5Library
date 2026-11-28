@@ -212,10 +212,13 @@ export async function catalogFor(db: DB, userId: string, query = '') {
   ]);
   const hashes = new Map(artwork.map((a) => [`${a.game_id}:${a.kind}`, a.sha256]));
   const image = (id: string, kind: string) =>
-    `/api/v1/artwork/${id}/${kind}?v=${hashes.get(`${id}:${kind}`) ?? (kind === 'hero' ? hashes.get(`${id}:cover`) : undefined) ?? 'missing'}`;
+    `/api/v1/artwork/${id}/${kind}?v=${hashes.get(`${id}:${kind}`) ?? 'missing'}`;
   return games.map((g) => {
     // Live third-party details only fill gaps; the dump's own metadata always wins.
-    const external = externalInfo(g.title);
+    const external = externalInfo(g.title, {
+      titleId: g.title_id,
+      contentId: g.metadata.contentId,
+    });
     return {
       ...g.metadata,
       description: g.metadata.description || external?.description || undefined,
@@ -270,7 +273,12 @@ export async function catalogFor(db: DB, userId: string, query = '') {
             duration: t.duration,
           }))[0] ?? null,
       coverUrl: image(g.id, 'cover'),
-      heroUrl: image(g.id, 'hero'),
+      // Without a background of its own a game shows its trailer's frame; the address
+      // names that trailer so a client never keeps an older fallback picture.
+      heroUrl:
+        hashes.has(`${g.id}:hero`) || !external?.videos[0]
+          ? image(g.id, 'hero')
+          : `/api/v1/artwork/${g.id}/hero?v=trailer-${external.videos[0]}`,
       iconUrl: image(g.id, 'icon'),
       screenshotUrls: (g.metadata.artwork?.screenshots ?? []).map((_: unknown, i: number) =>
         image(g.id, `screenshot-${i}`),
@@ -1421,8 +1429,7 @@ export async function catalogRoutes(
     const row = (
       await db.query(
         `SELECT * FROM artwork
-         WHERE game_id=$1 AND (kind=$2 OR ($2='hero' AND kind='cover'))
-         ORDER BY (kind=$2) DESC
+         WHERE game_id=$1 AND kind=$2
          LIMIT 1`,
         [params.gameId, params.kind],
       )
@@ -1435,7 +1442,9 @@ export async function catalogRoutes(
         await db.query<{ title: string }>('SELECT title FROM games WHERE id=$1', [params.gameId])
       ).rows[0]?.title;
       const picture =
-        title && !params.kind.startsWith('screenshot') ? await externalImage(title) : null;
+        title && !params.kind.startsWith('screenshot')
+          ? await externalImage(title, params.kind === 'hero')
+          : null;
       if (picture) return reply.type(picture.type).send(picture.body);
       // Not cached: artwork can arrive moments later, under this same address.
       return reply.header('cache-control', 'no-store').type('image/svg+xml').send(placeholder);

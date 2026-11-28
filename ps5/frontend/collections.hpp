@@ -477,7 +477,25 @@ inline Json withObservedLocalInventory(Json model, const Json &snapshot, const J
     if (!found)
       library.add(local[i]);
   }
-  model.set("catalog", observed["catalog"]);
+  // While the server is reachable its artwork is used for the games it knows. The app cannot
+  // always read a game's own picture files from inside its sandbox, which left those games blank.
+  auto catalog = observed["catalog"], known = model["catalog"];
+  for (size_t i = 0; i < catalog.size(); i++) {
+    auto game = catalog[i];
+    for (size_t n = 0; n < known.size(); n++) {
+      if (known[n]["id"].string() != game["id"].string())
+        continue;
+      for (const auto *kind : {"cover", "hero"}) {
+        const auto url = std::string(kind) + "Url", crop = std::string(kind) + "Crop";
+        if (!known[n][url.c_str()].string().empty()) {
+          game.set(url.c_str(), known[n][url.c_str()]);
+          game.set(crop.c_str(), known[n][crop.c_str()]);
+        }
+      }
+      break;
+    }
+  }
+  model.set("catalog", catalog);
   model.set("library", library);
   return model;
 }

@@ -98,6 +98,13 @@ For the app, `npm run native:release -- -Base -ContentVersion 01.092.000`.
 The command prints the exact install line. Every later run is then an update
 over that package.
 
+## One update at a time
+
+An update installs only over the version published immediately before it, and
+publishing replaces the previous update on the server. Let every console install
+an update before publishing the next one. A console that misses one can no
+longer update and needs the base package installed again.
+
 ## What it keeps
 
 Each title has its own folder inside the releases folder, `<TITLE_ID>/`:

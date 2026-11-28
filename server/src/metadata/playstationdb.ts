@@ -9,8 +9,10 @@ const ERROR_TTL = 30 * 60_000;
 const REQUEST_GAP = 1500;
 const MAX_PAGES = 2000;
 
+import { storeDescription } from './playstation-store.js';
+
 export type ExternalGameInfo = {
-  source: 'PlayStationDB';
+  source: 'PlayStationDB' | 'PlayStation Store';
   url: string;
   description: string | null;
   genre: string | null;
@@ -22,7 +24,8 @@ export type ExternalGameInfo = {
 
 let enabled = false;
 const pages = new Map<string, { expires: number; value: ExternalGameInfo | null }>();
-const queue: string[] = [];
+export type GameIds = { titleId?: string; contentId?: string };
+const queue: { title: string; ids?: GameIds }[] = [];
 let running = false;
 
 export function setExternalMetadata(value: boolean) {
@@ -147,7 +150,7 @@ const absent = (error: unknown) =>
   error instanceof Error && (error.message === 'HTTP 404' || error.message === 'HTTP 500');
 
 // Fetches the first address that holds this title and remembers the outcome under its key.
-async function lookup(title: string): Promise<ExternalGameInfo | null> {
+async function lookup(title: string, ids?: GameIds): Promise<ExternalGameInfo | null> {
   const key = slugFor(title);
   let value: ExternalGameInfo | null = null,
     ttl = MISS_TTL;
@@ -168,6 +171,25 @@ async function lookup(title: string): Promise<ExternalGameInfo | null> {
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
+  // Most pages carry no description; the store's own text, asked for by exact title ID, fills it.
+  if (!value?.description && ids && ttl !== ERROR_TTL) {
+    const description = await storeDescription(ids).catch(() => null);
+    if (description) {
+      value = value
+        ? { ...value, description }
+        : {
+            source: 'PlayStation Store',
+            url: 'https://store.playstation.com/',
+            description,
+            genre: null,
+            releaseDate: null,
+            metacritic: null,
+            imageUrl: null,
+            videos: [],
+          };
+      ttl = PAGE_TTL;
+    }
+  }
   remember(key, value, ttl);
   return value;
 }
@@ -177,7 +199,8 @@ async function drain() {
   running = true;
   try {
     while (enabled && queue.length) {
-      await lookup(queue.shift()!);
+      const next = queue.shift()!;
+      await lookup(next.title, next.ids);
       await new Promise((resolve) => setTimeout(resolve, REQUEST_GAP));
     }
   } finally {
@@ -188,7 +211,10 @@ async function drain() {
 const immediate = new Map<string, Promise<ExternalGameInfo | null>>();
 // For a single game a person is looking at right now: skips the background queue. Concurrent
 // callers share one request.
-export async function externalInfoNow(title: string): Promise<ExternalGameInfo | null> {
+export async function externalInfoNow(
+  title: string,
+  ids?: GameIds,
+): Promise<ExternalGameInfo | null> {
   if (!enabled) return null;
   const key = slugFor(title);
   if (!key) return null;
@@ -196,9 +222,9 @@ export async function externalInfoNow(title: string): Promise<ExternalGameInfo |
   if (known && known.expires > Date.now()) return known.value;
   let pending = immediate.get(key);
   if (!pending) {
-    const queued = queue.findIndex((item) => slugFor(item) === key);
+    const queued = queue.findIndex((item) => slugFor(item.title) === key);
     if (queued >= 0) queue.splice(queued, 1);
-    pending = lookup(title).finally(() => immediate.delete(key));
+    pending = lookup(title, ids).finally(() => immediate.delete(key));
     immediate.set(key, pending);
   }
   return pending;
@@ -206,33 +232,65 @@ export async function externalInfoNow(title: string): Promise<ExternalGameInfo |
 
 // Synchronous: returns what is already known and schedules a background lookup otherwise, so a
 // catalog request never waits on the remote site.
-export function externalInfo(title: string): ExternalGameInfo | null {
+export function externalInfo(title: string, ids?: GameIds): ExternalGameInfo | null {
   if (!enabled) return null;
   const key = slugFor(title);
   if (!key) return null;
   const known = pages.get(key);
   if (
     (!known || known.expires <= Date.now()) &&
-    !queue.some((item) => slugFor(item) === key) &&
+    !queue.some((item) => slugFor(item.title) === key) &&
     queue.length < 500
   ) {
-    queue.push(title);
+    queue.push({ title, ids });
     void drain();
   }
   return known?.value ?? null;
 }
 
-// The game's picture, passed straight through to the caller; nothing is written to disk.
-export async function externalImage(title: string) {
-  const url = (await externalInfoNow(title))?.imageUrl;
-  if (!url) return null;
+type Picture = { type: string; body: Buffer };
+// Fetched pictures are kept in this process's memory only, so a list of games does not wait on
+// the remote sites every time it is drawn. Nothing is written to disk.
+const pictures = new Map<string, { expires: number; value: Picture | null }>();
+let pictureBytes = 0;
+const PICTURE_BUDGET = 96 * 1024 ** 2;
+
+async function picture(url: string): Promise<Picture | null> {
+  const known = pictures.get(url);
+  if (known && known.expires > Date.now()) return known.value;
+  let value: Picture | null = null;
   try {
     const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
     const type = response.headers.get('content-type')?.split(';')[0] ?? '';
-    if (!response.ok || !/^image\/(jpeg|png|webp|avif)$/.test(type)) return null;
-    const body = Buffer.from(await response.arrayBuffer());
-    return body.length && body.length <= 8 * 1024 ** 2 ? { type, body } : null;
+    if (response.ok && /^image\/(jpeg|png|webp|avif)$/.test(type)) {
+      const body = Buffer.from(await response.arrayBuffer());
+      if (body.length && body.length <= 8 * 1024 ** 2) value = { type, body };
+    }
   } catch {
-    return null;
+    value = null;
   }
+  if (known?.value) pictureBytes -= known.value.body.length;
+  while (pictures.size && pictureBytes + (value?.body.length ?? 0) > PICTURE_BUDGET) {
+    const oldest = pictures.keys().next().value!;
+    pictureBytes -= pictures.get(oldest)?.value?.body.length ?? 0;
+    pictures.delete(oldest);
+  }
+  pictures.set(url, { expires: Date.now() + (value ? PAGE_TTL : ERROR_TTL), value });
+  pictureBytes += value?.body.length ?? 0;
+  return value;
+}
+
+// A game's picture, passed straight through to the caller. The square listing image suits a
+// cover; a background needs a wide picture, so that uses the first trailer's own frame and is
+// left empty when there is none, rather than stretching the square one across the screen.
+export async function externalImage(title: string, wide = false) {
+  const info = await externalInfoNow(title);
+  if (!info) return null;
+  if (!wide) return info.imageUrl ? picture(info.imageUrl) : null;
+  const videoId = info.videos[0];
+  if (!videoId) return null;
+  return (
+    (await picture(`https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`)) ??
+    picture(`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`)
+  );
 }

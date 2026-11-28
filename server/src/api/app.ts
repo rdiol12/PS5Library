@@ -31,8 +31,12 @@ import { queuedJobControlAllowed, reorderQueuedJobs, startRunner } from '../jobs
 import { packageBuildAllowed, preparationRoutes } from '../jobs/preparation.js';
 import { installationRoutes } from '../jobs/installations.js';
 import { jobEvent, jobJSON, liveJobEvents } from '../jobs/events.js';
-import { externalInfo, externalInfoNow } from '../metadata/playstationdb.js';
-import { resolveTrailerStream, streamHeight } from '../metadata/trailer-stream.js';
+import { externalImage, externalInfo, externalInfoNow } from '../metadata/playstationdb.js';
+import {
+  resolveTrailerStream,
+  streamHeight,
+  trailerCandidates,
+} from '../metadata/trailer-stream.js';
 import { AppError } from '../security/errors.js';
 import { uuid } from '../../../shared/schemas/index.js';
 import { clearDashboardLogs, readLogs, serverLogger, type LogLevel } from '../logging.js';
@@ -167,8 +171,14 @@ export async function createApp(
   const settings = await runtimeSettings(db, config);
   // The lookup cache lives in memory only, so it is refilled in the background after a restart.
   void db
-    .query<{ title: string }>('SELECT title FROM games')
-    .then((result) => result.rows.forEach((row) => externalInfo(row.title)))
+    .query<{ title: string; title_id: string; content_id: string | null }>(
+      "SELECT title, title_id, metadata->>'contentId' AS content_id FROM games",
+    )
+    .then((result) =>
+      result.rows.forEach((row) =>
+        externalInfo(row.title, { titleId: row.title_id, contentId: row.content_id ?? undefined }),
+      ),
+    )
     .catch(() => undefined);
   const logs = await serverLogger(config.DATA_DIR);
   const startedAt = new Date().toISOString();
@@ -795,6 +805,21 @@ export async function createApp(
   app.get('/api/v1/device/jobs', async (req) => listJobs((await auth.device(req)).user_id));
   // Direct stream addresses for a game's first external trailer. The client fetches the video
   // itself; this only performs the short lookup. Disabled with the external details setting.
+  // The listed video most like a trailer that can actually be played. A longer one is still
+  // returned when nothing shorter exists; the player shows only its opening minutes.
+  const bestTrailer = async (
+    videoIds: string[],
+    options: { maxHeight?: number; maxDuration?: number },
+  ) => {
+    const candidates = await trailerCandidates(videoIds, options.maxDuration);
+    for (const videoId of candidates.slice(0, 3)) {
+      const stream = await resolveTrailerStream(videoId, streamHeight(options.maxHeight)).catch(
+        () => null,
+      );
+      if (stream) return stream;
+    }
+    return null;
+  };
   const trailerStream = async (userId: string, gameId: string, query: unknown) => {
     if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
     const options = z
@@ -814,22 +839,33 @@ export async function createApp(
         [gameId, userId],
       )
     ).rows[0];
-    // First listed trailer that fits the caller's player; at most three lookups per request.
-    for (const videoId of (game ? externalInfo(game.title)?.videos : undefined)?.slice(0, 3) ??
-      []) {
-      const stream = await resolveTrailerStream(videoId, streamHeight(options.maxHeight));
-      if (!options.maxDuration || (stream.duration ?? 0) <= options.maxDuration) return stream;
-    }
+    const stream = await bestTrailer(
+      (game ? externalInfo(game.title)?.videos : undefined) ?? [],
+      options,
+    );
+    if (stream) return stream;
     throw new AppError('NOT_FOUND', 404);
   };
   const streamLimit = { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } };
+  const externalDetails = (info: NonNullable<Awaited<ReturnType<typeof externalInfoNow>>>) => ({
+    description: info.description,
+    genre: info.genre,
+    external: {
+      source: info.source,
+      url: info.url,
+      releaseDate: info.releaseDate,
+      metacritic: info.metacritic,
+      imageUrl: info.imageUrl,
+      videos: info.videos,
+    },
+  });
   // Looks one game up right away, for a page opened before the background refill reached it.
   app.get('/api/v1/games/:id/external', streamLimit, async (req, reply) => {
     reply.header('cache-control', 'no-store');
     if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
     const game = (
-      await db.query<{ title: string }>(
-        `SELECT g.title
+      await db.query<{ title: string; title_id: string; content_id: string | null }>(
+        `SELECT g.title, g.title_id, g.metadata->>'contentId' AS content_id
          FROM games g
          WHERE g.id = $1
            AND EXISTS (
@@ -838,20 +874,14 @@ export async function createApp(
         [uuid.parse((req.params as { id: string }).id), (await auth.user(req)).id],
       )
     ).rows[0];
-    const info = game ? await externalInfoNow(game.title) : null;
+    const info = game
+      ? await externalInfoNow(game.title, {
+          titleId: game.title_id,
+          contentId: game.content_id ?? undefined,
+        })
+      : null;
     if (!info) throw new AppError('NOT_FOUND', 404);
-    return {
-      description: info.description,
-      genre: info.genre,
-      external: {
-        source: info.source,
-        url: info.url,
-        releaseDate: info.releaseDate,
-        metacritic: info.metacritic,
-        imageUrl: info.imageUrl,
-        videos: info.videos,
-      },
-    };
+    return externalDetails(info);
   });
   app.get('/api/v1/games/:id/trailer-stream', streamLimit, async (req, reply) => {
     reply.header('cache-control', 'no-store');
@@ -868,6 +898,51 @@ export async function createApp(
       uuid.parse((req.params as { id: string }).id),
       req.query,
     );
+  });
+  // The same details and trailer for a game that exists only on a console and is not in the
+  // catalog. It is asked for by title ID and name; nothing about anyone's library is involved.
+  const titleLimit = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } };
+  const consoleTitle = z.string().regex(/^[A-Z]{4}\d{5}$/);
+  const titleQuery = z.object({
+    title: z.string().trim().min(1).max(200),
+    maxHeight: z.coerce.number().optional(),
+    maxDuration: z.coerce.number().int().min(10).max(900).optional(),
+  });
+  app.get('/api/v1/device/titles/:titleId/external', titleLimit, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    await auth.device(req);
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    const titleId = consoleTitle.parse((req.params as { titleId: string }).titleId),
+      query = titleQuery.parse(req.query);
+    const info = await externalInfoNow(query.title, { titleId });
+    if (!info) throw new AppError('NOT_FOUND', 404);
+    // The console asks for these pictures next; fetching them now makes that instant.
+    void externalImage(query.title);
+    void externalImage(query.title, true);
+    return externalDetails(info);
+  });
+  app.get('/api/v1/device/titles/:titleId/artwork', titleLimit, async (req, reply) => {
+    await auth.device(req);
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    consoleTitle.parse((req.params as { titleId: string }).titleId);
+    const wide = (req.query as { kind?: unknown }).kind === 'hero';
+    const picture = await externalImage(titleQuery.parse(req.query).title, wide);
+    if (!picture) throw new AppError('NOT_FOUND', 404);
+    return reply
+      .header('cache-control', 'private, max-age=3600')
+      .type(picture.type)
+      .send(picture.body);
+  });
+  app.get('/api/v1/device/titles/:titleId/trailer-stream', streamLimit, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    await auth.device(req);
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    const titleId = consoleTitle.parse((req.params as { titleId: string }).titleId),
+      query = titleQuery.parse(req.query);
+    const info = await externalInfoNow(query.title, { titleId });
+    const stream = await bestTrailer(info?.videos ?? [], query);
+    if (stream) return stream;
+    throw new AppError('NOT_FOUND', 404);
   });
   const jobOrder = z
     .object({

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { lookup } from 'node:dns/promises';
 import { promisify } from 'node:util';
 import { AppError } from '../security/errors.js';
 
@@ -18,8 +19,16 @@ export type TrailerStream = {
   videoId: string;
   duration: number | null;
   expiresAt: string;
-  video: { url: string; codec: string; width: number; height: number; size: number | null };
-  audio: { url: string; codec: string; size: number | null };
+  // `address` is the host's IPv4 address, for clients that cannot do the name lookup themselves.
+  video: {
+    url: string;
+    address?: string;
+    codec: string;
+    width: number;
+    height: number;
+    size: number | null;
+  };
+  audio: { url: string; address?: string; codec: string; size: number | null };
 };
 
 const cache = new Map<string, TrailerStream>();
@@ -63,6 +72,50 @@ export function parseResolved(videoId: string, output: string, now = Date.now())
   };
 }
 
+// The listing mixes short trailers with long reviews and gameplay videos, and some entries
+// cannot be played at all. Lengths are read once per video and remembered in memory.
+const lengths = new Map<string, number | null>();
+async function videoLength(videoId: string) {
+  if (lengths.has(videoId)) return lengths.get(videoId)!;
+  const value = await run(
+    'yt-dlp',
+    [
+      '--no-warnings',
+      '--no-playlist',
+      '--no-cache-dir',
+      '--print',
+      '%(duration)s',
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ],
+    { timeout: 30_000, maxBuffer: 1024 ** 2, windowsHide: true },
+  )
+    .then(({ stdout }) => {
+      const seconds = Number(stdout.trim());
+      return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+    })
+    .catch(() => null);
+  if (lengths.size >= 2000) lengths.delete(lengths.keys().next().value!);
+  lengths.set(videoId, value);
+  return value;
+}
+
+// Playable videos, best first: those within the wanted length in their listed order, then the
+// rest from shortest to longest.
+export async function trailerCandidates(videoIds: string[], maxDuration?: number) {
+  const ids = videoIds.filter((id) => /^[A-Za-z0-9_-]{11}$/.test(id)).slice(0, 8),
+    known: { id: string; seconds: number }[] = [];
+  for (let start = 0; start < ids.length; start += 3)
+    for (const [index, seconds] of (
+      await Promise.all(ids.slice(start, start + 3).map(videoLength))
+    ).entries())
+      if (seconds) known.push({ id: ids[start + index]!, seconds });
+  const fits = (item: { seconds: number }) => !maxDuration || item.seconds <= maxDuration;
+  return [
+    ...known.filter(fits),
+    ...known.filter((item) => !fits(item)).sort((a, b) => a.seconds - b.seconds),
+  ].map((item) => item.id);
+}
+
 export async function resolveTrailerStream(
   videoId: string,
   height: StreamHeight = 1080,
@@ -90,7 +143,11 @@ export async function resolveTrailerStream(
     .then(async ({ stdout }) => {
       const resolved = parseResolved(videoId, stdout);
       // Some client profiles return addresses YouTube refuses to serve directly; never hand one out.
-      for (const url of [resolved.video.url, resolved.audio.url]) {
+      for (const track of [resolved.video, resolved.audio]) {
+        const url = track.url;
+        track.address = await lookup(new URL(url).hostname, { family: 4 })
+          .then((found) => found.address)
+          .catch(() => undefined);
         const probe = await fetch(url, {
           headers: { range: 'bytes=0-1' },
           signal: AbortSignal.timeout(10_000),

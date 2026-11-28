@@ -4,8 +4,12 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
+
+struct AVFrame;
+struct SwsContext;
 
 namespace storefront {
 bool musicCodecSupported(int codec);
@@ -38,7 +42,17 @@ class VideoPreview {
     int width, height;
     double pts;
     std::vector<uint8_t> pixels;
+    // The frame already carries the screen's shading and is drawn with one plain copy.
+    bool composed = false;
   };
+  // What is drawn over the video (gradients, darkening), premultiplied BGRA at screen size.
+  struct Overlay {
+    int width, height;
+    std::vector<uint8_t> pixels;
+  };
+  std::shared_ptr<const Overlay> overlay_;
+  bool composed_ = false;
+  Picture present(SwsContext *&scaler, const AVFrame *frame, double pts);
   struct Sound {
     double pts;
     std::vector<Sint16> samples;
@@ -64,6 +78,12 @@ class VideoPreview {
   Request request_;
   bool pending_ = false, ended_ = false;
   std::string error_;
+  // How far the current stream got; read back by the live diagnostics.
+  std::string stage_;
+  void stage(const std::string &value) {
+    std::lock_guard lock(mutex_);
+    stage_ = value;
+  }
   std::string key_;
   bool active_ = false, clockStarted_ = false, sound_ = true, music_ = false;
   Uint64 started_ = 0;
@@ -90,6 +110,16 @@ public:
   void startStream(const std::string &key, const Json &config, const std::string &token,
                    const std::string &path, bool sound);
   SDL_Texture *frame(SDL_Renderer *renderer);
+  // Software rendering makes blending over full-screen video costly, so the decoding thread
+  // bakes the overlay into each frame instead.
+  void overlay(std::vector<uint8_t> pixels, int width, int height) {
+    auto next = std::make_shared<Overlay>(Overlay{width, height, std::move(pixels)});
+    std::lock_guard lock(mutex_);
+    overlay_ = std::move(next);
+  }
+  bool composed() const {
+    return composed_;
+  }
   bool active() const {
     return active_;
   }
@@ -105,6 +135,10 @@ public:
   std::string error() {
     std::lock_guard lock(mutex_);
     return error_;
+  }
+  std::string streamStage() {
+    std::lock_guard lock(mutex_);
+    return stage_;
   }
   uint64_t displayed() const {
     return displayed_;

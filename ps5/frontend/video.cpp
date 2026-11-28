@@ -4,10 +4,12 @@
 #include <cstring>
 #include <curl/curl.h>
 #include <regex>
+#include <sys/socket.h>
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 }
 namespace storefront {
 using namespace ps5library;
@@ -21,7 +23,9 @@ struct Decoder {
   AVPacket *packet = av_packet_alloc();
   AVFrame *frame = av_frame_alloc();
   SwrContext *resampler = nullptr;
+  SwsContext *scaler = nullptr;
   ~Decoder() {
+    sws_freeContext(scaler);
     swr_free(&resampler);
     av_frame_free(&frame);
     av_packet_free(&packet);
@@ -30,6 +34,22 @@ struct Decoder {
     avformat_close_input(&format);
   }
 };
+// Colour conversion and scaling happen here, on the decoding thread, so the drawing thread
+// only has to copy a finished frame.
+std::vector<uint8_t> displayPixels(SwsContext *&scaler, const AVFrame *frame, int width,
+                                   int height) {
+  scaler = sws_getCachedContext(scaler, frame->width, frame->height,
+                                static_cast<AVPixelFormat>(frame->format), width, height,
+                                AV_PIX_FMT_BGRA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+  if (!scaler)
+    throw std::runtime_error("Trailer frame conversion unavailable");
+  std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
+  uint8_t *planes[4] = {pixels.data(), nullptr, nullptr, nullptr};
+  int strides[4] = {width * 4, 0, 0, 0};
+  if (sws_scale(scaler, frame->data, frame->linesize, 0, frame->height, planes, strides) != height)
+    throw std::runtime_error("Trailer frame conversion failed");
+  return pixels;
+}
 void check(int result) {
   if (result < 0)
     throw std::runtime_error("Trailer decode failed");
@@ -45,8 +65,27 @@ class HttpSource {
   static constexpr int64_t chunkBytes = 2 * 1024 * 1024, totalLimit = 768LL * 1024 * 1024;
   std::string url_, ca_;
   std::function<bool()> abort_;
+  std::function<void(const std::string &)> note_;
+  int requests_ = 0;
+  int calls_ = 0;
+  // The app cannot resolve names from its sandbox, so the server supplies the address.
+  std::string pinned_;
+  bool failed_ = false;
   std::vector<uint8_t> chunk_;
   int64_t chunkStart_ = 0, position_ = 0, size_ = -1, fetched_ = 0;
+  // One connection serves the whole stream. Closing a TLS connection per request stalled on
+  // the console, and reusing it also avoids a handshake for every chunk.
+  std::unique_ptr<CURL, void (*)(CURL *)> handle_{nullptr, curl_easy_cleanup};
+  std::unique_ptr<curl_slist, void (*)(curl_slist *)> resolve_{nullptr, curl_slist_free_all};
+  struct Borrowed {
+    CURL *handle;
+    CURL *get() const {
+      return handle;
+    }
+    explicit operator bool() const {
+      return handle != nullptr;
+    }
+  };
   void fetch(int64_t start) {
     if (fetched_ > totalLimit)
       throw std::runtime_error("Trailer stream too large");
@@ -55,7 +94,11 @@ class HttpSource {
     for (int hop = 0; hop < 4; hop++) {
       if (!streamAddress(url_))
         throw std::runtime_error("Unexpected trailer stream host");
-      std::unique_ptr<CURL, void (*)(CURL *)> curl(curl_easy_init(), curl_easy_cleanup);
+      if (handle_)
+        curl_easy_reset(handle_.get());
+      else
+        handle_.reset(curl_easy_init());
+      const Borrowed curl{handle_.get()};
       if (!curl)
         throw std::bad_alloc();
       const auto range = std::to_string(start) + "-" + std::to_string(start + chunkBytes - 1);
@@ -67,6 +110,14 @@ class HttpSource {
       curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 10L);
       curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_LIMIT, 4096L);
       curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_TIME, 15L);
+      curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, 45L);
+      // The address is bound to the IPv4 address it was resolved for.
+      curl_easy_setopt(curl.get(), CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+      if (!pinned_.empty() && hop == 0) {
+        if (!resolve_)
+          resolve_.reset(curl_slist_append(nullptr, pinned_.c_str()));
+        curl_easy_setopt(curl.get(), CURLOPT_RESOLVE, resolve_.get());
+      }
       curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
       curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
       curl_easy_setopt(curl.get(), CURLOPT_NOSIGNAL, 1L);
@@ -102,7 +153,25 @@ class HttpSource {
           +[](void *data, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
             return static_cast<HttpSource *>(data)->abort_() ? 1 : 0;
           });
+      const auto began = std::chrono::steady_clock::now();
+      const auto label = "request " + std::to_string(++requests_) + " bytes " + range;
+      if (note_)
+        note_(label);
       const auto result = curl_easy_perform(curl.get());
+      double lookup = 0, connected = 0;
+      char *peer = nullptr;
+      curl_easy_getinfo(curl.get(), CURLINFO_NAMELOOKUP_TIME, &lookup);
+      curl_easy_getinfo(curl.get(), CURLINFO_CONNECT_TIME, &connected);
+      curl_easy_getinfo(curl.get(), CURLINFO_PRIMARY_IP, &peer);
+      if (note_)
+        note_(label + " curl " + std::to_string(static_cast<int>(result)) + " dns " +
+              std::to_string(static_cast<int>(lookup * 1000)) + "ms tcp " +
+              std::to_string(static_cast<int>(connected * 1000)) + "ms peer " +
+              (peer && *peer ? "yes" : "none") + " got " + std::to_string(chunk_.size()) + " in " +
+              std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - began)
+                                 .count()) +
+              "ms");
       long status = 0;
       curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
       if (result != CURLE_OK)
@@ -167,7 +236,31 @@ class HttpSource {
 
 public:
   std::string error;
-  void assign(std::string url, std::string ca, std::function<bool()> abort) {
+  HttpSource() = default;
+  HttpSource(const HttpSource &) = delete;
+  HttpSource &operator=(const HttpSource &) = delete;
+  ~HttpSource() {
+    if (!handle_)
+      return;
+    // The connection is being discarded: closing the socket first keeps the TLS goodbye from
+    // waiting on the far end.
+    curl_socket_t socket = CURL_SOCKET_BAD;
+    if (curl_easy_getinfo(handle_.get(), CURLINFO_ACTIVESOCKET, &socket) == CURLE_OK &&
+        socket != CURL_SOCKET_BAD)
+      ::shutdown(socket, SHUT_RDWR);
+    if (note_)
+      note_("closing connection");
+    handle_.reset();
+    if (note_)
+      note_("connection closed");
+  }
+  void assign(std::string url, std::string ca, std::function<bool()> abort,
+              std::function<void(const std::string &)> note, const std::string &address) {
+    note_ = std::move(note);
+    static const std::regex host(R"(^https://([a-z0-9.-]+)/)"), ipv4(R"(^\d{1,3}(\.\d{1,3}){3}$)");
+    std::smatch match;
+    if (std::regex_search(url, match, host) && std::regex_match(address, ipv4))
+      pinned_ = match[1].str() + ":443:" + address;
     url_ = std::move(url);
     ca_ = std::move(ca);
     abort_ = std::move(abort);
@@ -175,25 +268,45 @@ public:
   // libav calls these from C; an exception must never cross that boundary.
   static int readCallback(void *opaque, uint8_t *buffer, int count) {
     auto *source = static_cast<HttpSource *>(opaque);
+    if (source->failed_)
+      return AVERROR_EXIT;
     try {
-      return source->read(buffer, count);
+      const auto call = ++source->calls_;
+      const auto at = source->position_;
+      const int got = source->read(buffer, count);
+      if (source->note_)
+        source->note_("call " + std::to_string(call) + " read at " + std::to_string(at) + " want " +
+                      std::to_string(count) + " -> " + std::to_string(got));
+      return got;
     } catch (const std::exception &e) {
       source->error = e.what();
     } catch (...) {
       source->error = "Trailer stream failed";
     }
-    return AVERROR(EIO);
+    source->failed_ = true;
+    return AVERROR_EXIT;
   }
   static int64_t seekCallback(void *opaque, int64_t offset, int whence) {
     auto *source = static_cast<HttpSource *>(opaque);
+    if (source->failed_)
+      return AVERROR_EXIT;
     try {
-      return source->seek(offset, whence);
+      const auto call = ++source->calls_;
+      if (source->note_)
+        source->note_("call " + std::to_string(call) + " seek " + std::to_string(offset) +
+                      " whence " + std::to_string(whence));
+      const auto result = source->seek(offset, whence);
+      if (source->note_)
+        source->note_("call " + std::to_string(call) + " seek " + std::to_string(offset) +
+                      " whence " + std::to_string(whence) + " -> " + std::to_string(result));
+      return result;
     } catch (const std::exception &e) {
       source->error = e.what();
     } catch (...) {
       source->error = "Trailer stream failed";
     }
-    return AVERROR(EIO);
+    source->failed_ = true;
+    return AVERROR_EXIT;
   }
 };
 // One remote elementary stream: its reader, demuxer and decoder.
@@ -209,8 +322,10 @@ struct StreamInput {
     throw std::runtime_error(source.error.empty() ? fallback : source.error);
   }
   void open(const std::string &url, const std::string &ca, std::function<bool()> abort,
-            AVMediaType type, int threads) {
-    source.assign(url, ca, std::move(abort));
+            AVMediaType type, int threads, std::function<void(const std::string &)> note,
+            const std::string &address) {
+    const auto mark = note;
+    source.assign(url, ca, std::move(abort), std::move(note), address);
     auto *buffer = static_cast<unsigned char *>(av_malloc(65536));
     if (!buffer)
       throw std::bad_alloc();
@@ -229,10 +344,15 @@ struct StreamInput {
     av_dict_set(&options, "enable_drefs", "0", 0);
     av_dict_set(&options, "probesize", "1048576", 0);
     av_dict_set(&options, "analyzeduration", "5000000", 0);
+    mark("reading header");
     const int opened = avformat_open_input(&format, nullptr, av_find_input_format("mov"), &options);
     av_dict_free(&options);
-    if (opened < 0 || avformat_find_stream_info(format, nullptr) < 0)
+    if (opened < 0)
       fail("Trailer stream could not be opened");
+    mark("header read, probing streams");
+    if (avformat_find_stream_info(format, nullptr) < 0)
+      fail("Trailer stream could not be probed");
+    mark("streams probed");
     index = av_find_best_stream(format, type, -1, -1, nullptr, 0);
     if (index < 0)
       fail("Trailer stream has no usable track");
@@ -245,7 +365,9 @@ struct StreamInput {
       throw std::bad_alloc();
     check(avcodec_parameters_to_context(codec, params));
     codec->thread_count = threads;
+    mark("opening decoder");
     check(avcodec_open2(codec, decoder, nullptr));
+    mark("decoder open");
   }
   ~StreamInput() {
     avcodec_free_context(&codec);
@@ -325,12 +447,45 @@ void VideoPreview::start(const std::string &key, const Json &config, const std::
   }
   wake_.notify_all();
 }
+// With an overlay, the frame is scaled to cover the screen, cropped to it and shaded here.
+VideoPreview::Picture VideoPreview::present(SwsContext *&scaler, const AVFrame *frame, double pts) {
+  std::shared_ptr<const Overlay> overlay;
+  {
+    std::lock_guard lock(mutex_);
+    overlay = overlay_;
+  }
+  if (!overlay || overlay->width <= 0 || overlay->height <= 0)
+    return {frame->width, frame->height, pts,
+            displayPixels(scaler, frame, frame->width, frame->height), false};
+  const int width = overlay->width, height = overlay->height;
+  const double scale = std::max(static_cast<double>(width) / frame->width,
+                                static_cast<double>(height) / frame->height);
+  const int scaledWidth = std::max(width, static_cast<int>(frame->width * scale + .5)),
+            scaledHeight = std::max(height, static_cast<int>(frame->height * scale + .5));
+  const auto scaled = displayPixels(scaler, frame, scaledWidth, scaledHeight);
+  const int left = (scaledWidth - width) / 2, top = (scaledHeight - height) / 2;
+  Picture picture{width, height, pts, std::vector<uint8_t>(static_cast<size_t>(width) * height * 4),
+                  true};
+  for (int y = 0; y < height; y++) {
+    const uint8_t *source = scaled.data() + (static_cast<size_t>(y + top) * scaledWidth + left) * 4;
+    const uint8_t *shade = overlay->pixels.data() + static_cast<size_t>(y) * width * 4;
+    uint8_t *target = picture.pixels.data() + static_cast<size_t>(y) * width * 4;
+    for (int x = 0; x < width; x++, source += 4, shade += 4, target += 4) {
+      const unsigned keep = 255u - shade[3];
+      target[0] = static_cast<uint8_t>(std::min(255u, (source[0] * keep + 127u) / 255u + shade[0]));
+      target[1] = static_cast<uint8_t>(std::min(255u, (source[1] * keep + 127u) / 255u + shade[1]));
+      target[2] = static_cast<uint8_t>(std::min(255u, (source[2] * keep + 127u) / 255u + shade[2]));
+      target[3] = 255;
+    }
+  }
+  return picture;
+}
 void VideoPreview::startStream(const std::string &key, const Json &config, const std::string &token,
                                const std::string &path, bool sound) {
   if (key == key_)
     return;
   stop();
-  if (path.rfind("/api/v1/device/games/", 0) != 0)
+  if (path.rfind("/api/v1/device/games/", 0) != 0 && path.rfind("/api/v1/device/titles/", 0) != 0)
     return;
   key_ = key;
   active_ = true;
@@ -353,7 +508,9 @@ void VideoPreview::decodeStream(const Request &request) {
   Client client(config);
   client.credential = request.token;
   client.cancelled = abort;
+  stage("resolving");
   const auto info = client.request("GET", request.url);
+  stage("opening video");
   const auto videoUrl = info["video"]["url"].string(), audioUrl = info["audio"]["url"].string();
   if (!streamAddress(videoUrl) || (request.sound && !streamAddress(audioUrl)))
     throw std::runtime_error("Trailer stream unavailable");
@@ -363,16 +520,23 @@ void VideoPreview::decodeStream(const Request &request) {
   if (!d.frame || !d.packet)
     throw std::bad_alloc();
   StreamInput video, audio;
-  video.open(videoUrl, ca, abort, AVMEDIA_TYPE_VIDEO, 4);
+  video.open(
+      videoUrl, ca, abort, AVMEDIA_TYPE_VIDEO, 4,
+      [this](const std::string &value) { stage("video " + value); },
+      info["video"]["address"].string());
+  stage("video open");
   const auto *vp = video.format->streams[video.index]->codecpar;
   if (vp->codec_id != AV_CODEC_ID_H264 || vp->width <= 0 || vp->height <= 0 || vp->width > 1920 ||
-      vp->height > 1080 || vp->width % 2 || vp->height % 2 || video.format->duration <= 0 ||
-      video.format->duration > limit * AV_TIME_BASE)
+      vp->height > 1080 || vp->width % 2 || vp->height % 2 || video.format->duration <= 0)
     throw std::runtime_error("Unsupported trailer stream (width=" + std::to_string(vp->width) +
                              ", height=" + std::to_string(vp->height) +
                              ", duration=" + std::to_string(video.format->duration) + ")");
   if (request.sound) {
-    audio.open(audioUrl, ca, abort, AVMEDIA_TYPE_AUDIO, 1);
+    stage("opening audio");
+    audio.open(
+        audioUrl, ca, abort, AVMEDIA_TYPE_AUDIO, 1,
+        [this](const std::string &value) { stage("audio " + value); },
+        info["audio"]["address"].string());
     const auto *ap = audio.format->streams[audio.index]->codecpar;
     if (ap->codec_id != AV_CODEC_ID_AAC || ap->sample_rate < 8000 || ap->sample_rate > 48000 ||
         ap->ch_layout.nb_channels != 2)
@@ -385,30 +549,27 @@ void VideoPreview::decodeStream(const Request &request) {
   } else {
     audio.ended = true;
   }
+  // Some games only have long videos listed; those play up to the trailer limit and stop.
+  bool capped = false;
   const auto drain = [&](StreamInput &input, bool picture) {
     int result;
-    while (!abort() && (result = avcodec_receive_frame(input.codec, d.frame)) >= 0) {
+    while (!abort() && !capped && (result = avcodec_receive_frame(input.codec, d.frame)) >= 0) {
       auto *f = d.frame;
       const double pts =
           f->best_effort_timestamp == AV_NOPTS_VALUE
               ? input.time
               : std::max(0., f->best_effort_timestamp *
                                  av_q2d(input.format->streams[input.index]->time_base));
-      if (pts > limit)
-        throw std::runtime_error("Invalid media timestamp");
+      if (pts > limit) {
+        capped = true;
+        av_frame_unref(f);
+        return;
+      }
       if (picture) {
         if ((f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P) ||
             f->width != vp->width || f->height != vp->height)
           throw std::runtime_error("Unsupported trailer frame");
-        Picture next{f->width, f->height, pts, std::vector<uint8_t>(f->width * f->height * 3 / 2)};
-        size_t offset = 0;
-        for (int plane = 0; plane < 3; plane++) {
-          const int w = f->width / (plane ? 2 : 1), h = f->height / (plane ? 2 : 1);
-          for (int y = 0; y < h; y++) {
-            std::memcpy(next.pixels.data() + offset, f->data[plane] + y * f->linesize[plane], w);
-            offset += w;
-          }
-        }
+        Picture next = present(d.scaler, f, pts);
         std::unique_lock lock(mutex_);
         wake_.wait(lock, [&] { return abort() || pictures_.size() < 4; });
         if (abort())
@@ -437,7 +598,8 @@ void VideoPreview::decodeStream(const Request &request) {
     if (!abort() && result != AVERROR(EAGAIN) && result != AVERROR_EOF)
       check(result);
   };
-  while (!abort() && (!video.ended || !audio.ended)) {
+  stage("decoding");
+  while (!abort() && !capped && (!video.ended || !audio.ended)) {
     const bool picture = audio.ended || (!video.ended && video.time + .3 <= audio.time);
     auto &input = picture ? video : audio;
     if (av_read_frame(input.format, d.packet) < 0) {
@@ -602,16 +764,7 @@ double VideoPreview::decode(const fs::path &file, uint64_t generation, bool musi
       if (index == vi) {
         if (f->format != AV_PIX_FMT_YUV420P || f->width != vp->width || f->height != vp->height)
           throw std::runtime_error("Unsupported trailer frame");
-        Picture picture{f->width, f->height, pts,
-                        std::vector<uint8_t>(f->width * f->height * 3 / 2)};
-        size_t offset = 0;
-        for (int plane = 0; plane < 3; plane++) {
-          int w = f->width / (plane ? 2 : 1), h = f->height / (plane ? 2 : 1);
-          for (int y = 0; y < h; y++) {
-            std::memcpy(picture.pixels.data() + offset, f->data[plane] + y * f->linesize[plane], w);
-            offset += w;
-          }
-        }
+        Picture picture = present(d.scaler, f, pts);
         std::unique_lock lock(mutex_);
         wake_.wait(lock, [&] { return cancelled(generation) || pictures_.size() < 4; });
         if (cancelled(generation))
@@ -713,13 +866,14 @@ SDL_Texture *VideoPreview::frame(SDL_Renderer *renderer) {
       SDL_DestroyTexture(texture_);
       width_ = picture.width;
       height_ = picture.height;
-      texture_ = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING,
+      texture_ = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
                                    width_, height_);
+      if (texture_)
+        SDL_SetTextureBlendMode(texture_, SDL_BLENDMODE_NONE);
     }
     if (texture_) {
-      auto *p = picture.pixels.data();
-      SDL_UpdateYUVTexture(texture_, nullptr, p, width_, p + width_ * height_, width_ / 2,
-                           p + width_ * height_ * 5 / 4, width_ / 2);
+      SDL_UpdateTexture(texture_, nullptr, picture.pixels.data(), width_ * 4);
+      composed_ = picture.composed;
       displayed_++;
     }
   }

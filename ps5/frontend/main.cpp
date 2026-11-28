@@ -13,6 +13,7 @@
 #endif
 #include "collections.hpp"
 #include "video.hpp"
+#include <map>
 #include <SDL_image.h>
 #include <atomic>
 #include <chrono>
@@ -134,7 +135,8 @@ static void localAssets(const fs::path &root) {
 
 class Storefront {
   Options options_;
-  Json config_, model_ = Json::object(), device_, plan_, planMethods_, localSnapshot_;
+  Json config_, model_ = Json::object(), device_, plan_, planMethods_, localSnapshot_,
+                localIdentity_;
   std::string credential_, query_;
   SDL_Window *window_ = nullptr;
   SDL_Renderer *renderer_ = nullptr;
@@ -186,6 +188,11 @@ class Storefront {
   AsyncWorker::Result liveRequest_;
 #endif
   AsyncWorker localNetwork_;
+  // Details for games that exist only on this console, looked up once each by title ID.
+  AsyncWorker titleNetwork_;
+  AsyncWorker::Result titleRequest_;
+  std::string titleRequestId_;
+  std::map<std::string, Json> titleDetails_;
   AsyncWorker::Result request_, localAgentRequest_, localCommandRequest_;
   std::function<void(const Json &)> complete_, localCommandComplete_;
   std::atomic<bool> connected_{false};
@@ -199,6 +206,11 @@ class Storefront {
   std::function<void()> pending_;
   uint64_t planRevision_ = 0;
   std::vector<double> frameTimes_;
+  std::vector<double> liveFrameTimes_;
+  Uint32 liveSince_ = 0;
+  std::string rendererName_, videoShadeKey_;
+  int64_t liveLibraryMin_ = -1, liveLibraryMax_ = -1, liveLibraryChanges_ = 0,
+          liveLibraryLast_ = -1;
   int backdropCompositions_ = 0;
   std::vector<std::string> script_;
   size_t scriptIndex_ = 0;
@@ -360,8 +372,12 @@ class Storefront {
       const bool sound = config_["trailerSound"].null() || config_["trailerSound"].boolean();
       if (stream)
         video_->startStream(key, config_, credential_,
-                            "/api/v1/device/games/" + g["id"].string() +
-                                "/trailer-stream?maxHeight=1080&maxDuration=180",
+                            consoleOnly(g)
+                                ? "/api/v1/device/titles/" + g["titleId"].string() +
+                                      "/trailer-stream?title=" + queryValue(g["title"].string()) +
+                                      "&maxHeight=1080&maxDuration=180"
+                                : "/api/v1/device/games/" + g["id"].string() +
+                                      "/trailer-stream?maxHeight=1080&maxDuration=180",
                             sound);
       else
         video_->start(key, config_, credential_, trailer, sound, false, offline_);
@@ -1202,6 +1218,13 @@ class Storefront {
         loading_ = false;
         consoleId_ = consoleSelectionAfterServerRefresh(consoles(), consoleId_,
                                                         device_["consoleId"].string());
+        // The server's answer replaces the model, so what the local agent last reported has to
+        // be merged back in right away; otherwise the library alternates between two lists.
+        if (localAgentSeen_ && !localSnapshot_.null() && !localIdentity_.null() &&
+            consoleId_ == localIdentity_["consoleId"].string())
+          model_ = withObservedLocalInventory(model_, localSnapshot_, localIdentity_,
+                                              config_["name"].string("My PS5"));
+        applyTitleDetails();
         try {
           auto cached = value.deepCopy();
           cached.set("device", Json::object({{"consoleId", device_["consoleId"]}}));
@@ -1353,6 +1376,69 @@ class Storefront {
     startLive();
   }
 #endif
+  // A small live record of how the app is running, rewritten every few seconds, so a problem
+  // seen on the console can be read back without a debugger. It holds no account data.
+  void liveSample(double frameMillis) {
+    liveFrameTimes_.push_back(frameMillis);
+    const int64_t library = static_cast<int64_t>(model_["library"].size());
+    if (library != liveLibraryLast_) {
+      liveLibraryChanges_++;
+      liveLibraryLast_ = library;
+    }
+    liveLibraryMin_ = liveLibraryMin_ < 0 ? library : std::min(liveLibraryMin_, library);
+    liveLibraryMax_ = std::max(liveLibraryMax_, library);
+    if (liveFrameTimes_.size() < 300)
+      return;
+    const Uint32 now = SDL_GetTicks();
+    std::sort(liveFrameTimes_.begin(), liveFrameTimes_.end());
+    const auto count = liveFrameTimes_.size();
+    auto inventory = localSnapshot_["inventory"];
+    int64_t available = 0;
+    for (size_t i = 0; i < inventory.size(); i++)
+      if (inventory[i]["available"].boolean())
+        available++;
+    try {
+      const auto live = Json::object(
+          {{"version", appVersion},
+           {"framesPerSecondTimes10",
+            static_cast<int64_t>(
+                liveSince_ && now > liveSince_ ? count * 10000.0 / (now - liveSince_) : 0)},
+           {"frameMedianMicros", static_cast<int64_t>(liveFrameTimes_[count / 2] * 1000)},
+           {"frameP95Micros", static_cast<int64_t>(liveFrameTimes_[count * 95 / 100] * 1000)},
+           {"frameMaxMicros", static_cast<int64_t>(liveFrameTimes_.back() * 1000)},
+           {"screen", page_},
+           {"trailerStarts", static_cast<int64_t>(video_->starts())},
+           {"trailerFrames", static_cast<int64_t>(video_->displayed())},
+           {"trailerDecodedFrames", static_cast<int64_t>(video_->decoded())},
+           {"trailerAudioBytes", static_cast<int64_t>(video_->audioBytes())},
+           {"trailerActive", video_->active()},
+           {"previewError", video_->error()},
+           {"trailerStage", video_->streamStage()},
+           {"renderer", rendererName_},
+           {"textureBytes", static_cast<int64_t>(art_->textureBytes())},
+           {"libraryEntries", liveLibraryLast_},
+           {"libraryEntriesMin", liveLibraryMin_},
+           {"libraryEntriesMax", liveLibraryMax_},
+           {"libraryEntryChanges", liveLibraryChanges_},
+           {"localInventory", static_cast<int64_t>(inventory.size())},
+           {"localInventoryAvailable", available},
+           {"localAgentSeen", localAgentSeen_},
+           {"localSnapshotRevision", localSnapshotRevision_},
+           {"selectedConsoleIsLocal", consoleId_ == device_["consoleId"].string()},
+           {"offline", offline_},
+           {"offlineMode", offlineMode_.load()}});
+      atomicJson(options_.config.parent_path() / "performance-live.json", live);
+#ifdef PS5
+      // The app's own folder is sealed inside its sandbox; this copy can be read from outside.
+      atomicJson("/data/ps5library/app-live.json", live);
+#endif
+    } catch (...) {
+    }
+    liveFrameTimes_.clear();
+    liveSince_ = now;
+    liveLibraryMin_ = liveLibraryMax_ = liveLibraryLast_;
+    liveLibraryChanges_ = 0;
+  }
   void applyLocalSnapshot(const Json &value) {
     auto envelope = localEnvelope(value), snapshot = envelope["snapshot"],
          identity = localIdentity(envelope["device"], consoleId_);
@@ -1366,6 +1452,93 @@ class Storefront {
     offline_ = true;
     loading_ = false;
   }
+  static std::string queryValue(const std::string &text) {
+    static const char digits[] = "0123456789ABCDEF";
+    std::string result;
+    for (const unsigned char c : text) {
+      if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' ||
+          c == '_' || c == '.' || c == '~')
+        result += static_cast<char>(c);
+      else {
+        result += '%';
+        result += digits[c >> 4];
+        result += digits[c & 15];
+      }
+    }
+    return result;
+  }
+  static bool consoleOnly(const Json &game) {
+    return game["id"].string().rfind("local-", 0) == 0;
+  }
+  // The model is rebuilt on every refresh, so known details are put back each time.
+  void applyTitleDetails() {
+    if (titleDetails_.empty())
+      return;
+    auto catalog = model_["catalog"];
+    for (size_t i = 0; i < catalog.size(); i++) {
+      auto game = catalog[i];
+      if (!consoleOnly(game) || !game["external"].null())
+        continue;
+      const auto found = titleDetails_.find(game["titleId"].string());
+      if (found == titleDetails_.end() || found->second["external"].null())
+        continue;
+      game.set("external", found->second["external"]);
+      // A console-only game borrows the looked-up pictures: the square one as its cover, and
+      // its trailer's frame as the background. Where it has its own, those are only fallbacks.
+      const auto base = "/api/v1/device/titles/" + game["titleId"].string() +
+                        "/artwork?title=" + queryValue(game["title"].string());
+      const bool trailer = found->second["external"]["videos"].size() > 0;
+      for (const auto *key : {"coverUrl", "heroUrl"}) {
+        const bool wide = std::string(key) == "heroUrl";
+        if (wide ? !trailer : found->second["external"]["imageUrl"].string().empty())
+          continue;
+        const auto picture = base + (wide ? "&kind=hero" : "&kind=cover");
+        if (game[key].string().empty())
+          game.set(key, picture);
+        else if (game[key].string() != picture)
+          art_->alternate(game[key].string(), picture);
+      }
+    }
+  }
+  void refreshTitleDetails() {
+    if (options_.preview || networkPaused_ || offlineMode_)
+      return;
+    if (titleRequest_.valid()) {
+      if (titleRequest_.wait_for(std::chrono::seconds(0)) != AsyncWorker::Status::ready)
+        return;
+      try {
+        titleDetails_[titleRequestId_] = AsyncWorker::take(titleRequest_);
+      } catch (...) {
+        titleDetails_[titleRequestId_] = Json::object();
+      }
+      applyTitleDetails();
+      return;
+    }
+    if (credential_.empty() || offline_ || config_["serverUrl"].string().empty())
+      return;
+    auto catalog = model_["catalog"];
+    for (size_t i = 0; i < catalog.size(); i++) {
+      const auto game = catalog[i];
+      const auto titleId = game["titleId"].string(), title = game["title"].string();
+      if (!consoleOnly(game) || titleId.empty() || title.empty() || title == titleId ||
+          titleDetails_.count(titleId))
+        continue;
+      titleRequestId_ = titleId;
+      const auto config = config_.dump(), token = credential_;
+      const auto path = "/api/v1/device/titles/" + titleId + "/external?title=" + queryValue(title);
+      titleRequest_ = titleNetwork_.submit([config, token, path] {
+        try {
+          Client client(Json::parse(config));
+          client.credential = token;
+          return client.request("GET", path);
+        } catch (...) {
+          // A game the sources do not know is simply left as it is.
+          return Json::object();
+        }
+      });
+      return;
+    }
+  }
   void observeLocalSnapshot(const Json &value) {
     auto envelope = localEnvelope(value), snapshot = envelope["snapshot"],
          identity = localIdentity(envelope["device"], consoleId_);
@@ -1373,6 +1546,7 @@ class Storefront {
                observedLocalId = identity["consoleId"].string();
     auto consoles = model_["consoles"];
     localSnapshot_ = snapshot;
+    localIdentity_ = identity;
     agentPairingCode_ = identity["pairingCode"].string();
     agentHardwareProof_ = identity["hardwareProof"].string();
     localSnapshotRevision_ = snapshot["libraryRevision"].number();
@@ -1541,6 +1715,8 @@ class Storefront {
     }
     native_stage(1015);
     refreshLocal();
+    refreshTitleDetails();
+    applyTitleDetails();
     native_stage(1016);
     pumpLive();
     native_stage(1017);
@@ -1644,6 +1820,57 @@ class Storefront {
     }
     heroMix_ = heroCrossfadeEnabled_ ? std::min(1.f, heroMix_ + delta_ / Tokens::fadeSeconds) : 1;
     auto *video = video_->frame(renderer_);
+    // What is drawn over the hero. A playing trailer has this baked into its frames by the
+    // decoding thread, because blending it over full-screen video every frame is too slow for
+    // the console's software renderer.
+    auto shade = [&] {
+      const float fadeTop = page_ == "Home" || page_ == "My Library"
+                                ? Tokens::libraryStripY - 100
+                                : std::floor(Tokens::heroBottom * .68f);
+      draw().fade({rect.x, 0, rect.w * .58f, rect.h}, true, true, 255);
+      draw().fade({0, fadeTop, Tokens::width, rect.h - fadeTop}, false);
+      draw().fade({0, 0, Tokens::width, Tokens::header * 1.2f}, false, true, 150);
+    };
+    auto dim = [&] {
+      draw().fill({0, 0, Tokens::width, Tokens::height},
+                  {7, 11, 17,
+                   static_cast<Uint8>(page_ == "Game"                            ? 85
+                                      : page_ == "Home" || page_ == "My Library" ? 72
+                                                                                 : 180)});
+    };
+    if (video && immersive && backdropCacheEnabled_ && SDL_RenderTargetSupported(renderer_)) {
+      const auto mode = std::string(1, backdropMode(page_));
+      if (mode != videoShadeKey_) {
+        const int width = static_cast<int>(Tokens::width),
+                  height = static_cast<int>(Tokens::height);
+        auto *target = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
+                                         SDL_TEXTUREACCESS_TARGET, width, height);
+        if (target && SDL_SetRenderTarget(renderer_, target) == 0) {
+          // Only the clear is unblended; the renderer goes back to its normal blending at once,
+          // because every other draw in the app relies on it.
+          SDL_BlendMode blending = SDL_BLENDMODE_BLEND;
+          SDL_GetRenderDrawBlendMode(renderer_, &blending);
+          SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+          SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 0);
+          SDL_RenderClear(renderer_);
+          SDL_SetRenderDrawBlendMode(renderer_, blending);
+          shade();
+          dim();
+          std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
+          const bool read = SDL_RenderReadPixels(renderer_, nullptr, SDL_PIXELFORMAT_ARGB8888,
+                                                 pixels.data(), width * 4) == 0;
+          SDL_SetRenderTarget(renderer_, nullptr);
+          if (read)
+            video_->overlay(std::move(pixels), width, height);
+        }
+        SDL_DestroyTexture(target);
+        videoShadeKey_ = mode;
+      }
+      if (video_->composed()) {
+        SDL_RenderCopy(renderer_, video, nullptr, nullptr);
+        return;
+      }
+    }
     auto paint = [&] {
       draw().fill({0, 0, Tokens::width, Tokens::height}, Tokens::background);
       if (!oldHero_.empty() && heroMix_ < 1) {
@@ -1657,19 +1884,9 @@ class Storefront {
       }
       if (video)
         draw().cover(video, rect);
-      if (image || video || heroMix_ < 1) {
-        const float fadeTop = page_ == "Home" || page_ == "My Library"
-                                  ? Tokens::libraryStripY - 100
-                                  : std::floor(Tokens::heroBottom * .68f);
-        draw().fade({rect.x, 0, rect.w * .58f, rect.h}, true, true, 255);
-        draw().fade({0, fadeTop, Tokens::width, rect.h - fadeTop}, false);
-        draw().fade({0, 0, Tokens::width, Tokens::header * 1.2f}, false, true, 150);
-      }
-      draw().fill({0, 0, Tokens::width, Tokens::height},
-                  {7, 11, 17,
-                   static_cast<Uint8>(page_ == "Game"                            ? 85
-                                      : page_ == "Home" || page_ == "My Library" ? 72
-                                                                                 : 180)});
+      if (image || video || heroMix_ < 1)
+        shade();
+      dim();
     };
     // Compose the static hero once. SDL's PS5 software renderer otherwise
     // blends millions of unchanged pixels every frame.
@@ -3580,6 +3797,7 @@ public:
     backdropCacheEnabled_ = SDL_RenderTargetSupported(renderer_) == SDL_TRUE;
     SDL_RendererInfo rendererInfo{};
     SDL_GetRendererInfo(renderer_, &rendererInfo);
+    rendererName_ = rendererInfo.name ? rendererInfo.name : "";
     heroCrossfadeEnabled_ = heroCrossfade(rendererInfo.flags);
     fs::path font = config_["font"].string("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
 #ifdef PS5
@@ -3884,6 +4102,8 @@ public:
               std::chrono::duration<double, std::milli>(rendered - start).count();
       }
       frameCount_++;
+      liveSample(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                     .count());
       if (frameCount_ == 60)
         atomicJson(
             options_.config.parent_path() / "update-boot.json",

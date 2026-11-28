@@ -1,6 +1,6 @@
 // Developer probe, not part of ctest (it needs the network): plays a remote trailer stream through
 // the real VideoPreview path with SDL's dummy drivers and reports what was decoded.
-//   stream-probe <serverUrl> <path> [seconds]
+//   stream-probe <serverUrl> <path> [seconds] [compose]
 #include "../frontend/video.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +24,13 @@ int main(int argc, char **argv) {
     storefront::UiAudio audio(true);
     storefront::VideoPreview video(ps5library::fs::temp_directory_path() / "stream-probe", audio);
     const auto config = Json::object({{"serverUrl", argv[1]}, {"allowInsecureLan", true}});
+    // An optional fifth argument bakes a half-dark test overlay into the frames.
+    if (argc > 4) {
+      std::vector<uint8_t> shade(static_cast<size_t>(1920) * 1080 * 4);
+      for (size_t i = 0; i < shade.size(); i += 4)
+        shade[i + 3] = 128;
+      video.overlay(std::move(shade), 1920, 1080);
+    }
     video.startStream("probe", config, "probe-token", argv[2], true);
     const auto started = SDL_GetTicks64();
     uint64_t lastReport = 0;
@@ -41,6 +48,7 @@ int main(int argc, char **argv) {
         std::fflush(stdout);
       }
     }
+    std::printf("composed=%d%c", video.composed() ? 1 : 0, 10);
     const auto error = video.error();
     std::printf("result: decoded=%llu displayed=%llu audioBytes=%llu error=\"%s\"\n",
                 static_cast<unsigned long long>(video.decoded()),
