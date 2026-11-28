@@ -318,12 +318,22 @@ class Storefront {
   }
   void preview() {
     auto g = highlighted(), trailer = g["trailer"], music = g["music"];
+    // A game without a prepared trailer may still have one the server can resolve to a remote
+    // stream; that is played directly and never stored.
+    const auto streamId = g["external"]["videos"][static_cast<size_t>(0)].string();
+    bool stream = false;
     std::string key, musicKey;
     if (!options_.preview && windowActive_) {
       const bool server = !credential_.empty() || offlineMode_;
       if (server && (config_["autoplayTrailers"].null() || config_["autoplayTrailers"].boolean()) &&
           !trailer.null())
         key = page_ + ":" + g["id"].string() + ":" + trailer["sha256"].string();
+      else if (!credential_.empty() && !offline_ && !offlineMode_ && trailer.null() &&
+               !streamId.empty() &&
+               (config_["autoplayTrailers"].null() || config_["autoplayTrailers"].boolean())) {
+        key = page_ + ":" + g["id"].string() + ":stream:" + streamId;
+        stream = true;
+      }
       if ((config_["gameMusic"].null() || config_["gameMusic"].boolean()) && server &&
           !music.null())
         musicKey = page_ + ":" + g["id"].string() + ":" + music["sha256"].string();
@@ -338,9 +348,14 @@ class Storefront {
          startTrailer = previewDelay_.ready(key, now);
     if (startTrailer) {
       audio_->ambient(false);
-      video_->start(key, config_, credential_, trailer,
-                    config_["trailerSound"].null() || config_["trailerSound"].boolean(), false,
-                    offline_);
+      const bool sound = config_["trailerSound"].null() || config_["trailerSound"].boolean();
+      if (stream)
+        video_->startStream(key, config_, credential_,
+                            "/api/v1/device/games/" + g["id"].string() +
+                                "/trailer-stream?maxHeight=1080&maxDuration=180",
+                            sound);
+      else
+        video_->start(key, config_, credential_, trailer, sound, false, offline_);
     } else if (startMusic && !video_->active()) {
       audio_->ambient(false);
       video_->start(musicKey, config_, credential_, music, true, true, offline_);

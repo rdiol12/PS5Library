@@ -30,6 +30,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,12 +41,24 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ps5library.companion.data.Game
 import com.ps5library.companion.data.Release
+import com.ps5library.companion.data.Repository
 import com.ps5library.companion.data.formatBytes
 import com.ps5library.companion.ui.SessionViewModel
 import com.ps5library.companion.ui.components.EmptyState
@@ -98,6 +112,54 @@ fun GameDetailScreen(
     }
 }
 
+/**
+ * Muted trailer over the hero artwork, streamed straight from the address the server resolves.
+ * Nothing is downloaded or stored; the artwork simply stays if there is no playable trailer.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+private fun HeroTrailer(game: Game, repository: Repository, modifier: Modifier = Modifier) {
+    if (game.external?.videos.isNullOrEmpty()) return
+    var address by remember(game.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(game.id) {
+        address = repository.trailerStream(game.id)?.video?.url?.takeIf {
+            it.startsWith("https://") &&
+                android.net.Uri.parse(it).host?.endsWith(".googlevideo.com") == true
+        }
+    }
+    val url = address ?: return
+    val context = LocalContext.current
+    var ready by remember(url) { mutableStateOf(false) }
+    val player = remember(url) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(url))
+            volume = 0f
+            repeatMode = Player.REPEAT_MODE_ONE
+            playWhenReady = true
+            addListener(object : Player.Listener {
+                override fun onRenderedFirstFrame() {
+                    ready = true
+                }
+            })
+            prepare()
+        }
+    }
+    DisposableEffect(player) { onDispose { player.release() } }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { player.pause() }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { player.play() }
+    AndroidView(
+        factory = {
+            PlayerView(it).apply {
+                useController = false
+                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                this.player = player
+            }
+        },
+        // The view must exist for the first frame to render; it is revealed once that happens.
+        modifier = modifier.alpha(if (ready) 1f else 0f),
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun GameDetailContent(game: Game, session: SessionViewModel, modifier: Modifier = Modifier) {
@@ -109,6 +171,7 @@ private fun GameDetailContent(game: Game, session: SessionViewModel, modifier: M
                 .clip(RoundedCornerShape(0.dp)),
         ) {
             ServerImage(path = game.heroUrl, modifier = Modifier.fillMaxSize())
+            HeroTrailer(game, session.repository, Modifier.fillMaxSize())
         }
 
         Column(modifier = Modifier.padding(16.dp)) {
@@ -117,6 +180,19 @@ private fun GameDetailContent(game: Game, session: SessionViewModel, modifier: M
                 Text(
                     game.publisher,
                     style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+
+            val facts = listOfNotNull(
+                game.external?.releaseDate?.let { "Released $it" },
+                game.external?.metacritic?.let { "Metacritic $it" },
+            )
+            if (facts.isNotEmpty()) {
+                Text(
+                    facts.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
                 )

@@ -48,7 +48,11 @@ struct AutoTrailerView: View {
 
     private func load() async {
         cleanup()
-        guard let api = store.api, let asset = game.trailer, !store.offline else { return }
+        guard let api = store.api, !store.offline else { return }
+        guard let asset = game.trailer else {
+            if game.external?.videos?.isEmpty == false { await stream(api) }
+            return
+        }
         do {
             let local = try await api.media(asset, kind: "trailers")
             file = local
@@ -61,6 +65,34 @@ struct AutoTrailerView: View {
             if scenePhase == .active { queue.play() }
         } catch {
             cleanup()
+        }
+    }
+
+    // No prepared trailer: play the one the server can resolve, straight from its remote address.
+    // Nothing is downloaded to the device; the hero artwork stays if it cannot be played.
+    private func stream(_ api: API) async {
+        guard let resolved: TrailerStream = try? await api.request(
+            "/games/\(game.id)/trailer-stream?maxHeight=1080&maxDuration=180"
+        ),
+            let url = URL(string: resolved.video.url),
+            url.scheme == "https",
+            url.host?.hasSuffix(".googlevideo.com") == true,
+            !Task.isCancelled
+        else { return }
+        let item = AVPlayerItem(url: url)
+        let queue = AVQueuePlayer(items: [item])
+        queue.isMuted = true
+        player = queue
+        if scenePhase == .active { queue.play() }
+        for await status in item.publisher(for: \.status).values {
+            if status == .readyToPlay {
+                withAnimation(.easeIn(duration: 0.4)) { ready = true }
+                return
+            }
+            if status == .failed {
+                cleanup()
+                return
+            }
         }
     }
 
@@ -675,10 +707,6 @@ struct GameDetails: View {
     @EnvironmentObject var store: Store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize; let game: Game
     @State private var download = false
-    @State private var saving = false
-    var saved: Bool {
-        store.data.games.first(where: { $0.id == game.id })?.saved ?? false
-    }
 
     // An in-progress server preparation/transfer for any of this game's releases.
     private var activeJob: Job? {
@@ -741,16 +769,6 @@ struct GameDetails: View {
                         )
                         .disabled(game.releases.allSatisfy { $0.sources.isEmpty })
                     }
-                    Button(
-                        saved ? "Remove from Saved Games" : "Save Game",
-                        systemImage: saved ? "heart.fill" : "heart"
-                    ) {
-                        saveGame()
-                    }
-                    .buttonStyle(.bordered).controlSize(.large).frame(
-                        maxWidth: .infinity,
-                        minHeight: 50
-                    ).disabled(saving || store.offline)
                 }
                 if let description = game.description, !description.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
@@ -761,6 +779,16 @@ struct GameDetails: View {
                             Label(
                                 publisher,
                                 systemImage: "building.2"
+                            ).font(.footnote).foregroundStyle(secondaryText)
+                        }
+                        let facts = [
+                            game.external?.releaseDate.map { "Released \($0)" },
+                            game.external?.metacritic.map { "Metacritic \($0)" }
+                        ].compactMap { $0 }
+                        if !facts.isEmpty {
+                            Label(
+                                facts.joined(separator: " · "),
+                                systemImage: "calendar"
                             ).font(.footnote).foregroundStyle(secondaryText)
                         }
                     }.cinematicCard()
@@ -824,34 +852,6 @@ struct GameDetails: View {
                 InstallationView(game: game)
             }
             .tint(gameAccent(game))
-    }
-}
-
-extension GameDetails {
-    func saveGame() {
-        guard let api = store.api else {
-            return
-        }
-        let owner = store.account?.id
-        let value = !saved
-        saving = true
-        Task { @MainActor in
-            defer {
-                saving = false
-            }
-            do {
-                let _: Acknowledgement = try await api.request(
-                    "/games/\(game.id)/save",
-                    method: "POST",
-                    body: ["saved": value]
-                )
-                if store.account?.id == owner { await store.refresh() }
-            } catch {
-                if store.account?.id == owner {
-                    store.error = error.localizedDescription
-                }
-            }
-        }
     }
 }
 
@@ -1159,7 +1159,7 @@ struct DownloadsView: View {
                 store.dismissJob(job.id)
             }]
         }
-        if ["DOWNLOAD", "BUILD", "TRANSFER"].contains(job.kind) {
+        if ["DOWNLOAD", "BUILD", "TRANSFER", "BACKPORT_SYNC"].contains(job.kind) {
             return [SwipeActionItem(label: "Cancel", system: "xmark", tint: danger) {
                 store.controlJob(job.id, action: "cancel")
             }]
@@ -1950,7 +1950,6 @@ struct LibraryView: View {
     @State private var scope = "server"
     @State private var storageId = ""
     @State private var query = ""
-    @State private var savedOnly = false
     @State private var selectedGameId: String?
     var games: [Game] {
         let available = scope == "server" ? GameCollection.server.select(store.data.games) : store
@@ -1959,7 +1958,7 @@ struct LibraryView: View {
                 storageId: storageId
             ) }
         return available.filter { game in
-            (!savedOnly || game.saved == true) && (query.isEmpty || ([
+            (query.isEmpty || ([
                 game.title,
                 game.titleId,
                 game.publisher ?? ""
@@ -2026,9 +2025,9 @@ struct LibraryView: View {
                 } else if games.isEmpty {
                     ContentUnavailableView(
                         query
-                            .isEmpty ? (savedOnly ? "No saved games here" : "No games here yet") :
+                            .isEmpty ? "No games here yet" :
                             "No matches",
-                        systemImage: savedOnly ? "heart" : "rectangle.stack",
+                        systemImage: "rectangle.stack",
                         description: Text(query
                             .isEmpty ?
                             (scope == "console" ?
@@ -2082,18 +2081,6 @@ struct LibraryView: View {
         }
         .background(CinematicBackdrop()).navigationTitle("Library")
         .searchable(text: $query, prompt: "Search games")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    savedOnly.toggle()
-                } label: {
-                    Image(systemName: savedOnly ? "heart.fill" : "heart")
-                }
-                .foregroundStyle(savedOnly ? accent : Color.primary)
-                .accessibilityLabel(savedOnly ? "Show all games" : "Show saved games only")
-                .accessibilityAddTraits(savedOnly ? .isSelected : [])
-            }
-        }
         .navigationDestination(for: Game.self) {
             GameDetails(game: $0)
         }

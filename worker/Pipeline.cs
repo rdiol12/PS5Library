@@ -78,7 +78,7 @@ public static class Pipeline
             if (Files.TreeStamp(input) != stamp)
                 throw new WorkerError("SOURCE_CHANGED");
             if (method == "FPKG")
-                Backports.KeepPackageLibraries(overlay);
+                Backports.DropPackageProvidedLibraries(overlay);
             Progress.Stage("Verifying separate libraries", 6, fakelib: "VERIFYING");
             var hash = Files.TreeHash(
                 overlay,
@@ -386,7 +386,7 @@ public static class Pipeline
             {
                 Backports.CreateShadowMountOverlay(profile, packageSource, backportStage);
             }
-            // Firmware providers remain external; verified game replacements can be embedded in an FPKG.
+            // The package is always built clean; every backport file stays in the external overlay.
             foreach (
                 var directory in Directory
                     .GetDirectories(packageSource)
@@ -449,12 +449,8 @@ public static class Pipeline
                         package: "BUILDING",
                         fakelib: hasLibraries ? "SEPARATED" : "NOT_REQUIRED"
                     ),
-                direct && profile is not null && profile.Delivery == "OVERLAY"
-                    ? backportStage
-                    : null,
-                direct && profile is not null && profile.Delivery == "OVERLAY"
-                    ? BackportDiscovery.SdkForFirmware(profile.TargetFirmware)
-                    : null
+                null,
+                null
             );
             Progress.Stage("Inspecting output", 4, package: "INSPECTING");
             var outputInfo = new FileInfo(result);
@@ -474,7 +470,7 @@ public static class Pipeline
                     )
             );
             var preparedIdentity =
-                !direct && profile is not null && profile.Delivery != "INTEGRATED"
+                profile is not null && profile.Delivery != "INTEGRATED"
                     ? InputInspector.ReadIdentity(
                         File.ReadAllBytes(Files.SafeRelative(backportStage, "sce_sys/param.json"))
                     )
@@ -545,7 +541,7 @@ public static class Pipeline
             if (Directory.Exists(backportStage))
             {
                 if (direct)
-                    Backports.KeepPackageLibraries(backportStage);
+                    Backports.DropPackageProvidedLibraries(backportStage);
                 Progress.Stage("Verifying separate libraries", 6, fakelib: "VERIFYING");
                 var backportHash = Files.TreeHash(
                     backportStage,
@@ -601,9 +597,7 @@ public static class Pipeline
                 DateTimeOffset.UtcNow,
                 inspection,
                 backport,
-                direct
-                    ? "FPKG_EMBEDDED_GAMEFILES_EXTERNAL_LIBRARIES"
-                    : "CLEAN_PACKAGE_EXTERNAL_BACKPORT_AND_SEPARATE_DLC",
+                "CLEAN_PACKAGE_EXTERNAL_BACKPORT_AND_SEPARATE_DLC",
                 profile is null ? null : Backports.Digest(profile),
                 new DateTimeOffset(outputModified).ToUnixTimeMilliseconds()
             );

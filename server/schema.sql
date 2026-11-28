@@ -630,3 +630,8 @@ CREATE TABLE IF NOT EXISTS runtime_settings (
 -- indexable as ordinary terminal job history grows.
 CREATE INDEX IF NOT EXISTS jobs_open_work ON jobs(user_id)
   WHERE kind IN ('DOWNLOAD','BUILD') AND state NOT IN ('COMPLETED','ERROR','CANCELLED');
+-- PS5LIBRARY MIGRATION 052_backport_sync_job_kind.sql
+ALTER TABLE jobs DROP CONSTRAINT jobs_kind_check;
+ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
+  CHECK(kind IN ('DOWNLOAD','BUILD','TRANSFER','DELETE','BACKPORT_SYNC'));
+

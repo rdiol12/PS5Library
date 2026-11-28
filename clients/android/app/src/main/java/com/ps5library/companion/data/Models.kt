@@ -67,11 +67,28 @@ data class Game(
     val releases: List<Release> = emptyList(),
     val trailer: Media? = null,
     val music: Media? = null,
-    val saved: Boolean? = null,
+    val external: ExternalInfo? = null,
 ) {
     /** A playable (non-DLC) release that the server can actually deliver. */
     val serverAvailable: Boolean
         get() = releases.any { it.kind != "DLC" && (it.sources.isNotEmpty() || !it.artifacts.isNullOrEmpty()) }
+}
+
+/** Live third-party details the server attaches when a game is missing its own. */
+@Serializable
+data class ExternalInfo(
+    val releaseDate: String? = null,
+    val metacritic: Int? = null,
+    val videos: List<String> = emptyList(),
+)
+
+/** Direct address of a trailer the server resolved; streamed, never stored. */
+@Serializable
+data class TrailerStream(
+    val video: Track,
+) {
+    @Serializable
+    data class Track(val url: String)
 }
 
 @Serializable

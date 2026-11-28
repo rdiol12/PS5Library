@@ -135,7 +135,7 @@ export async function watchedMedia(config: Config, release: Release) {
   };
 }
 
-async function signature(root: string) {
+export async function signature(root: string) {
   const hash = createHash('sha256').update('watch-v4-base-tree');
   let count = 0;
   if (/\.(rar|zip|7z)(\.001)?$/i.test(root))

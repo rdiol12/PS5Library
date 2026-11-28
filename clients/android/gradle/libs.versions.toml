@@ -13,6 +13,7 @@ okhttp = "4.12.0"
 retrofitSerialization = "1.0.0"
 coil = "2.7.0"
 securityCrypto = "1.1.0-alpha06"
+media3 = "1.5.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -41,6 +42,9 @@ retrofit-kotlinx-serialization = { group = "com.jakewharton.retrofit", name = "r
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+
+androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

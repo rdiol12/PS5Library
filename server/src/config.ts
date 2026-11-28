@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import ipaddr from 'ipaddr.js';
@@ -68,6 +69,8 @@ export function configuration(env = process.env) {
       ENABLE_NEW_DOWNLOADS: featureFlag,
       ENABLE_HOME_UPDATE_BRIDGE: experimentalFlag,
       AUTO_CREATE_BACKPORT: experimentalFlag,
+      ALLOW_ENVIRONMENT_EDITS: experimentalFlag,
+      ENABLE_EXTERNAL_METADATA: experimentalFlag,
     })
     .parse(env);
   const browserOrigins = z
@@ -154,6 +157,7 @@ export function configuration(env = process.env) {
     community: values.ENABLE_COMMUNITY_FEATURES,
     newDownloads: values.ENABLE_NEW_DOWNLOADS,
     homeUpdateBridge: values.ENABLE_HOME_UPDATE_BRIDGE,
+    externalMetadata: values.ENABLE_EXTERNAL_METADATA,
   };
   const trustProxyHops =
     values.TRUST_PROXY_HOPS ?? (new URL(values.PUBLIC_URL).protocol === 'https:' ? 1 : 0);
@@ -176,3 +180,55 @@ export function configuration(env = process.env) {
 }
 
 export type Config = ReturnType<typeof configuration>;
+
+// Settings an administrator may change from the dashboard when ALLOW_ENVIRONMENT_EDITS is on.
+// Ports, bind address, directories and sockets are wired into the container by Docker Compose,
+// and secrets must change on both ends, so those stay environment-only.
+export const editableEnvironmentKeys = [
+  'PUBLIC_URL',
+  'BROWSER_ORIGINS',
+  'TRUST_PROXY_HOPS',
+  'DUMP_AUTO_PREPARE',
+  'PRIVATE_HTTP_ORIGINS',
+  'TRAILER_WORKER_IMAGE',
+  'COMMUNITY_MASTER_URL',
+  'HOME_UPDATE_AGENT_URL',
+  'OPERATOR_URL',
+  'PACKAGE_WORKER_URL',
+] as const;
+export const environmentOverridesPath = (dataDir: string) =>
+  path.join(dataDir, 'config', 'environment-overrides.json');
+
+export function readEnvironmentOverrides(dataDir: string): Record<string, string> {
+  let stored: unknown;
+  try {
+    stored = JSON.parse(readFileSync(environmentOverridesPath(dataDir), 'utf8'));
+  } catch {
+    return {};
+  }
+  if (!stored || typeof stored !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(stored).filter(
+      (entry): entry is [string, string] =>
+        (editableEnvironmentKeys as readonly string[]).includes(entry[0]) &&
+        typeof entry[1] === 'string',
+    ),
+  );
+}
+
+// Startup configuration: the environment, with dashboard overrides applied on top when enabled.
+// Overrides that no longer validate are ignored so a bad saved value can never stop the server.
+export function loadConfiguration(env = process.env) {
+  const base = configuration(env);
+  if (!base.ALLOW_ENVIRONMENT_EDITS) return base;
+  const overrides = readEnvironmentOverrides(base.DATA_DIR);
+  if (!Object.keys(overrides).length) return base;
+  try {
+    return configuration({ ...env, ...overrides });
+  } catch (error) {
+    console.error(
+      `Ignoring saved environment overrides: ${error instanceof Error ? error.message : error}`,
+    );
+    return base;
+  }
+}

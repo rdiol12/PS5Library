@@ -36,6 +36,7 @@ import {
 import { runWorker } from '../library/inspect.js';
 import { cacheArtwork, fetchArtwork, placeholder } from '../artwork/cache.js';
 import { quotaMaximum } from '../storage/usage.js';
+import { externalInfo } from '../metadata/playstationdb.js';
 
 export async function reconcileArtifactCache(db: DB, dataDir: string) {
   const removed = { artifacts: 0, backports: 0 };
@@ -207,68 +208,88 @@ export async function catalogFor(db: DB, userId: string, query = '') {
   const hashes = new Map(artwork.map((a) => [`${a.game_id}:${a.kind}`, a.sha256]));
   const image = (id: string, kind: string) =>
     `/api/v1/artwork/${id}/${kind}?v=${hashes.get(`${id}:${kind}`) ?? 'missing'}`;
-  return games.map((g) => ({
-    ...g.metadata,
-    artwork: undefined,
-    id: g.id,
-    title: g.title,
-    titleId: g.title_id,
-    saved: g.saved,
-    shared: g.shared,
-    canManage: g.user_id === userId,
-    addedAt: g.created_at,
-    recentlyUpdated: releases.some(
-      (r) =>
-        r.game_id === g.id &&
-        (r.kind === 'UPDATE' ||
-          (r.kind === 'BASE' &&
-            new Date(r.created_at).getTime() > new Date(g.created_at).getTime() + 1000)),
-    ),
-    trailerState: trailers.find((t) => t.game_id === g.id && t.kind === 'trailer')?.state ?? null,
-    trailer:
-      trailers
-        .filter((t) => t.game_id === g.id && t.kind === 'trailer' && t.state === 'READY')
-        .map((t) => ({
-          url: `/api/v1/trailers/${g.id}`,
-          sha256: t.sha256,
-          size: t.size,
-          duration: t.duration,
-        }))[0] ?? null,
-    musicState: trailers.find((t) => t.game_id === g.id && t.kind === 'music')?.state ?? null,
-    music:
-      trailers
-        .filter((t) => t.game_id === g.id && t.kind === 'music' && t.state === 'READY')
-        .map((t) => ({
-          url: `/api/v1/music/${g.id}`,
-          sha256: t.sha256,
-          size: t.size,
-          duration: t.duration,
-        }))[0] ?? null,
-    coverUrl: image(g.id, 'cover'),
-    heroUrl: image(g.id, 'hero'),
-    iconUrl: image(g.id, 'icon'),
-    screenshotUrls: (g.metadata.artwork?.screenshots ?? []).map((_: unknown, i: number) =>
-      image(g.id, `screenshot-${i}`),
-    ),
-    releases: releases
-      .filter((r) => r.game_id === g.id)
-      .sort(
-        (a, b) =>
-          ['BASE', 'UPDATE', 'DLC'].indexOf(a.kind) - ['BASE', 'UPDATE', 'DLC'].indexOf(b.kind) ||
-          b.version.localeCompare(a.version) ||
-          String(a.metadata.title ?? '').localeCompare(String(b.metadata.title ?? '')),
-      )
-      .map((r) => ({
-        ...r.metadata,
-        id: r.id,
-        contentId: r.content_id,
-        version: r.version,
-        kind: r.kind,
-        sources: r.sources,
-        artifacts: r.artifacts,
-        backports: r.backports,
-      })),
-  }));
+  return games.map((g) => {
+    // Live third-party details only fill gaps; the dump's own metadata always wins.
+    const external = externalInfo(g.title);
+    return {
+      ...g.metadata,
+      description: g.metadata.description || external?.description || undefined,
+      genres: g.metadata.genres?.length
+        ? g.metadata.genres
+        : external?.genre
+          ? [external.genre]
+          : g.metadata.genres,
+      external: external
+        ? {
+            source: external.source,
+            url: external.url,
+            releaseDate: external.releaseDate,
+            metacritic: external.metacritic,
+            imageUrl: external.imageUrl,
+            videos: external.videos,
+          }
+        : null,
+      artwork: undefined,
+      id: g.id,
+      title: g.title,
+      titleId: g.title_id,
+      saved: g.saved,
+      shared: g.shared,
+      canManage: g.user_id === userId,
+      addedAt: g.created_at,
+      recentlyUpdated: releases.some(
+        (r) =>
+          r.game_id === g.id &&
+          (r.kind === 'UPDATE' ||
+            (r.kind === 'BASE' &&
+              new Date(r.created_at).getTime() > new Date(g.created_at).getTime() + 1000)),
+      ),
+      trailerState: trailers.find((t) => t.game_id === g.id && t.kind === 'trailer')?.state ?? null,
+      trailer:
+        trailers
+          .filter((t) => t.game_id === g.id && t.kind === 'trailer' && t.state === 'READY')
+          .map((t) => ({
+            url: `/api/v1/trailers/${g.id}`,
+            sha256: t.sha256,
+            size: t.size,
+            duration: t.duration,
+          }))[0] ?? null,
+      musicState: trailers.find((t) => t.game_id === g.id && t.kind === 'music')?.state ?? null,
+      music:
+        trailers
+          .filter((t) => t.game_id === g.id && t.kind === 'music' && t.state === 'READY')
+          .map((t) => ({
+            url: `/api/v1/music/${g.id}`,
+            sha256: t.sha256,
+            size: t.size,
+            duration: t.duration,
+          }))[0] ?? null,
+      coverUrl: image(g.id, 'cover'),
+      heroUrl: image(g.id, 'hero'),
+      iconUrl: image(g.id, 'icon'),
+      screenshotUrls: (g.metadata.artwork?.screenshots ?? []).map((_: unknown, i: number) =>
+        image(g.id, `screenshot-${i}`),
+      ),
+      releases: releases
+        .filter((r) => r.game_id === g.id)
+        .sort(
+          (a, b) =>
+            ['BASE', 'UPDATE', 'DLC'].indexOf(a.kind) - ['BASE', 'UPDATE', 'DLC'].indexOf(b.kind) ||
+            b.version.localeCompare(a.version) ||
+            String(a.metadata.title ?? '').localeCompare(String(b.metadata.title ?? '')),
+        )
+        .map((r) => ({
+          ...r.metadata,
+          id: r.id,
+          contentId: r.content_id,
+          version: r.version,
+          kind: r.kind,
+          sources: r.sources,
+          artifacts: r.artifacts,
+          backports: r.backports,
+        })),
+    };
+  });
 }
 export async function resolveSuccessfulProfileNotices(
   db: DB,

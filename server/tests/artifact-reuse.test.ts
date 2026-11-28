@@ -9,7 +9,7 @@ import { profileHash } from '../src/library/backports.js';
 
 const compact = (source: string) => source.replace(/\s+/g, '');
 
-test('FPKG cache identity follows embedded game bytes, independently of external libraries and runtime', () => {
+test('FPKG cache identity is the clean package, independent of any backport profile', () => {
   assert.equal(
     artifactBuildKey('d800f410f123366274d3033df5ec1cbaf236a7c5ad850b21a1d6f5f755d09051', 'FPKG'),
     '23f051820f14e6e0ee5cdb8b4cf90e36d793f7ebdd9556f1d3d4a3e5540e222a',
@@ -27,7 +27,7 @@ test('FPKG cache identity follows embedded game bytes, independently of external
       requiredFiles: [{ path: 'eboot.bin', sha256: 'b'.repeat(64) }],
     };
   const key = artifactBuildKey(source, 'FPKG', profile);
-  assert.notEqual(key, artifactBuildKey(source, 'FPKG'));
+  assert.equal(key, artifactBuildKey(source, 'FPKG'), 'A profile never changes the package');
   assert.equal(
     key,
     artifactBuildKey(source, 'FPKG', {
@@ -40,12 +40,13 @@ test('FPKG cache identity follows embedded game bytes, independently of external
       ],
     }),
   );
-  assert.notEqual(
+  assert.equal(
     key,
     artifactBuildKey(source, 'FPKG', {
       ...profile,
       requiredFiles: [{ path: 'eboot.bin', sha256: 'd'.repeat(64) }],
     }),
+    'Replacing backport files reuses the existing package',
   );
 });
 
@@ -82,7 +83,7 @@ test('publishing freshly verified output skips the second read but rejects a cha
       sha256: createHash('sha256').update('verified fixture').digest('hex'),
       inputHash: 'a'.repeat(64),
       verifiedOutputMtimeMs: Math.trunc(info.mtimeMs),
-      libraryPolicy: 'FPKG_EMBEDDED_GAMEFILES_EXTERNAL_LIBRARIES',
+      libraryPolicy: 'CLEAN_PACKAGE_EXTERNAL_BACKPORT_AND_SEPARATE_DLC',
       builderVersion: '5e26c8ae65f4b3cf88dcc7c84226ea9718c38e5e+ps5library-streaming-kraken-v1',
     };
     await assert.rejects(
@@ -112,7 +113,8 @@ test('publishing freshly verified output skips the second read but rejects a cha
           inspection: { identity: { minimumFirmware: '18.00' } },
         },
       ),
-      (error: any) => error.code === 'BACKPORT_PATCH_MISSING',
+      /PUBLISH_TRANSACTION_REACHED/,
+      'A clean package keeps its original firmware floor; the overlay carries the backport',
     );
     await writeFile(file, 'modified fixture');
     await utimes(file, info.atime, new Date(info.mtimeMs + 2000));

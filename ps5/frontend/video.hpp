@@ -48,6 +48,8 @@ class VideoPreview {
     int64_t size = 0;
     uint64_t generation = 0;
     bool music = false, offline = false;
+    // A stream request carries the server path that resolves the trailer's remote addresses.
+    bool stream = false, sound = true;
   };
   ps5library::fs::path root_;
   UiAudio &audio_;
@@ -72,6 +74,7 @@ class VideoPreview {
   uint64_t musicStarts_ = 0, musicBytes_ = 0;
   void worker();
   double decode(const ps5library::fs::path &file, uint64_t generation, bool music, double offset);
+  void decodeStream(const Request &request);
   bool cancelled(uint64_t generation) const {
     return stopping_ || generation_ != generation;
   }
@@ -83,6 +86,9 @@ public:
   void start(const std::string &key, const Json &config, const std::string &token,
              const Json &trailer, bool sound, bool music = false, bool offline = false,
              const ps5library::fs::path &local = {});
+  // Plays a trailer straight from its remote addresses; nothing is written to storage.
+  void startStream(const std::string &key, const Json &config, const std::string &token,
+                   const std::string &path, bool sound);
   SDL_Texture *frame(SDL_Renderer *renderer);
   bool active() const {
     return active_;

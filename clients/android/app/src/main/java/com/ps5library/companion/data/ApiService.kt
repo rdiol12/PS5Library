@@ -5,6 +5,7 @@ import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 interface ApiService {
 
@@ -49,4 +50,11 @@ interface ApiService {
 
     @POST("api/v1/admin/invites")
     suspend fun createInvite(): Invitation
+
+    @GET("api/v1/games/{id}/trailer-stream")
+    suspend fun trailerStream(
+        @Path("id") id: String,
+        @Query("maxHeight") maxHeight: Int = 1080,
+        @Query("maxDuration") maxDuration: Int = 180,
+    ): TrailerStream
 }

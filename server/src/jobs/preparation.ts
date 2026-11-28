@@ -21,7 +21,7 @@ import { sourceHeaders } from '../sources/connectors.js';
 import { downloadFile, fileHash } from '../downloads/stream.js';
 import { runWorker, workerRunActive } from '../library/inspect.js';
 import { jobEvent } from './events.js';
-import { backportFiles, packageBackportHash, profileHash } from '../library/backports.js';
+import { backportFiles, profileHash } from '../library/backports.js';
 import { quotaExceeded, quotaMaximum, requireDiskSpace, storageUsage } from '../storage/usage.js';
 import { artifactStoragePath, releaseStorageFolder, safeStorageName } from '../storage/names.js';
 import { throttleWorkerProgress } from '../worker-progress.js';
@@ -39,13 +39,11 @@ export const buildKey = (sha: string, method: keyof typeof builders, profile?: s
 export const artifactBuildKey = (
   sha: string,
   method: keyof typeof builders,
-  profile?: z.infer<typeof profileSchema> | null,
+  _profile?: z.infer<typeof profileSchema> | null,
 ) =>
-  buildKey(
-    sha,
-    method,
-    method === 'FPKG' && profile?.delivery === 'OVERLAY' ? packageBackportHash(profile) : null,
-  );
+  // Packages are built clean, so one package serves every backport profile of a release; the
+  // profile only selects the external overlay delivered beside it.
+  buildKey(sha, method, null);
 export const legacyFpkgBuilderVersion = builders.FPKG.split('+', 1)[0]!;
 export const packageBuildAllowed = (role: string | undefined) => role === 'ADMIN';
 export const transferArtifactUsable = (artifact: any) => {
@@ -225,10 +223,7 @@ async function cachedBuildArtifact(
 export async function publishArtifact(db: DB, config: Config, row: any, result: any) {
   if (
     row.kind === 'BUILD' &&
-    (result.libraryPolicy !==
-      (row.config.method === 'FPKG'
-        ? 'FPKG_EMBEDDED_GAMEFILES_EXTERNAL_LIBRARIES'
-        : 'CLEAN_PACKAGE_EXTERNAL_BACKPORT_AND_SEPARATE_DLC') ||
+    (result.libraryPolicy !== 'CLEAN_PACKAGE_EXTERNAL_BACKPORT_AND_SEPARATE_DLC' ||
       !result.builderVersion?.endsWith(builders[row.config.method as keyof typeof builders]))
   )
     throw new AppError(
@@ -237,19 +232,6 @@ export async function publishArtifact(db: DB, config: Config, row: any, result: 
       'Rebuild the package worker before preparing content.',
     );
   const applied = row.config.profile ? profileHash(row.config.profile) : null;
-  if (
-    row.kind === 'BUILD' &&
-    row.config.method === 'FPKG' &&
-    row.config.profile?.delivery === 'OVERLAY' &&
-    (!/^\d{1,2}\.\d{2}$/.test(result.inspection?.identity?.minimumFirmware ?? '') ||
-      Number(result.inspection.identity.minimumFirmware) >
-        Number(row.config.profile.targetFirmware))
-  )
-    throw new AppError(
-      'BACKPORT_PATCH_MISSING',
-      409,
-      'The packaged metadata still requires newer firmware.',
-    );
   if (
     (result.profileId ?? null) !== (row.config.profile?.id ?? null) ||
     (result.profileHash ?? null) !== applied
@@ -581,12 +563,8 @@ export async function publishArtifact(db: DB, config: Config, row: any, result: 
               result.inputHash ?? result.sha256,
               result.builderVersion ?? null,
               cacheKey,
-              row.config.method === 'FPKG' && row.config.profile?.delivery === 'OVERLAY'
-                ? row.config.profile.id
-                : null,
-              row.config.method === 'FPKG' && row.config.profile?.delivery === 'OVERLAY'
-                ? packageBackportHash(row.config.profile)
-                : null,
+              null,
+              null,
             ],
           )
         ).rows[0];
@@ -811,7 +789,7 @@ export async function prepare(db: DB, config: Config, row: any) {
         releaseId: row.release_id,
         createdAt: new Date().toISOString(),
         inspection: cached.inspection,
-        libraryPolicy: 'FPKG_EMBEDDED_GAMEFILES_EXTERNAL_LIBRARIES',
+        libraryPolicy: 'CLEAN_PACKAGE_EXTERNAL_BACKPORT_AND_SEPARATE_DLC',
       }
     : source.format === 'folder'
       ? await runWorker(

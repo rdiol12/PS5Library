@@ -177,6 +177,11 @@ class Repository(private val context: Context) {
         client?.service?.createInvite()
     }
 
+    /** A game without a resolvable trailer simply has none; that is not an error to surface. */
+    suspend fun trailerStream(gameId: String): TrailerStream? = withContext(Dispatchers.IO) {
+        runCatching { client?.service?.trailerStream(gameId) }.getOrNull()
+    }
+
     suspend fun logout() {
         val api = client
         client = null

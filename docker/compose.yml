@@ -47,6 +47,8 @@ services:
       TRAILER_WORKER_MODE: SANDBOX
       TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-}
       OPERATOR_URL: ${OPERATOR_URL:-}
+      # Lets administrators edit restart-only settings from the dashboard (off by default).
+      ALLOW_ENVIRONMENT_EDITS: ${ALLOW_ENVIRONMENT_EDITS:-false}
     ports: ["${SERVER_BIND:-127.0.0.1}:${PORT:-3150}:${PORT:-3150}"]
     networks: [default, operator-control]
     volumes:
