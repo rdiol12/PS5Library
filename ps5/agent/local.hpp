@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <functional>
 #include <netinet/in.h>
 #include <string_view>
@@ -557,6 +558,87 @@ inline bool localLaunchable(const Json &snapshot, const std::string &title) {
   return false;
 }
 
+#ifdef PS5
+inline fs::path packageMediaRoot = "/data/ps5library/media-cache";
+#else
+inline fs::path packageMediaRoot = fs::temp_directory_path() / "ps5library-media-cache";
+#endif
+// A game installed from a PS4 package keeps its cover and background inside that package
+// instead of as loose files. This copies the wanted picture out once and reuses the copy.
+inline fs::path packageMedia(const fs::path &package, const std::string &title,
+                             const std::string &kind) {
+  const std::vector<uint32_t> ids = kind == "cover"  ? std::vector<uint32_t>{0x1200}
+                                    : kind == "hero" ? std::vector<uint32_t>{0x1260, 0x1220}
+                                                     : std::vector<uint32_t>{};
+  if (ids.empty())
+    return {};
+  std::error_code failed;
+  const auto status = fs::symlink_status(package, failed);
+  if (failed || fs::is_symlink(status) || !fs::is_regular_file(status))
+    return {};
+  const auto size = fs::file_size(package, failed);
+  if (failed || size < 0x440)
+    return {};
+  const auto stamp = fs::last_write_time(package, failed).time_since_epoch().count();
+  const auto cached = packageMediaRoot / (title + "-" + kind + "-" + std::to_string(size) + "-" +
+                                          std::to_string(static_cast<long long>(stamp)) + ".img");
+  if (fs::is_regular_file(cached, failed))
+    return cached;
+  std::ifstream input(package, std::ios::binary);
+  const auto read = [&](uint64_t offset, uint64_t count) {
+    std::string data;
+    if (offset > size || count > size - offset)
+      return data;
+    data.resize(count);
+    input.clear();
+    input.seekg(static_cast<std::streamoff>(offset));
+    input.read(data.data(), static_cast<std::streamsize>(count));
+    if (!input)
+      data.clear();
+    return data;
+  };
+  const auto number = [](const std::string &data, size_t offset) {
+    uint32_t value = 0;
+    for (size_t i = 0; i < 4; i++)
+      value = value << 8 | static_cast<unsigned char>(data[offset + i]);
+    return value;
+  };
+  const auto header = read(0, 0x20);
+  if (header.size() != 0x20 || number(header, 0) != 0x7f434e54)
+    return {};
+  const auto count = number(header, 0x10);
+  if (!count || count > 4096)
+    return {};
+  const auto table = read(number(header, 0x18), static_cast<uint64_t>(count) * 32);
+  if (table.size() != static_cast<size_t>(count) * 32)
+    return {};
+  for (const auto id : ids)
+    for (uint32_t i = 0; i < count; i++) {
+      // An entry with its top flag bit set is encrypted and cannot be used as it is.
+      if (number(table, i * 32) != id || (number(table, i * 32 + 8) & 0x80000000u))
+        continue;
+      const auto length = number(table, i * 32 + 20);
+      // Some packages carry a tiny placeholder under one name; skip it for the real picture.
+      if (length < 4096 || length > 32u * 1024 * 1024)
+        continue;
+      const auto data = read(number(table, i * 32 + 16), length);
+      const bool png = data.size() > 8 && data.compare(0, 4, "\x89PNG") == 0,
+                 jpeg = data.size() > 3 && data.compare(0, 2, "\xff\xd8") == 0;
+      if (!png && !jpeg)
+        continue;
+      fs::create_directories(packageMediaRoot, failed);
+      const auto partial = cached.string() + ".part";
+      {
+        std::ofstream output(partial, std::ios::binary | std::ios::trunc);
+        output.write(data.data(), static_cast<std::streamsize>(data.size()));
+        if (!output)
+          return {};
+      }
+      fs::rename(partial, cached, failed);
+      return failed ? fs::path() : cached;
+    }
+  return {};
+}
 inline fs::path localMediaPath(const Json &snapshot, const Json &item, const std::string &kind) {
   const auto title = item["titleId"].string();
   if (!localTitleId(title) || !item["available"].boolean())
@@ -595,6 +677,16 @@ inline fs::path localMediaPath(const Json &snapshot, const Json &item, const std
               find(storage[i]["path"].string(), item["relativePath"].string() + "/sce_sys/");
           !file.empty())
         return file;
+  const auto relative = item["relativePath"].string();
+  if (relative.size() > 4 && relative.compare(relative.size() - 4, 4, ".pkg") == 0)
+    for (size_t i = 0; i < storage.size(); i++)
+      if (storage[i]["storageId"].string() == item["storageId"].string())
+        try {
+          if (auto file = packageMedia(beneath(storage[i]["path"].string(), relative), title, kind);
+              !file.empty())
+            return file;
+        } catch (...) {
+        }
   return {};
 }
 inline fs::path localMediaPath(const Json &snapshot, const std::string &title,

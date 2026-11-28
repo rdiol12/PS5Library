@@ -1,4 +1,4 @@
-import { mkdir, open, stat } from 'node:fs/promises';
+import { mkdir, open, readdir, stat } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
 import { request, type ServerResponse } from 'node:http';
 import { promisify } from 'node:util';
@@ -49,6 +49,35 @@ export async function inspect(
 type Tool = 'ffmpeg' | 'ffprobe';
 const execute = promisify(execFile);
 
+// Total bytes currently written under a build's output tree. The stall watchdog treats a growing
+// footprint as liveness: while bytes keep landing the worker is making progress even when it emits
+// no progress events (the final package-assembly stage is event-silent for hours on a large title).
+// The walk is deadline-bounded so a huge staged tree can never make a single poll run away.
+async function outputFootprint(dir: string, deadline: number) {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length) {
+    if (Date.now() > deadline) break;
+    let entries;
+    try {
+      entries = await readdir(stack.pop()!, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(entry.parentPath, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else
+        try {
+          total += (await stat(full)).size;
+        } catch {
+          /* file vanished mid-build; ignore */
+        }
+    }
+  }
+  return total;
+}
+
 async function remote<T>(
   body: object,
   timeout: number,
@@ -60,18 +89,47 @@ async function remote<T>(
         ? process.env.PACKAGE_WORKER_URL
         : undefined,
     token = process.env.PACKAGE_WORKER_TOKEN;
+  const output =
+    (body as { kind?: unknown; args?: unknown }).kind === 'dotnet' &&
+    Array.isArray((body as { args?: unknown }).args)
+      ? workerTempDirectory((body as { args: string[] }).args)
+      : undefined;
   return new Promise<T>((resolve, reject) => {
     let pending = '',
       result: T | undefined,
       events = Promise.resolve(),
-      finished = false;
+      finished = false,
+      idle: ReturnType<typeof setTimeout> | undefined,
+      poller: ReturnType<typeof setInterval> | undefined,
+      footprint = 0;
+    const stopWatch = () => {
+      if (idle) clearTimeout(idle);
+      if (poller) clearInterval(poller);
+      idle = poller = undefined;
+    };
+    const arm = () => {
+      if (finished) return;
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => fail(new AppError('WORKER_TIMEOUT', 504)), timeout);
+    };
     const fail = (error: unknown) => {
       if (!finished) {
         finished = true;
+        stopWatch();
         req.destroy();
         reject(error);
       }
     };
+    if (output)
+      poller = setInterval(() => {
+        void outputFootprint(output, Date.now() + 20_000).then((bytes) => {
+          if (bytes > footprint) {
+            footprint = bytes;
+            arm();
+          }
+        });
+      }, 60_000).unref();
+    arm();
     const options = {
       method: 'POST',
       headers: {
@@ -95,6 +153,7 @@ async function remote<T>(
         if (!res.complete) interrupted();
       });
       res.on('data', (chunk) => {
+        arm();
         pending += chunk;
         if (pending.length > 4 * 1024 ** 2) {
           req.destroy();
@@ -133,12 +192,12 @@ async function remote<T>(
               if (res.statusCode !== 200 || result === undefined)
                 return fail(new AppError('WORKER_UNAVAILABLE', 503));
               finished = true;
+              stopWatch();
               resolve(result);
             })
             .catch(fail),
       );
     }
-    req.setTimeout(timeout, () => req.destroy(new AppError('WORKER_TIMEOUT', 504)));
     req.on('error', (error) =>
       fail(
         error instanceof AppError ? error : new AppError('WORKER_UNAVAILABLE', 503, error.message),
@@ -248,15 +307,36 @@ export async function runLocalWorker(
     let output = '',
       pending = '',
       events = Promise.resolve();
-    // Stall timeout: re-armed on every progress event, so an arbitrarily large but progressing build is never killed; only a worker that goes silent this long aborts.
+    // Stall timeout: re-armed on every progress event AND whenever the build's output tree grows on
+    // disk, so an arbitrarily large but progressing build is never killed even during the final
+    // package-assembly stage, which emits no progress events for hours. Only a worker that writes
+    // nothing and says nothing for this long aborts.
     const idleMs = 60 * 60_000;
-    let timeout: ReturnType<typeof setTimeout>;
+    let timeout: ReturnType<typeof setTimeout> | undefined,
+      poller: ReturnType<typeof setInterval> | undefined,
+      footprint = 0;
+    const stopWatch = () => {
+      if (timeout) clearTimeout(timeout);
+      if (poller) clearInterval(poller);
+      timeout = poller = undefined;
+    };
     const armTimeout = () => {
+      if (timeout) clearTimeout(timeout);
       timeout = setTimeout(() => {
+        stopWatch();
         process.kill();
         reject(new AppError('WORKER_TIMEOUT', 504));
       }, idleMs);
     };
+    if (temp)
+      poller = setInterval(() => {
+        void outputFootprint(temp, Date.now() + 20_000).then((bytes) => {
+          if (bytes > footprint) {
+            footprint = bytes;
+            armTimeout();
+          }
+        });
+      }, 60_000).unref();
     armTimeout();
     process.stdout.on('data', (chunk) => {
       output += chunk;
@@ -276,7 +356,6 @@ export async function runLocalWorker(
           try {
             const event = JSON.parse(line.slice(20));
             if (!validWorkerProgress(event)) throw new AppError('INVALID_WORKER_EVENT');
-            clearTimeout(timeout);
             armTimeout();
             events = events
               .then(() => progress?.(event))
@@ -291,11 +370,11 @@ export async function runLocalWorker(
         }
     });
     process.on('error', (error) => {
-      clearTimeout(timeout);
+      stopWatch();
       reject(error);
     });
     process.on('close', async (code) => {
-      clearTimeout(timeout);
+      stopWatch();
       await events;
       try {
         const result = JSON.parse(output);

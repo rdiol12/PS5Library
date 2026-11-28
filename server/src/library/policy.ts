@@ -30,15 +30,17 @@ type Profile = {
   requiredPatches?: { path: string }[];
   requiredFiles?: { path: string }[];
 };
+// Legacy only: files that older builds embedded in an FPKG, kept to recognise those artifacts.
 export const packageBackportFile = (relative: string) => !/^fakelib2?\//i.test(relative);
+// Packages are built clean; the backport folder is delivered beside the game and ShadowMountPlus
+// redirects it over the installed package. For installed packages ShadowMountPlus deletes
+// libSceAmpr and libScePlayGo from the title's backport fakelib itself, so they are not sent.
 export function backportFileDelivered(method: string, relative: string) {
   const file = relative.toLowerCase();
   if (file === 'fakelib/libkernel.sprx' || file === 'fakelib2/libkernel.sprx') return false;
   return (
     method !== 'FPKG' ||
-    (!packageBackportFile(file) &&
-      file !== 'fakelib/libsceampr.sprx' &&
-      file !== 'fakelib/libsceplaygo.sprx')
+    (file !== 'fakelib/libsceampr.sprx' && file !== 'fakelib/libsceplaygo.sprx')
   );
 }
 const profileDelivery = (profile: Profile) =>

@@ -152,6 +152,7 @@ class Artwork {
   std::set<std::string> pending_;
   std::unordered_map<std::string, Texture> textures_;
   std::unordered_map<std::string, std::string> localFiles_, localKeys_;
+  std::unordered_map<std::string, std::string> alternates_;
   std::atomic<bool> stopping_{false}, offline_{false};
   size_t bytes_ = 0, loads_ = 0, failures_ = 0;
   Uint64 frame_ = 0;
@@ -193,6 +194,54 @@ class Artwork {
       ps5library::fs::remove(e.path().string() + ".json");
     }
   }
+  // Loads one picture from its local file, the app's cache, the local agent or the server.
+  SDL_Surface *fetch(const std::string &url, const std::string &token, const std::string &local) {
+    SDL_Surface *surface = nullptr;
+    if (!local.empty())
+      surface = IMG_Load(local.c_str());
+    else if (preview_)
+      surface = IMG_Load(url.c_str());
+    else {
+      const bool localAgent = localAgentUrl(url);
+      auto connection = localAgent ? Json::object({{"serverUrl", ps5library::localAgentUrl()},
+                                                   {"allowInsecureLan", true}})
+                                   : Json::parse(config_);
+      ps5library::Client client(connection);
+      client.credential = localAgent ? ps5library::localAgentCredential : token;
+      auto file = root_ / (cacheName(connection.dump() + client.credential + url) + ".img");
+      if (ps5library::fs::exists(file))
+        surface = IMG_Load(file.c_str());
+      // Catalog artwork URLs carry their content revision, so a decoded
+      // cache hit is final.
+      if (!surface && offline_ && !localAgent)
+        throw std::runtime_error("Artwork is not cached for offline use");
+      if (!surface && !cancelled(url))
+        try {
+          auto response = client.artwork(url, "", [&] { return cancelled(url); });
+          auto *fresh = IMG_Load_RW(
+              SDL_RWFromConstMem(response.data.data(), static_cast<int>(response.data.size())), 1);
+          if (!fresh)
+            throw std::runtime_error(std::string("Artwork decode failed: ") + IMG_GetError());
+          if (fresh->w > 8192 || fresh->h > 8192 || int64_t(fresh->w) * fresh->h > 16000000) {
+            SDL_FreeSurface(fresh);
+            throw std::runtime_error("Artwork dimensions exceed the client limit");
+          }
+          surface = fresh;
+          auto temp = file.string() + ".tmp";
+          {
+            std::ofstream output(temp, std::ios::binary);
+            output.write(response.data.data(), response.data.size());
+            if (!output)
+              throw std::runtime_error("Cache write failed");
+          }
+          ps5library::fs::rename(temp, file);
+        } catch (...) {
+          if (!surface)
+            throw;
+        }
+    }
+    return surface;
+  }
   void worker() {
     for (;;) {
       ArtworkNeed need;
@@ -212,51 +261,21 @@ class Artwork {
       std::string error;
       int sourceWidth = 0, sourceHeight = 0;
       try {
-        if (!local.empty())
-          surface = IMG_Load(local.c_str());
-        else if (preview_)
-          surface = IMG_Load(need.url.c_str());
-        else {
-          const bool localAgent = localAgentUrl(need.url);
-          auto connection = localAgent ? Json::object({{"serverUrl", ps5library::localAgentUrl()},
-                                                       {"allowInsecureLan", true}})
-                                       : Json::parse(config_);
-          ps5library::Client client(connection);
-          client.credential = localAgent ? ps5library::localAgentCredential : token;
-          auto file =
-              root_ / (cacheName(connection.dump() + client.credential + need.url) + ".img");
-          if (ps5library::fs::exists(file))
-            surface = IMG_Load(file.c_str());
-          // Catalog artwork URLs carry their content revision, so a decoded
-          // cache hit is final.
-          if (!surface && offline_ && !localAgent)
-            throw std::runtime_error("Artwork is not cached for offline use");
-          if (!surface && !cancelled(need.url))
-            try {
-              auto response = client.artwork(need.url, "", [&] { return cancelled(need.url); });
-              auto *fresh = IMG_Load_RW(
-                  SDL_RWFromConstMem(response.data.data(), static_cast<int>(response.data.size())),
-                  1);
-              if (!fresh)
-                throw std::runtime_error(std::string("Artwork decode failed: ") + IMG_GetError());
-              if (fresh->w > 8192 || fresh->h > 8192 || int64_t(fresh->w) * fresh->h > 16000000) {
-                SDL_FreeSurface(fresh);
-                throw std::runtime_error("Artwork dimensions exceed the client limit");
-              }
-              surface = fresh;
-              auto temp = file.string() + ".tmp";
-              {
-                std::ofstream output(temp, std::ios::binary);
-                output.write(response.data.data(), response.data.size());
-                if (!output)
-                  throw std::runtime_error("Cache write failed");
-              }
-              ps5library::fs::rename(temp, file);
-            } catch (...) {
-              if (!surface)
-                throw;
-            }
+        std::string alternate;
+        {
+          std::lock_guard lock(mutex_);
+          if (auto found = alternates_.find(need.url); found != alternates_.end())
+            alternate = found->second;
         }
+        try {
+          surface = fetch(need.url, token, local);
+        } catch (...) {
+          if (alternate.empty())
+            throw;
+        }
+        // A picture the console cannot read falls back to the one found for the same game.
+        if (!surface && !alternate.empty())
+          surface = fetch(alternate, token, "");
         if (surface && (surface->w > 8192 || surface->h > 8192 ||
                         int64_t(surface->w) * surface->h > 16000000)) {
           SDL_FreeSurface(surface);
@@ -330,6 +349,10 @@ public:
         SDL_FreeSurface(result.surface);
     for (auto &[url, texture] : textures_)
       SDL_DestroyTexture(texture.value);
+  }
+  void alternate(const std::string &url, const std::string &fallback) {
+    std::lock_guard lock(mutex_);
+    alternates_[url] = fallback;
   }
   void credentials(const std::string &token) {
     std::lock_guard lock(mutex_);

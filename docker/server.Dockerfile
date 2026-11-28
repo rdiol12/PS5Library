@@ -19,6 +19,10 @@ RUN dotnet run --project worker/Tests/PS5Library.Worker.Checks.csproj -c Release
 
 FROM mcr.microsoft.com/dotnet/runtime:10.0-noble@sha256:8a153b5889d796b6450295b383596b13308c24c230515f8a7770ce1b94e0c460
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg libgomp1 && rm -rf /var/lib/apt/lists/*
+# yt-dlp resolves trailer stream addresses for clients that then fetch the video themselves.
+# Pinned release, verified against the publisher's SHA-256 list.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:e8665ed64d6b9172773e812f891fb707a0cb1ee8d9ef4fc1acb00cabee4c5256 --chmod=755     https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp /usr/local/bin/yt-dlp
 COPY --from=node-build /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-build /usr/local/LICENSE /licenses/Node.js-LICENSE
 WORKDIR /app

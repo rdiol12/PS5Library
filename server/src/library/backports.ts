@@ -48,7 +48,7 @@ export function profileHash(p: CompatibilityProfile) {
         p.delivery === 'INTEGRATED'
           ? 'backport-v6-integrated'
           : p.installationMethod === 'FPKG'
-            ? 'backport-v8-embedded-game-files'
+            ? 'backport-v9-external-game-files'
             : 'backport-v7-complete-overlay',
         p.id,
         p.titleId,
@@ -156,10 +156,10 @@ export async function backportFiles(
         if (current && current !== patch.outputSha256) throw new AppError('PROFILE_MISMATCH', 409);
         expected.set(patch.path, patch.outputSha256);
       }
-      if (profile.installationMethod !== 'FPKG' && !expected.has('sce_sys/param.json'))
-        expected.set('sce_sys/param.json', null);
+      // Every method publishes the complete overlay tree, which always carries param.json.
+      if (!expected.has('sce_sys/param.json')) expected.set('sce_sys/param.json', null);
       if (profile.installationMethod === 'FPKG')
-        for (const relative of expected.keys())
+        for (const relative of [...expected.keys()])
           if (!backportFileDelivered('FPKG', relative)) expected.delete(relative);
     } else for (const file of profile.requiredLibraries) expected.set(file.path, file.sha256);
     for (const [relative, expectedHash] of expected) {

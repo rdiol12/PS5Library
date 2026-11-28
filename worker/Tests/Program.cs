@@ -1310,45 +1310,32 @@ Check(
         && Files.TreeHash(completeSource) == completeHash,
     "ShadowMount images retain the full exact supplied overlay and leave the dump unchanged"
 );
-var embeddedBuild = Pipeline.Build(
+var cleanPackageBuild = Pipeline.Build(
     completeSource,
-    Path.Combine(root, "embedded-backport"),
+    Path.Combine(root, "clean-package-backport"),
     "FPKG",
     identity,
     profile: completeProfile
 );
-var embeddedReadback = Path.Combine(root, "embedded-backport-readback");
-Check(
-    embeddedBuild.Inspection.Identity?.MinimumFirmware == "4.51",
-    "A stale SELF version trailer cannot raise the embedded backport firmware floor"
-);
+var cleanPackageReadback = Path.Combine(root, "clean-package-backport-readback");
 LibProsperoPkg.PKG.ProsperoPackageArchive.ExtractInnerFiles(
-    embeddedBuild.OutputPath,
-    embeddedReadback,
+    cleanPackageBuild.OutputPath,
+    cleanPackageReadback,
     new string('0', 32)
 );
 Check(
-    suppliedFiles
-        .Where(file => !file.Key.StartsWith("fakelib/"))
-        .All(file =>
-            file.Key == "eboot.bin"
-                ? Modules
-                    .ToElf(File.ReadAllBytes(Files.SafeRelative(embeddedReadback, file.Key)))
-                    .AsSpan()
-                    .SequenceEqual(elf)
-                : Files.Hash(Files.SafeRelative(embeddedReadback, file.Key))
-                    == Files.Hash(file.Value)
+    !File.Exists(Files.SafeRelative(cleanPackageReadback, "sce_module/replacement.prx"))
+        && !Directory.Exists(Path.Combine(cleanPackageReadback, "backport"))
+        && suppliedFiles.All(file =>
+            Files.Hash(
+                Path.Combine(
+                    cleanPackageBuild.ShadowMountBackport!.OutputPath,
+                    file.Key.Replace('/', Path.DirectorySeparatorChar)
+                )
+            ) == Files.Hash(file.Value)
         )
-        && Files
-            .Enumerate(embeddedBuild.ShadowMountBackport!.OutputPath)
-            .All(file =>
-                Path.GetRelativePath(embeddedBuild.ShadowMountBackport.OutputPath, file)
-                    .Replace('\\', '/')
-                    .StartsWith("fakelib/")
-            )
-        && Files.Enumerate(embeddedBuild.ShadowMountBackport.OutputPath).Count() == 1
         && Files.TreeHash(completeSource) == completeHash,
-    "FPKG embeds verified game replacements and publishes only the ShadowMount library"
+    "FPKG stays clean and publishes the complete backport overlay beside it"
 );
 using (var image = new UFS2Tool.Ufs2Image(ufs.OutputPath, readOnly: true))
 {
@@ -1726,16 +1713,17 @@ Check(
     Modules
         .ToElf(File.ReadAllBytes(Path.Combine(externalReadback, "eboot.bin")))
         .AsSpan()
-        .SequenceEqual(patchedElf),
-    "Installed-PKG embeds the patched executable"
+        .SequenceEqual(elf),
+    "Installed-PKG keeps its executable clean"
 );
 Check(
     !Directory.Exists(Path.Combine(externalReadback, "fakelib")),
     "Installed-PKG overlay keeps compatibility libraries outside app0"
 );
 Check(
-    !File.Exists(Path.Combine(externalPackage.ShadowMountBackport!.OutputPath, "eboot.bin")),
-    "Installed-PKG overlay omits the embedded executable"
+    Files.Hash(Path.Combine(externalPackage.ShadowMountBackport!.OutputPath, "eboot.bin"))
+        == Sha(patchedElf),
+    "Installed-PKG overlay carries the patched executable for ShadowMountPlus"
 );
 Check(
     Files.Hash(
@@ -1744,8 +1732,19 @@ Check(
     "Installed-PKG overlay carries the selected compatibility library"
 );
 Check(
-    InputInspector.Inspect(externalPackage.OutputPath).Identity?.MinimumFirmware == "4.51",
-    "Installed-PKG embeds target metadata"
+    JsonDocument
+        .Parse(
+            File.ReadAllText(
+                Path.Combine(
+                    externalPackage.ShadowMountBackport.OutputPath,
+                    "sce_sys",
+                    "param.json"
+                )
+            )
+        )
+        .RootElement.GetProperty("requiredSystemSoftwareVersion")
+        .GetString() == "0x0451000000000000",
+    "Installed-PKG overlay carries the target firmware metadata"
 );
 Check(
     System.Text.Encoding.ASCII.GetString(
@@ -2119,12 +2118,19 @@ Check(
     Modules
         .ToElf(File.ReadAllBytes(Path.Combine(sdkReadback, "eboot.bin")))
         .AsSpan()
-        .SequenceEqual(sdkExpected),
-    "SDK patch survives package read-back"
+        .SequenceEqual(
+            Modules.ToElf(File.ReadAllBytes(Path.Combine(discoverySource, "eboot.bin")))
+        ),
+    "The package keeps the original executable when an SDK patch is required"
 );
 Check(
-    !File.Exists(Path.Combine(sdkBuild.ShadowMountBackport!.OutputPath, "eboot.bin")),
-    "External libraries do not duplicate the embedded SDK patch"
+    Modules
+        .ToElf(
+            File.ReadAllBytes(Path.Combine(sdkBuild.ShadowMountBackport!.OutputPath, "eboot.bin"))
+        )
+        .AsSpan()
+        .SequenceEqual(sdkExpected),
+    "The SDK-patched executable is published in the external overlay"
 );
 Check(
     Files.TreeHash(discoverySource) == discoveryHash,

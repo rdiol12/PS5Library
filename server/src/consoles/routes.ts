@@ -863,7 +863,7 @@ export async function consoleRoutes(app: FastifyInstance, db: DB, config: Config
       throw new AppError('NOT_FOUND', 404);
     return (
       await db.query(
-        `SELECT l.*, g.title, g.title_id, r.version, k.capabilities
+        `SELECT l.*, g.id AS game_id, g.title, g.title_id, r.version, k.capabilities
            FROM console_library_entries l
            JOIN game_releases r ON r.id=l.release_id
            JOIN games g ON g.id=r.game_id
@@ -873,6 +873,7 @@ export async function consoleRoutes(app: FastifyInstance, db: DB, config: Config
       )
     ).rows.map((r) => ({
       releaseId: r.release_id,
+      gameId: r.game_id,
       title: r.title,
       titleId: r.title_id,
       version: r.version,

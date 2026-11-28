@@ -6561,3 +6561,22 @@ html[data-appearance='mono'] {
     animation: none;
   }
 }
+#environment-settings footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 1rem;
+}
+.restart-setting-list input,
+.restart-setting-list select {
+  min-width: min(24rem, 100%);
+}
+
+.trailer-embed {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  border-radius: 8px;
+}

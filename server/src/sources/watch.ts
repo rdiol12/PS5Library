@@ -135,7 +135,7 @@ export async function watchedMedia(config: Config, release: Release) {
   };
 }
 
-async function signature(root: string) {
+export async function signature(root: string) {
   const hash = createHash('sha256').update('watch-v4-base-tree');
   let count = 0;
   if (/\.(rar|zip|7z)(\.001)?$/i.test(root))
@@ -379,7 +379,18 @@ export async function discoverWatched(
         ? await runWorker(['hash-base-tree', file])
         : inspected.archive
           ? await runWorker(['hash-archive', file])
-          : { sha256: await fileHash(file), size: (await lstat(file)).size };
+          : await (async () => {
+              const size = (await lstat(file)).size;
+              const sha256 = await fileHash(file, async (hashedBytes) => {
+                await db.query(
+                  `UPDATE source_observations
+                   SET details = coalesce(details, '{}'::jsonb) || $3::jsonb
+                   WHERE source_id=$1 AND path=$2`,
+                  [source.id, relative, JSON.stringify({ hashedBytes, totalBytes: size })],
+                );
+              });
+              return { sha256, size };
+            })();
       if (stamp !== (await signature(file))) {
         await db.query(
           "UPDATE source_observations SET changed_at=now(),state='STABILIZING',release=NULL WHERE source_id=$1 AND path=$2",

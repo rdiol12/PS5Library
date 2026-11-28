@@ -4,13 +4,19 @@ import { accessibleSource } from '../sources/access.js';
 import cookie from '@fastify/cookie';
 import websocket from '@fastify/websocket';
 import rateLimit from '@fastify/rate-limit';
-import { mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { database, migrate, transaction } from '../db.js';
-import type { Config } from '../config.js';
+import {
+  configuration,
+  editableEnvironmentKeys,
+  environmentOverridesPath,
+  readEnvironmentOverrides,
+  type Config,
+} from '../config.js';
 import { authentication, authRoutes } from '../auth/routes.js';
 import { hash } from '../auth/credentials.js';
 import { profileRoutes } from '../auth/profile.js';
@@ -25,6 +31,12 @@ import { queuedJobControlAllowed, reorderQueuedJobs, startRunner } from '../jobs
 import { packageBuildAllowed, preparationRoutes } from '../jobs/preparation.js';
 import { installationRoutes } from '../jobs/installations.js';
 import { jobEvent, jobJSON, liveJobEvents } from '../jobs/events.js';
+import { externalImage, externalInfo, externalInfoNow } from '../metadata/playstationdb.js';
+import {
+  resolveTrailerStream,
+  streamHeight,
+  trailerCandidates,
+} from '../metadata/trailer-stream.js';
 import { AppError } from '../security/errors.js';
 import { uuid } from '../../../shared/schemas/index.js';
 import { clearDashboardLogs, readLogs, serverLogger, type LogLevel } from '../logging.js';
@@ -34,7 +46,12 @@ import { quotaExceeded, storageUsage } from '../storage/usage.js';
 import { managedService, operatorStatus, restartManagedService } from '../operator-client.js';
 import { cheatProfileRoutes } from '../cheats/profiles.js';
 import { cheatDeliveryRoutes } from '../cheats/deliveries.js';
-import { runtimeSettings, runtimeSettingsUpdate } from '../runtime-settings.js';
+import {
+  revealSecretRequest,
+  runtimeSettings,
+  runtimeSettingsUpdate,
+  secretSettingValue,
+} from '../runtime-settings.js';
 
 const packageWorkerStatus = (
   config: Pick<Config, 'PACKAGE_WORKER_SOCKET' | 'PACKAGE_WORKER_URL' | 'PACKAGE_WORKER_TOKEN'>,
@@ -152,6 +169,17 @@ export async function createApp(
   await migrate(db);
   await reconcileArtifactCache(db, config.DATA_DIR);
   const settings = await runtimeSettings(db, config);
+  // The lookup cache lives in memory only, so it is refilled in the background after a restart.
+  void db
+    .query<{ title: string; title_id: string; content_id: string | null }>(
+      "SELECT title, title_id, metadata->>'contentId' AS content_id FROM games",
+    )
+    .then((result) =>
+      result.rows.forEach((row) =>
+        externalInfo(row.title, { titleId: row.title_id, contentId: row.content_id ?? undefined }),
+      ),
+    )
+    .catch(() => undefined);
   const logs = await serverLogger(config.DATA_DIR);
   const startedAt = new Date().toISOString();
   const requestStarted = new WeakMap<object, bigint>();
@@ -173,7 +201,7 @@ export async function createApp(
       reply.header('strict-transport-security', 'max-age=31536000');
     reply.header(
       'content-security-policy',
-      "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     if (
       req.url.startsWith('/api/') ||
@@ -282,6 +310,74 @@ export async function createApp(
     await admin(req);
     return settings.get();
   });
+  app.post(
+    '/api/v1/admin/runtime-settings/reveal',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const user = await admin(req),
+        { key } = revealSecretRequest.parse(req.body);
+      await logs.write('WARN', 'admin.secret_revealed', `Secret revealed by ${user.username}`, {
+        key,
+        ip: req.ip,
+      });
+      reply.header('cache-control', 'no-store');
+      return { key, value: secretSettingValue(config, key) };
+    },
+  );
+  // Dashboard edits of restart-only settings. Off unless ALLOW_ENVIRONMENT_EDITS is set for the
+  // server. Values are validated with the startup rules, saved as overrides in the data
+  // directory, then the process exits so its supervisor (Docker restart policy) starts it again.
+  app.patch(
+    '/api/v1/admin/environment',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (req) => {
+      const user = await admin(req);
+      if (!config.ALLOW_ENVIRONMENT_EDITS) throw new AppError('ENVIRONMENT_EDITS_DISABLED', 403);
+      const { values } = z
+        .object({
+          values: z.partialRecord(
+            z.enum(editableEnvironmentKeys),
+            z
+              .string()
+              .max(2000)
+              .regex(/^[^\r\n\0]*$/),
+          ),
+        })
+        .strict()
+        .parse(req.body);
+      const overrides = { ...readEnvironmentOverrides(config.DATA_DIR) };
+      for (const [key, value] of Object.entries(values)) overrides[key] = (value ?? '').trim();
+      try {
+        configuration({ ...process.env, ...overrides });
+      } catch (error) {
+        const issue = error instanceof z.ZodError ? error.issues[0] : undefined;
+        throw new AppError(
+          'INVALID_ENVIRONMENT',
+          422,
+          issue
+            ? `${issue.path.join('.')}: ${issue.message}`
+            : error instanceof Error
+              ? error.message
+              : 'Invalid value',
+        );
+      }
+      const file = environmentOverridesPath(config.DATA_DIR);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file + '.tmp', JSON.stringify(overrides, null, 2) + '\n', { mode: 0o600 });
+      await rename(file + '.tmp', file);
+      await logs.write(
+        'WARN',
+        'admin.environment_changed',
+        `Environment settings changed by ${user.username}; restarting`,
+        { changedKeys: Object.keys(values).sort().join(','), ip: req.ip },
+      );
+      setTimeout(() => {
+        setTimeout(() => process.exit(0), 20_000).unref();
+        void app.close().finally(() => process.exit(0));
+      }, 500);
+      return { ok: true, restarting: true };
+    },
+  );
   app.patch(
     '/api/v1/admin/runtime-settings',
     { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
@@ -707,6 +803,147 @@ export async function createApp(
     ).rows.map((row) => jobJSON(row, row.viewer_role === 'ADMIN'));
   app.get('/api/v1/jobs', async (req) => listJobs((await auth.user(req)).id));
   app.get('/api/v1/device/jobs', async (req) => listJobs((await auth.device(req)).user_id));
+  // Direct stream addresses for a game's first external trailer. The client fetches the video
+  // itself; this only performs the short lookup. Disabled with the external details setting.
+  // The listed video most like a trailer that can actually be played. A longer one is still
+  // returned when nothing shorter exists; the player shows only its opening minutes.
+  const bestTrailer = async (
+    videoIds: string[],
+    options: { maxHeight?: number; maxDuration?: number },
+  ) => {
+    const candidates = await trailerCandidates(videoIds, options.maxDuration);
+    for (const videoId of candidates.slice(0, 3)) {
+      const stream = await resolveTrailerStream(videoId, streamHeight(options.maxHeight)).catch(
+        () => null,
+      );
+      if (stream) return stream;
+    }
+    return null;
+  };
+  const trailerStream = async (userId: string, gameId: string, query: unknown) => {
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    const options = z
+      .object({
+        maxHeight: z.coerce.number().optional(),
+        maxDuration: z.coerce.number().int().min(10).max(900).optional(),
+      })
+      .parse(query ?? {});
+    const game = (
+      await db.query(
+        `SELECT g.title
+         FROM games g
+         WHERE g.id = $1
+           AND EXISTS (
+             SELECT 1 FROM game_content_access a WHERE a.game_id = g.id AND a.user_id = $2
+           )`,
+        [gameId, userId],
+      )
+    ).rows[0];
+    const stream = await bestTrailer(
+      (game ? externalInfo(game.title)?.videos : undefined) ?? [],
+      options,
+    );
+    if (stream) return stream;
+    throw new AppError('NOT_FOUND', 404);
+  };
+  const streamLimit = { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } };
+  const externalDetails = (info: NonNullable<Awaited<ReturnType<typeof externalInfoNow>>>) => ({
+    description: info.description,
+    genre: info.genre,
+    external: {
+      source: info.source,
+      url: info.url,
+      releaseDate: info.releaseDate,
+      metacritic: info.metacritic,
+      imageUrl: info.imageUrl,
+      videos: info.videos,
+    },
+  });
+  // Looks one game up right away, for a page opened before the background refill reached it.
+  app.get('/api/v1/games/:id/external', streamLimit, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    const game = (
+      await db.query<{ title: string; title_id: string; content_id: string | null }>(
+        `SELECT g.title, g.title_id, g.metadata->>'contentId' AS content_id
+         FROM games g
+         WHERE g.id = $1
+           AND EXISTS (
+             SELECT 1 FROM game_content_access a WHERE a.game_id = g.id AND a.user_id = $2
+           )`,
+        [uuid.parse((req.params as { id: string }).id), (await auth.user(req)).id],
+      )
+    ).rows[0];
+    const info = game
+      ? await externalInfoNow(game.title, {
+          titleId: game.title_id,
+          contentId: game.content_id ?? undefined,
+        })
+      : null;
+    if (!info) throw new AppError('NOT_FOUND', 404);
+    return externalDetails(info);
+  });
+  app.get('/api/v1/games/:id/trailer-stream', streamLimit, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    return trailerStream(
+      (await auth.user(req)).id,
+      uuid.parse((req.params as { id: string }).id),
+      req.query,
+    );
+  });
+  app.get('/api/v1/device/games/:id/trailer-stream', streamLimit, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    return trailerStream(
+      (await auth.device(req)).user_id,
+      uuid.parse((req.params as { id: string }).id),
+      req.query,
+    );
+  });
+  // The same details and trailer for a game that exists only on a console and is not in the
+  // catalog. It is asked for by title ID and name; nothing about anyone's library is involved.
+  const titleLimit = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } };
+  const consoleTitle = z.string().regex(/^[A-Z]{4}\d{5}$/);
+  const titleQuery = z.object({
+    title: z.string().trim().min(1).max(200),
+    maxHeight: z.coerce.number().optional(),
+    maxDuration: z.coerce.number().int().min(10).max(900).optional(),
+  });
+  app.get('/api/v1/device/titles/:titleId/external', titleLimit, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    await auth.device(req);
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    const titleId = consoleTitle.parse((req.params as { titleId: string }).titleId),
+      query = titleQuery.parse(req.query);
+    const info = await externalInfoNow(query.title, { titleId });
+    if (!info) throw new AppError('NOT_FOUND', 404);
+    // The console asks for these pictures next; fetching them now makes that instant.
+    void externalImage(query.title);
+    void externalImage(query.title, true);
+    return externalDetails(info);
+  });
+  app.get('/api/v1/device/titles/:titleId/artwork', titleLimit, async (req, reply) => {
+    await auth.device(req);
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    consoleTitle.parse((req.params as { titleId: string }).titleId);
+    const wide = (req.query as { kind?: unknown }).kind === 'hero';
+    const picture = await externalImage(titleQuery.parse(req.query).title, wide);
+    if (!picture) throw new AppError('NOT_FOUND', 404);
+    return reply
+      .header('cache-control', 'private, max-age=3600')
+      .type(picture.type)
+      .send(picture.body);
+  });
+  app.get('/api/v1/device/titles/:titleId/trailer-stream', streamLimit, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    await auth.device(req);
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    const titleId = consoleTitle.parse((req.params as { titleId: string }).titleId),
+      query = titleQuery.parse(req.query);
+    const info = await externalInfoNow(query.title, { titleId });
+    const stream = await bestTrailer(info?.videos ?? [], query);
+    if (stream) return stream;
+    throw new AppError('NOT_FOUND', 404);
+  });
   const jobOrder = z
     .object({
       ids: z

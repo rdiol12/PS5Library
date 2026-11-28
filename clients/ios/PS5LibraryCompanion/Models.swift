@@ -117,6 +117,22 @@ struct Login: Decodable {
     let token: String
 }
 
+// Live third-party details the server attaches when a game is missing its own.
+struct ExternalInfo: Codable, Hashable {
+    let releaseDate: String?
+    let metacritic: Int?
+    let videos: [String]?
+}
+
+// Direct address of a trailer the server resolved; played from the network and never stored.
+struct TrailerStream: Decodable {
+    struct Track: Decodable {
+        let url: String
+    }
+
+    let video: Track
+}
+
 struct Game: Codable, Identifiable, Hashable {
     let id: String
     let title: String
@@ -132,10 +148,10 @@ struct Game: Codable, Identifiable, Hashable {
     let music: MediaAsset?
     let trailerState: String?
     let musicState: String?
-    let saved: Bool?
     let addedAt: String?
     let releaseDate: String?
     let recentlyUpdated: Bool?
+    let external: ExternalInfo?
     var serverAvailable: Bool {
         releases
             .contains { $0.kind != "DLC" && (!$0.sources.isEmpty || !($0.artifacts ?? []).isEmpty) }
@@ -908,7 +924,7 @@ struct Notice: Decodable, Identifiable {
 
 enum GameCollection: String, CaseIterable, Identifiable {
     case all = "All Games", recent = "Recently Added", updated = "Recently Updated"
-    case releases = "New Releases", saved = "Saved Games", server = "Server Library"
+    case releases = "New Releases", server = "Server Library"
     var id: String { rawValue }
     func select(_ games: [Game], query: String = "", genre: String = "") -> [Game] {
         let result = games.filter { game in
@@ -920,7 +936,6 @@ enum GameCollection: String, CaseIterable, Identifiable {
                 return false
             }
             switch self {
-            case .saved: return game.saved == true
             case .server: return game.serverAvailable
             case .updated: return game.recentlyUpdated == true
             case .recent: return game.releases.contains { !$0.sources.isEmpty }

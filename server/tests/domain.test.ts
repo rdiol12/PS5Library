@@ -256,6 +256,7 @@ test('browser aliases require explicit exact HTTP(S) origins', () => {
     community: true,
     newDownloads: true,
     homeUpdateBridge: false,
+    externalMetadata: false,
   });
   assert.equal(configuration(env).HOME_UPDATE_AGENT_URL, '');
   assert.equal(
@@ -312,6 +313,7 @@ test('browser aliases require explicit exact HTTP(S) origins', () => {
       community: false,
       newDownloads: false,
       homeUpdateBridge: true,
+      externalMetadata: false,
     },
   );
   assert.throws(() => configuration({ ...env, ENABLE_COMPANION_APP: 'yes' }));
@@ -552,20 +554,21 @@ test('installed FPKG overlays require their capability and a mode suitable for t
   assert.equal(
     compatibility(pkg, { ...runtime, fakelibMode: 'disabled' }, [fileOnly]).status,
     'MATCHING_BACKPORT_AVAILABLE',
-    'Embedded game files do not need fakelib',
+    'Overlaid game files do not need fakelib',
   );
   assert.equal(
     compatibility(pkg, { ...runtime, fakelibMode: 'disabled', standaloneBackPork: true }, [
       fileOnly,
     ]).status,
     'MATCHING_BACKPORT_AVAILABLE',
-    'Standalone fakelib conflicts must not block embedded game files',
+    'Standalone fakelib conflicts must not block overlaid game files',
   );
   assert.equal(
     compatibility(pkg, { ...runtime, capabilities: { fpkgInstall: true } }, [fileOnly]).status,
-    'INTEGRATED_BACKPORT_AGENT_REQUIRED',
+    'BACKPORT_RUNTIME_UNAVAILABLE',
+    'Game files are delivered as an overlay, so the installed-package overlay is required',
   );
-  assert.equal(compatibility(pkg, runtime, [fileOnly]).backportDelivery, 'INTEGRATED');
+  assert.equal(compatibility(pkg, runtime, [fileOnly]).backportDelivery, 'OVERLAY');
   const emulatorsOnly = {
     ...profile,
     requiredLibraries: [{ path: 'fakelib/libSceAppContent.sprx' }],
@@ -609,10 +612,10 @@ test('heartbeat bounds ShadowMount per-title fakelib overrides', () => {
   );
 });
 
-test('beta5 omits only incompatible installed-package fakelib files from delivery', () => {
-  assert.equal(backportFileDelivered('FPKG', 'eboot.bin'), false);
-  assert.equal(backportFileDelivered('FPKG', 'sce_module/libc.prx'), false);
-  assert.equal(backportFileDelivered('FPKG', 'sce_sys/param.json'), false);
+test('installed packages receive the backport folder except the two libraries ShadowMountPlus removes', () => {
+  assert.equal(backportFileDelivered('FPKG', 'eboot.bin'), true);
+  assert.equal(backportFileDelivered('FPKG', 'sce_module/libc.prx'), true);
+  assert.equal(backportFileDelivered('FPKG', 'sce_sys/param.json'), true);
   assert.equal(backportFileDelivered('SHADOWMOUNT', 'eboot.bin'), true);
   assert.equal(backportFileDelivered('FPKG', 'fakelib/libkernel.sprx'), false);
   assert.equal(backportFileDelivered('SHADOWMOUNT', 'fakelib2/LIBKERNEL.SPRX'), false);

@@ -18,7 +18,7 @@ test('client binaries publish only through the explicit manual workflow', async 
   const workflow = await readFile('.github/workflows/client-release.yml', 'utf8');
   assert.match(workflow, /^on:\s*\n\s+workflow_dispatch:/m);
   assert.doesNotMatch(workflow, /^\s+(?:push|pull_request|schedule):/m);
-  assert.match(workflow, /PS5LibraryCompanion-unsigned\.ipa/);
+  assert.match(workflow, /PS5LibraryCompanion\.ipa/);
   assert.match(workflow, /ps5library-agent\.elf/);
   assert.match(workflow, /CODE_SIGNING_ALLOWED=NO/);
   assert.match(workflow, /if: \$\{\{ inputs\.publish_release \}\}/);

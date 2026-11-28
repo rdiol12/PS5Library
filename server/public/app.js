@@ -455,6 +455,9 @@ const watchPreparations = () =>
           observation.details?.title ||
           String(observation.path).split(/[\\/]/).filter(Boolean).at(-1),
         progress: { stage: watchStages[observation.state] },
+        downloadedBytes:
+          observation.state === 'HASHING' ? observation.details?.hashedBytes : undefined,
+        totalBytes: observation.state === 'HASHING' ? observation.details?.totalBytes : undefined,
       })),
   );
 const preparationItems = () => [
@@ -582,7 +585,7 @@ function nav() {
       </label>
       <div class="header-tools">
         <span class="server-state ${presence.toLowerCase()}"><i></i>${status}</span>
-        <details class="notification-menu">
+        <details class="notification-menu" ${state.noticesOpen ? 'open' : ''}>
           <summary aria-label="Notifications">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M6.5 9.5a5.5 5.5 0 0 1 11 0c0 6 2.5 6.5 2.5 6.5H4s2.5-.5 2.5-6.5Z"/>
@@ -605,9 +608,45 @@ const onConsole = (g) =>
   );
 const onServer = (g) =>
   g.releases.some((r) => r.kind !== 'DLC' && (r.sources?.length || 0 || r.artifacts?.length || 0));
+// Games the console reports that the server has no copy of. They are not in the catalog, so the
+// console's page builds them from its own list.
+function consoleOnlyGames() {
+  const known = new Set(state.catalog.flatMap((g) => g.releases.map((r) => r.id))),
+    games = new Map();
+  for (const entry of state.library) {
+    if (entry.state !== 'READY_ON_PS5' || !entry.gameId || known.has(entry.releaseId)) continue;
+    const game = games.get(entry.gameId) || {
+      id: entry.gameId,
+      title: entry.title,
+      titleId: entry.titleId,
+      genres: [],
+      consoleOnly: true,
+      coverUrl: `/api/v1/artwork/${entry.gameId}/cover?v=console`,
+      heroUrl: `/api/v1/artwork/${entry.gameId}/hero?v=console`,
+      releases: [],
+    };
+    if (!game.releases.some((r) => r.id === entry.releaseId))
+      game.releases.push({
+        id: entry.releaseId,
+        kind: 'BASE',
+        version: entry.version,
+        sources: [],
+        artifacts: [],
+        backports: [],
+      });
+    games.set(entry.gameId, game);
+  }
+  return [...games.values()];
+}
+const gameById = (id) =>
+  state.catalog.find((g) => g.id === id) || consoleOnlyGames().find((g) => g.id === id);
 function catalogGames() {
   const query = state.query.trim().toLowerCase();
-  return state.catalog
+  return (
+    state.page === 'My library'
+      ? [...state.catalog, ...consoleOnlyGames()].sort((a, b) => a.title.localeCompare(b.title))
+      : state.catalog
+  )
     .filter(
       (g) =>
         !query ||
@@ -851,6 +890,23 @@ function progress(job) {
       : ['ERROR', 'CANCELLED'].includes(job.state)
         ? ''
         : '<progress aria-label="Removing game"></progress><p>Removing the game from your PS5.</p>';
+  if (job.kind === 'BACKPORT_SYNC') {
+    const terminal = ['COMPLETED', 'ERROR', 'CANCELLED'].includes(job.state),
+      stage = terminal ? friendly(job.state) : job.progress?.stage || 'Updating backport',
+      measured = jobBytes(job),
+      known = Boolean(measured);
+    const bar = terminal
+      ? ''
+      : `<progress
+          aria-label="${esc(stage)}"
+          max="${known ? measured.totalBytes : 1}"
+          ${known ? `value="${measured.completedBytes}"` : ''}
+        ></progress>`;
+    const metrics = known
+      ? `${Math.floor((measured.completedBytes * 100) / measured.totalBytes)}% · ${bytes(measured.completedBytes)} / ${bytes(measured.totalBytes)}`
+      : esc(stage);
+    return `<h4>${esc(stage)}</h4>${bar}<p class="metrics">${metrics}</p>`;
+  }
   if (job.kind === 'BUILD') {
     const p = job.progress,
       terminal = ['COMPLETED', 'ERROR', 'CANCELLED'].includes(job.state),
@@ -1081,7 +1137,7 @@ function downloadJob(job) {
     terminal = terminalJob(job),
     queued = job.state === 'QUEUED' && ['DOWNLOAD', 'BUILD'].includes(job.kind),
     ready = ['COMPLETED', 'READY_ON_PS5'].includes(job.state),
-    stage = ['BUILD', 'WATCH'].includes(job.kind)
+    stage = ['BUILD', 'WATCH', 'BACKPORT_SYNC'].includes(job.kind)
       ? job.progress?.stage || friendly(job.state)
       : job.kind === 'TRANSFER' && job.state === 'TRANSFERRING'
         ? 'Downloading to ' + (job.location?.split(' / ')[0] || 'PS5')
@@ -1106,7 +1162,7 @@ function downloadJob(job) {
     else actions += `<button data-dismiss-job="${esc(job.id)}">Dismiss</button>`;
   } else if (job.kind === 'BUILD' && !terminal && state.user?.role === 'ADMIN') {
     actions = `<button data-control="${esc(job.id)}" data-command="cancel">Cancel</button>`;
-  } else if (job.kind === 'TRANSFER' && !terminal) {
+  } else if ((job.kind === 'TRANSFER' || job.kind === 'BACKPORT_SYNC') && !terminal) {
     actions = `<button data-control="${esc(job.id)}" data-command="cancel">Cancel</button>`;
   } else if (terminal) {
     actions = `<button data-dismiss-job="${esc(job.id)}">Dismiss</button>`;
@@ -2254,6 +2310,8 @@ const runtimeSettingCopy = {
   community: 'Allow optional Community Master features.',
   newDownloads: 'Accept new download and preparation requests. Active work continues.',
   homeUpdateBridge: 'Allow native Home update requests when the update agent is configured.',
+  externalMetadata:
+    'Experimental: fill missing descriptions, genre, release date and score from playstationdb.com. Game titles are sent to that site; nothing is stored.',
   autoCreateBackport:
     'Experimental: create 4.50 compatibility files before FPKG builds only when the game has no backport folder. Existing folders are skipped. Console testing is still required. Applies to builds starting next.',
   quotaBytes: 'Maximum managed storage used by this server. Set 0 for unlimited.',
@@ -2713,11 +2771,51 @@ function managerConfigurationView(m) {
       (item) => `<div>
         <span><strong>${esc(item.label)}</strong><code>${esc(item.env)}</code></span>
         <span class="setting-lock ${item.secret ? 'secret' : ''}">
-          ${item.secret ? 'Secret hidden' : 'Restart required'}
+          ${
+            item.secret
+              ? item.configured === false
+                ? 'Not set'
+                : state.revealedSecrets?.[item.key] != null
+                  ? `<code>${esc(state.revealedSecrets[item.key])}</code>
+                     <button type="button" data-hide-secret="${esc(item.key)}">Hide</button>`
+                  : `Secret hidden
+                     <button type="button" data-reveal-secret="${esc(item.key)}">Reveal</button>`
+              : item.editable
+                ? item.key === 'DUMP_AUTO_PREPARE'
+                  ? `<select name="${esc(item.key)}" data-original="${esc(item.value)}">
+                       ${['FPKG', 'SHADOWMOUNT', 'BOTH']
+                         .map(
+                           (mode) =>
+                             `<option ${mode === item.value ? 'selected' : ''}>${mode}</option>`,
+                         )
+                         .join('')}
+                     </select>`
+                  : `<input
+                       name="${esc(item.key)}"
+                       value="${esc(item.value)}"
+                       data-original="${esc(item.value)}"
+                       maxlength="2000"
+                       autocomplete="off"
+                       spellcheck="false"
+                       aria-label="${esc(item.label)}"
+                     >`
+                : item.value
+                  ? `<code>${esc(item.value)}</code>`
+                  : 'Not set'
+          }
         </span>
       </div>`,
     )
     .join('');
+  const environmentFooter = runtime.environmentEdits
+    ? `<footer>
+        <span>Saving validates the values, stores them and restarts the server.</span>
+        <button class="primary" type="submit">Save and restart server</button>
+      </footer>`
+    : `<p class="restart-note">
+        Editing is off. Set <code>ALLOW_ENVIRONMENT_EDITS=true</code> for the server in Docker
+        Compose and recreate it to change these values here.
+      </p>`;
 
   return `<section class="system-section runtime-panel">
     <header>
@@ -2740,14 +2838,17 @@ function managerConfigurationView(m) {
     <header>
       <div>
         <h2>Environment &amp; restart settings</h2>
-        <p>Infrastructure paths, origins and credentials stay outside the browser.</p>
+        <p>Current values from the server environment. Secrets stay hidden until revealed.</p>
       </div>
       <span>${locked.length} settings</span>
     </header>
-    <div class="restart-setting-list">${lockedSettings}</div>
+    <form id="environment-settings">
+      <div class="restart-setting-list">${lockedSettings}</div>
+      ${environmentFooter}
+    </form>
     <p class="restart-note">
-      Edit these values in the server environment, then restart or recreate the affected service.
-      Secret values are never returned to this page.
+      Ports, directories and secrets are fixed by Docker Compose and the server environment.
+      Secrets are sent only when an administrator reveals one, and each reveal is logged.
     </p>
   </section>`;
 }
@@ -3061,11 +3162,22 @@ function connect() {
   };
 }
 async function details(id) {
-  state.game = state.catalog.find((g) => g.id === id);
+  state.game = gameById(id);
   if (!state.game?.releases?.length)
     throw Error('No downloadable releases are available for this game');
   state.release = state.game.releases.find(installedEntry) || state.game.releases[0];
   state.plan = null;
+  const opened = state.game;
+  if (!opened.external && state.settings?.externalMetadata !== false)
+    api(`/games/${id}/external`)
+      .then((found) => {
+        if (!found.external) return;
+        opened.external = found.external;
+        if (!opened.description && found.description) opened.description = found.description;
+        if (!opened.genres?.length && found.genre) opened.genres = [found.genre];
+        if (state.game === opened) drawDetails();
+      })
+      .catch(() => undefined);
   detailVineUntil = Date.now() + 800;
   drawDetails();
   await updatePlan(false);
@@ -3144,6 +3256,7 @@ function releaseActions(r) {
 }
 function trailerPanel(g) {
   let content;
+  const streamed = (g.external?.videos || []).find((id) => /^[\w-]{11}$/.test(id));
   if (g.trailer) {
     content = `<video
       controls
@@ -3165,7 +3278,19 @@ function trailerPanel(g) {
       g.trailerState === 'ERROR'
         ? '<p class="error">Preparation failed. Choose a valid MP4 and try again.</p>'
         : '';
-    content = `<p>On PS5, highlight this game for five seconds to play its trailer with sound.</p>
+    content = streamed
+      ? `<p>This trailer is streamed from YouTube. On PS5, highlight the game for five seconds to play it with sound; the phone apps play it muted on the game page.</p>
+      <iframe
+        class="trailer-embed"
+        src="https://www.youtube-nocookie.com/embed/${streamed}"
+        title="Trailer for ${esc(g.title)}"
+        loading="lazy"
+        referrerpolicy="strict-origin-when-cross-origin"
+        allow="encrypted-media; picture-in-picture; fullscreen"
+        allowfullscreen
+      ></iframe>
+      ${upload.replace('Add an authorized MP4 trailer', 'Replace it with your own MP4 trailer')}${error}`
+      : `<p>On PS5, highlight this game for five seconds to play its trailer with sound.</p>
       ${upload}${error}`;
   }
 
@@ -3247,7 +3372,7 @@ async function uploadTrailer(file) {
   });
   await refresh(false);
   if (state.game?.id === id) {
-    state.game = state.catalog.find((g) => g.id === id);
+    state.game = gameById(id);
     drawDetails();
   }
   toast('Trailer queued for preparation');
@@ -3356,6 +3481,18 @@ function drawDetails() {
           <div class="facts">
             ${esc(g.publisher || '')} · ${esc(g.developer || '')}<br>
             ${esc((g.genres || []).join(' / '))}
+            ${
+              g.external?.releaseDate || g.external?.metacritic
+                ? `<br>${esc(
+                    [
+                      g.external.releaseDate ? `Released ${g.external.releaseDate}` : '',
+                      g.external.metacritic ? `Metacritic ${g.external.metacritic}` : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · '),
+                  )}`
+                : ''
+            }
           </div>
           <div class="detail-selectors">
             <label>Release<select id="release-select">${releaseOptions(g, r)}</select></label>
@@ -3385,6 +3522,15 @@ async function showRemotePlay(id) {
   }
 }
 document.addEventListener('dragstart', queueDragStart);
+// The notification menu is re-rendered on every dismiss and refresh; remember if it is open.
+document.addEventListener(
+  'toggle',
+  (event) => {
+    if (event.target.classList?.contains('notification-menu'))
+      state.noticesOpen = event.target.open;
+  },
+  true,
+);
 document.addEventListener('dragover', queueDragOver);
 document.addEventListener('drop', queueDrop);
 document.addEventListener('dragend', () => {
@@ -3460,6 +3606,22 @@ document.addEventListener('submit', async (event) => {
         }
         throw error;
       }
+    } else if (form.id === 'environment-settings') {
+      const values = {};
+      for (const field of form.querySelectorAll('[name][data-original]'))
+        if (field.value.trim() !== field.dataset.original) values[field.name] = field.value.trim();
+      if (!Object.keys(values).length) {
+        toast('No environment changes to save');
+        return;
+      }
+      if (
+        !globalThis.confirm(
+          `Save ${Object.keys(values).join(', ')} and restart the server now? Running builds reattach after the restart.`,
+        )
+      )
+        return;
+      await api('/admin/environment', 'PATCH', { values });
+      toast('Saved. The server is restarting; this page reconnects in a few seconds.');
     } else if (form.id === 'community-request') {
       await api('/admin/community/request', 'POST', { displayName: data.displayName });
       await refresh();
@@ -3471,7 +3633,7 @@ document.addEventListener('submit', async (event) => {
         );
       await api(`/games/${id}/shares`, 'PUT', { userIds });
       await refresh(false);
-      state.game = state.catalog.find((game) => game.id === id);
+      state.game = gameById(id);
       drawDetails();
       toast('Game access updated');
     } else if (form.dataset.rename) {
@@ -3520,6 +3682,21 @@ document.addEventListener('click', async (event) => {
     }
     if (b.dataset.dismissNotice) {
       dismissNotice(b.dataset.dismissNotice);
+      return;
+    }
+    if (b.dataset.revealSecret) {
+      // Fetched one at a time on request and kept only in memory for this page session.
+      const revealed = await api('/admin/runtime-settings/reveal', 'POST', {
+        key: b.dataset.revealSecret,
+      });
+      state.revealedSecrets = { ...state.revealedSecrets, [revealed.key]: revealed.value };
+      render();
+      return;
+    }
+    if (b.dataset.hideSecret) {
+      const { [b.dataset.hideSecret]: _hidden, ...rest } = state.revealedSecrets || {};
+      state.revealedSecrets = rest;
+      render();
       return;
     }
     if (b.dataset.appearance) {
@@ -3581,7 +3758,7 @@ document.addEventListener('click', async (event) => {
       const id = state.game.id;
       await api(`/games/${id}/sharing`, 'PATCH', { shared: false });
       await refresh(false);
-      state.game = state.catalog.find((game) => game.id === id);
+      state.game = gameById(id);
       setDialog(sharingView(await api(`/games/${id}/shares`)), 'input,button');
       toast('Server-wide sharing stopped');
     }
@@ -3595,7 +3772,7 @@ document.addEventListener('click', async (event) => {
           await api(`/games/${id}/trailer`, 'DELETE');
           dialog.close();
           await refresh(false);
-          state.game = state.catalog.find((g) => g.id === id);
+          state.game = gameById(id);
           drawDetails();
           toast('Trailer removed');
         },
@@ -3942,6 +4119,9 @@ dialog.addEventListener('cancel', (event) => {
 dialog.addEventListener('close', () => {
   pendingConfirmation = null;
   dialog.classList.remove('closing');
+  // A closed dialog stays in the page, so anything playing in it has to be stopped by hand.
+  for (const frame of dialog.querySelectorAll('iframe')) frame.remove();
+  for (const video of dialog.querySelectorAll('video')) video.pause();
 });
 setInterval(async () => {
   if (state.user && savedDataVisible() && !refreshing)
@@ -3968,7 +4148,7 @@ setInterval(() => {
     refresh(false)
       .then(() => {
         if (dialog.open && state.game?.id === id) {
-          state.game = state.catalog.find((g) => g.id === id);
+          state.game = gameById(id);
           const panel = document.querySelector('#trailer-panel');
           if (panel) panel.outerHTML = trailerPanel(state.game);
         }

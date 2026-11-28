@@ -5,8 +5,8 @@
 #define PS5LIBRARY_NATIVE_CONTENT_VERSION "01.000.000"
 #endif
 namespace ps5library {
-inline constexpr const char *appVersion = "0.2.92";
-inline constexpr int64_t appBuild = 2026101115;
+inline constexpr const char *appVersion = "0.2.109";
+inline constexpr int64_t appBuild = 2026112801;
 inline constexpr const char *nativeContentVersion = PS5LIBRARY_NATIVE_CONTENT_VERSION;
 inline constexpr const char *nativeTitleId = "PPSA99051";
 inline constexpr const char *nativeContentId = "UP9000-PPSA99051_00-PS5LIBRARYHOMETE";

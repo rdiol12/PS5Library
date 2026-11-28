@@ -10,18 +10,19 @@ public static class Backports
     public static bool LibraryPath(string path) =>
         Regex.IsMatch(path, "^fakelib2?/", RegexOptions.IgnoreCase);
 
-    public static void KeepPackageLibraries(string root)
+    // An FPKG is built clean and its backport tree is delivered beside it. ShadowMountPlus removes
+    // these providers from an installed package's backport fakelib itself, so they are not shipped.
+    public static void DropPackageProvidedLibraries(string root)
     {
         foreach (var file in Files.Enumerate(root).ToArray())
         {
             var relative = Path.GetRelativePath(root, file).Replace('\\', '/').ToLowerInvariant();
             if (
-                !LibraryPath(relative)
-                || relative
-                    is "fakelib/libkernel.sprx"
-                        or "fakelib2/libkernel.sprx"
-                        or "fakelib/libsceampr.sprx"
-                        or "fakelib/libsceplaygo.sprx"
+                relative
+                is "fakelib/libkernel.sprx"
+                    or "fakelib2/libkernel.sprx"
+                    or "fakelib/libsceampr.sprx"
+                    or "fakelib/libsceplaygo.sprx"
             )
                 File.Delete(file);
         }
@@ -42,7 +43,7 @@ public static class Backports
                         new object?[]
                         {
                             p.Delivery == "INTEGRATED" ? "backport-v6-integrated"
-                            : p.InstallationMethod == "FPKG" ? "backport-v8-embedded-game-files"
+                            : p.InstallationMethod == "FPKG" ? "backport-v9-external-game-files"
                             : "backport-v7-complete-overlay",
                             p.Id,
                             p.TitleId,

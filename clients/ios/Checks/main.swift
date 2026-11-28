@@ -32,14 +32,13 @@ let dump = try game("dump", releases: """
 """)
 let legacy = try game("legacy")
 let games = [older, legacy, newer, dump]
-assert(GameCollection.saved.select(games).map(\.id) == ["older"])
 assert(GameCollection.server.rawValue == "Server Library")
 assert(GameCollection.server.select(games).map(\.id) == ["dump", "older"])
 assert(dump.serverAvailable && !dump.serverCached)
 assert(GameCollection.recent.select(games).map(\.id) == ["newer", "older", "dump"])
 assert(GameCollection.updated.select(games).map(\.id) == ["newer"])
 assert(GameCollection.all.select(games, query: "brew05002", genre: "Action").map(\.id) == ["older"])
-assert(legacy.saved == nil && !legacy.serverAvailable && !legacy.serverCached)
+assert(!legacy.serverAvailable && !legacy.serverCached)
 let inventory = try JSONDecoder().decode(
     [LibraryEntry].self,
     from: Data(
@@ -301,7 +300,6 @@ let snapshot = Snapshot(
     consoleId: "console"
 )
 let restored = try JSONDecoder().decode(Snapshot.self, from: JSONEncoder().encode(snapshot))
-assert(GameCollection.saved.select(restored.games).map(\.id) == ["older"])
 assert(restored.games[0].ready(in: restored.library))
 let partialRefresh = RefreshBatch(games: nil, consoles: nil, jobs: [], installations: nil)
 assert(partialRefresh.reachable)

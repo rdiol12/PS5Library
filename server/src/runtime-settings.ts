@@ -1,7 +1,8 @@
 import { z } from 'zod';
-import type { Config } from './config.js';
+import { editableEnvironmentKeys, type Config } from './config.js';
 import type { DB } from './db.js';
 import { AppError } from './security/errors.js';
+import { setExternalMetadata } from './metadata/playstationdb.js';
 
 const settingsSchema = z
   .object({
@@ -11,6 +12,7 @@ const settingsSchema = z
     community: z.boolean(),
     newDownloads: z.boolean(),
     homeUpdateBridge: z.boolean(),
+    externalMetadata: z.boolean(),
     autoCreateBackport: z.boolean(),
     quotaBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     diskMarginBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -33,6 +35,12 @@ const immediate = [
   ['community', 'ENABLE_COMMUNITY_FEATURES', 'Community features', 'boolean'],
   ['newDownloads', 'ENABLE_NEW_DOWNLOADS', 'New downloads', 'boolean'],
   ['homeUpdateBridge', 'ENABLE_HOME_UPDATE_BRIDGE', 'Home update bridge', 'boolean'],
+  [
+    'externalMetadata',
+    'ENABLE_EXTERNAL_METADATA',
+    'PlayStationDB game details (Experimental)',
+    'boolean',
+  ],
   [
     'autoCreateBackport',
     'AUTO_CREATE_BACKPORT',
@@ -66,6 +74,16 @@ const restart = [
   ['PACKAGE_WORKER_TOKEN', 'Package worker token', true],
   ['OPERATOR_TOKEN', 'Operator token', true],
 ] as const;
+const secretKeys = restart.filter((item) => item[2]).map(([key]) => key as string);
+export const revealSecretRequest = z
+  .object({ key: z.string().refine((key) => secretKeys.includes(key)) })
+  .strict();
+// Administrator-only, one setting per request; the caller is responsible for auditing the reveal.
+export const secretSettingValue = (config: Config, key: string) => {
+  if (!secretKeys.includes(key)) throw new AppError('NOT_FOUND', 404);
+  const raw = (config as unknown as Record<string, unknown>)[key];
+  return raw == null ? '' : String(raw);
+};
 export const runtimeSettingDefinitions = (config: Config, value: RuntimeSettings) => [
   ...immediate.map(([key, env, label, type]) => ({
     key,
@@ -83,15 +101,23 @@ export const runtimeSettingDefinitions = (config: Config, value: RuntimeSettings
         }
       : {}),
   })),
-  ...restart.map(([key, label, secret = false]) => ({
-    key,
-    env: key,
-    label,
-    type: secret ? 'secret' : 'string',
-    apply: 'restart' as const,
-    writable: false,
-    ...(secret ? { secret: true } : {}),
-  })),
+  ...restart.map(([key, label, secret = false]) => {
+    const raw = (config as unknown as Record<string, unknown>)[key],
+      text = Array.isArray(raw) ? raw.join(', ') : raw == null ? '' : String(raw);
+    return {
+      key,
+      env: key,
+      label,
+      type: secret ? 'secret' : 'string',
+      apply: 'restart' as const,
+      writable: false,
+      editable:
+        config.ALLOW_ENVIRONMENT_EDITS === true &&
+        (editableEnvironmentKeys as readonly string[]).includes(key),
+      // Secrets only report whether they are set; their values never leave the server.
+      ...(secret ? { secret: true, configured: text !== '' } : { value: text }),
+    };
+  }),
 ];
 
 const defaults = (config: Config): RuntimeSettings => ({
@@ -108,7 +134,9 @@ const apply = (config: Config, value: RuntimeSettings) => {
     community: value.community,
     newDownloads: value.newDownloads,
     homeUpdateBridge: value.homeUpdateBridge,
+    externalMetadata: value.externalMetadata,
   });
+  setExternalMetadata(value.externalMetadata);
   config.QUOTA_BYTES = value.quotaBytes;
   config.DISK_MARGIN_BYTES = value.diskMarginBytes;
   config.AUTO_CREATE_BACKPORT = value.autoCreateBackport;
@@ -136,7 +164,11 @@ export async function runtimeSettings(db: DB, config: Config) {
   apply(config, current.settings);
   let snapshot = current;
   return {
-    get: () => ({ ...snapshot, definitions: runtimeSettingDefinitions(config, snapshot.settings) }),
+    get: () => ({
+      ...snapshot,
+      environmentEdits: config.ALLOW_ENVIRONMENT_EDITS === true,
+      definitions: runtimeSettingDefinitions(config, snapshot.settings),
+    }),
     update: async (
       expectedRevision: number,
       patch: z.infer<typeof runtimeSettingsPatch>,

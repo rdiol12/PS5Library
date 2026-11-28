@@ -38,6 +38,7 @@ export async function downloadFile(options: {
   signal?: AbortSignal;
   progress: (value: Progress) => Promise<void>;
   onVerify?: () => Promise<void>;
+  verifyProgress?: (completedBytes: number) => Promise<void>;
 }) {
   await mkdir(path.dirname(options.partPath), { recursive: true });
   let offset = (await stat(options.partPath).catch(() => null))?.size ?? 0;
@@ -82,7 +83,7 @@ export async function downloadFile(options: {
     } else if (response.statusCode === 416 && offset === options.size) {
       response.destroy();
       await options.onVerify?.();
-      if ((await fileHash(options.partPath)) !== options.sha256)
+      if ((await fileHash(options.partPath, options.verifyProgress)) !== options.sha256)
         throw new AppError('CORRUPT_INPUT');
       return { size: options.size, sha256: options.sha256 };
     } else {
@@ -147,7 +148,7 @@ export async function downloadFile(options: {
     etaSeconds: 0,
   });
   await options.onVerify?.();
-  const digest = await fileHash(options.partPath);
+  const digest = await fileHash(options.partPath, options.verifyProgress);
   if (digest !== options.sha256) throw new AppError('CORRUPT_INPUT');
   return { size: received, sha256: digest };
 }

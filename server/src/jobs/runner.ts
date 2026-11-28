@@ -10,6 +10,7 @@ import { within } from '../security/paths.js';
 import { sourceHeaders } from '../sources/connectors.js';
 import { AppError } from '../security/errors.js';
 import { jobEvent } from './events.js';
+import { processBackportSyncJobs, scanBackportDeliveries } from './backport-sync.js';
 import { packageBuildAllowed, prepare, publishArtifact } from './preparation.js';
 import { mediaDirectory, prepareTrailer } from '../artwork/trailers.js';
 import type { Logger } from '../logging.js';
@@ -33,7 +34,7 @@ export const queuedJobControlAllowed = (
   action: 'pause' | 'resume' | 'cancel',
 ) =>
   !['COMPLETED', 'CANCELLED', 'ERROR'].includes(state) &&
-  (kind === 'DOWNLOAD' || (kind === 'BUILD' && action === 'cancel'));
+  (kind === 'DOWNLOAD' || ((kind === 'BUILD' || kind === 'BACKPORT_SYNC') && action === 'cancel'));
 export const retryableJobFailure = (attempts: number, code: string) =>
   attempts < 2 &&
   [
@@ -468,8 +469,16 @@ export async function startRunner(db: DB, config: Config, logs: Logger) {
               },
               onVerify: async () => {
                 await db.query(
-                  "UPDATE jobs SET state='VERIFYING',speed_bytes_per_second=0,updated_at=now() WHERE id=$1",
+                  "UPDATE jobs SET state='VERIFYING',downloaded_bytes=0,speed_bytes_per_second=0,eta_seconds=NULL,updated_at=now() WHERE id=$1",
                   [row.id],
+                );
+                await jobEvent(db, row.id);
+              },
+              // The byte counter restarts for the check so the bar shows how much is verified.
+              verifyProgress: async (completedBytes) => {
+                await db.query(
+                  "UPDATE jobs SET downloaded_bytes=$2,updated_at=now() WHERE id=$1 AND state='VERIFYING'",
+                  [row.id, completedBytes],
                 );
                 await jobEvent(db, row.id);
               },
@@ -625,6 +634,29 @@ export async function startRunner(db: DB, config: Config, logs: Logger) {
       ),
     2000,
   );
+  // Backport auto-sync runs independently of the BullMQ build queue: it watches every game's
+  // backport folder, installs dropped files and regenerates the profile as a BACKPORT_SYNC job.
+  // Single-flight so one sync's long hash never overlaps the next scan.
+  let backportBusy = false;
+  const backportTimer = setInterval(() => {
+    if (backportBusy) return;
+    backportBusy = true;
+    void (async () => {
+      try {
+        await scanBackportDeliveries(db, config, logs);
+        await processBackportSyncJobs(db, config, logs);
+      } catch (e) {
+        await logs.write(
+          'ERROR',
+          'backport.loop_failed',
+          e instanceof Error ? e.message : 'backport loop failed',
+          {},
+        );
+      } finally {
+        backportBusy = false;
+      }
+    })();
+  }, 30_000);
   const diagnostics = async () => {
     let timeout: NodeJS.Timeout | undefined;
     try {
@@ -666,6 +698,7 @@ export async function startRunner(db: DB, config: Config, logs: Logger) {
     diagnostics,
     close: async () => {
       clearInterval(timer);
+      clearInterval(backportTimer);
       await worker.close();
       await closeIdleQueue(queue);
     },

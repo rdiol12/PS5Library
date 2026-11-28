@@ -156,10 +156,16 @@ public static class BackportDiscovery
                 plain = Modules.ToElf(source);
             }
             catch (WorkerError error)
-                when ((error.Code == "UNSUPPORTED_INPUT" || error.Code == "INPUT_TOO_LARGE")
+                when ((
+                        error.Code == "UNSUPPORTED_INPUT"
+                        || error.Code == "INPUT_TOO_LARGE"
+                        || error.Code == "ENCRYPTED_INPUT"
+                    )
                     && libraryFiles.Length + suppliedFiles.Length > 0
                 )
             {
+                // A supplied backport set is authoritative; a game module we cannot decrypt or parse
+                // simply isn't an auto-patch candidate, so skip it rather than failing the profile.
                 continue;
             }
             byte[] patched;

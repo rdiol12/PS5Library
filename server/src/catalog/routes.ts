@@ -36,6 +36,7 @@ import {
 import { runWorker } from '../library/inspect.js';
 import { cacheArtwork, fetchArtwork, placeholder } from '../artwork/cache.js';
 import { quotaMaximum } from '../storage/usage.js';
+import { externalImage, externalInfo } from '../metadata/playstationdb.js';
 
 export async function reconcileArtifactCache(db: DB, dataDir: string) {
   const removed = { artifacts: 0, backports: 0 };
@@ -49,7 +50,12 @@ export async function reconcileArtifactCache(db: DB, dataDir: string) {
     for (const row of rows) {
       if (!row.relative_path) continue;
       const info = await stat(path.join(dataDir, row.relative_path)).catch(() => null);
-      if (!info?.isFile() || info.size !== Number(row.size)) missing.push(row.id);
+      // A backport overlay is a folder; its recorded size is the tree's, not the entry's.
+      const present =
+        table === 'backport_artifacts' && info?.isDirectory()
+          ? true
+          : info?.isFile() && info.size === Number(row.size);
+      if (!present) missing.push(row.id);
     }
     if (missing.length) {
       await db.query(`UPDATE ${table} SET deleted_at=now() WHERE id = ANY($1::uuid[])`, [missing]);
@@ -207,68 +213,91 @@ export async function catalogFor(db: DB, userId: string, query = '') {
   const hashes = new Map(artwork.map((a) => [`${a.game_id}:${a.kind}`, a.sha256]));
   const image = (id: string, kind: string) =>
     `/api/v1/artwork/${id}/${kind}?v=${hashes.get(`${id}:${kind}`) ?? 'missing'}`;
-  return games.map((g) => ({
-    ...g.metadata,
-    artwork: undefined,
-    id: g.id,
-    title: g.title,
-    titleId: g.title_id,
-    saved: g.saved,
-    shared: g.shared,
-    canManage: g.user_id === userId,
-    addedAt: g.created_at,
-    recentlyUpdated: releases.some(
-      (r) =>
-        r.game_id === g.id &&
-        (r.kind === 'UPDATE' ||
-          (r.kind === 'BASE' &&
-            new Date(r.created_at).getTime() > new Date(g.created_at).getTime() + 1000)),
-    ),
-    trailerState: trailers.find((t) => t.game_id === g.id && t.kind === 'trailer')?.state ?? null,
-    trailer:
-      trailers
-        .filter((t) => t.game_id === g.id && t.kind === 'trailer' && t.state === 'READY')
-        .map((t) => ({
-          url: `/api/v1/trailers/${g.id}`,
-          sha256: t.sha256,
-          size: t.size,
-          duration: t.duration,
-        }))[0] ?? null,
-    musicState: trailers.find((t) => t.game_id === g.id && t.kind === 'music')?.state ?? null,
-    music:
-      trailers
-        .filter((t) => t.game_id === g.id && t.kind === 'music' && t.state === 'READY')
-        .map((t) => ({
-          url: `/api/v1/music/${g.id}`,
-          sha256: t.sha256,
-          size: t.size,
-          duration: t.duration,
-        }))[0] ?? null,
-    coverUrl: image(g.id, 'cover'),
-    heroUrl: image(g.id, 'hero'),
-    iconUrl: image(g.id, 'icon'),
-    screenshotUrls: (g.metadata.artwork?.screenshots ?? []).map((_: unknown, i: number) =>
-      image(g.id, `screenshot-${i}`),
-    ),
-    releases: releases
-      .filter((r) => r.game_id === g.id)
-      .sort(
-        (a, b) =>
-          ['BASE', 'UPDATE', 'DLC'].indexOf(a.kind) - ['BASE', 'UPDATE', 'DLC'].indexOf(b.kind) ||
-          b.version.localeCompare(a.version) ||
-          String(a.metadata.title ?? '').localeCompare(String(b.metadata.title ?? '')),
-      )
-      .map((r) => ({
-        ...r.metadata,
-        id: r.id,
-        contentId: r.content_id,
-        version: r.version,
-        kind: r.kind,
-        sources: r.sources,
-        artifacts: r.artifacts,
-        backports: r.backports,
-      })),
-  }));
+  return games.map((g) => {
+    // Live third-party details only fill gaps; the dump's own metadata always wins.
+    const external = externalInfo(g.title, {
+      titleId: g.title_id,
+      contentId: g.metadata.contentId,
+    });
+    return {
+      ...g.metadata,
+      description: g.metadata.description || external?.description || undefined,
+      genres: g.metadata.genres?.length
+        ? g.metadata.genres
+        : external?.genre
+          ? [external.genre]
+          : g.metadata.genres,
+      external: external
+        ? {
+            source: external.source,
+            url: external.url,
+            releaseDate: external.releaseDate,
+            metacritic: external.metacritic,
+            imageUrl: external.imageUrl,
+            videos: external.videos,
+          }
+        : null,
+      artwork: undefined,
+      id: g.id,
+      title: g.title,
+      titleId: g.title_id,
+      saved: g.saved,
+      shared: g.shared,
+      canManage: g.user_id === userId,
+      addedAt: g.created_at,
+      recentlyUpdated: releases.some(
+        (r) =>
+          r.game_id === g.id &&
+          (r.kind === 'UPDATE' ||
+            (r.kind === 'BASE' &&
+              new Date(r.created_at).getTime() > new Date(g.created_at).getTime() + 1000)),
+      ),
+      trailerState: trailers.find((t) => t.game_id === g.id && t.kind === 'trailer')?.state ?? null,
+      trailer:
+        trailers
+          .filter((t) => t.game_id === g.id && t.kind === 'trailer' && t.state === 'READY')
+          .map((t) => ({
+            url: `/api/v1/trailers/${g.id}`,
+            sha256: t.sha256,
+            size: t.size,
+            duration: t.duration,
+          }))[0] ?? null,
+      musicState: trailers.find((t) => t.game_id === g.id && t.kind === 'music')?.state ?? null,
+      music:
+        trailers
+          .filter((t) => t.game_id === g.id && t.kind === 'music' && t.state === 'READY')
+          .map((t) => ({
+            url: `/api/v1/music/${g.id}`,
+            sha256: t.sha256,
+            size: t.size,
+            duration: t.duration,
+          }))[0] ?? null,
+      coverUrl: image(g.id, 'cover'),
+      heroUrl: image(g.id, 'hero'),
+      iconUrl: image(g.id, 'icon'),
+      screenshotUrls: (g.metadata.artwork?.screenshots ?? []).map((_: unknown, i: number) =>
+        image(g.id, `screenshot-${i}`),
+      ),
+      releases: releases
+        .filter((r) => r.game_id === g.id)
+        .sort(
+          (a, b) =>
+            ['BASE', 'UPDATE', 'DLC'].indexOf(a.kind) - ['BASE', 'UPDATE', 'DLC'].indexOf(b.kind) ||
+            b.version.localeCompare(a.version) ||
+            String(a.metadata.title ?? '').localeCompare(String(b.metadata.title ?? '')),
+        )
+        .map((r) => ({
+          ...r.metadata,
+          id: r.id,
+          contentId: r.content_id,
+          version: r.version,
+          kind: r.kind,
+          sources: r.sources,
+          artifacts: r.artifacts,
+          backports: r.backports,
+        })),
+    };
+  });
 }
 export async function resolveSuccessfulProfileNotices(
   db: DB,
@@ -1391,14 +1420,30 @@ export async function catalogRoutes(
       ).rowCount
     )
       throw new AppError('NOT_FOUND', 404);
+    // A game with no wide picture of its own shows its cover there rather than nothing.
     const row = (
-      await db.query('SELECT * FROM artwork WHERE game_id=$1 AND kind=$2', [
-        params.gameId,
-        params.kind,
-      ])
+      await db.query(
+        `SELECT * FROM artwork
+         WHERE game_id=$1 AND kind=$2
+         LIMIT 1`,
+        [params.gameId, params.kind],
+      )
     ).rows[0];
     reply.header('cache-control', 'private, max-age=3600').header('vary', 'Authorization, Cookie');
-    if (!row) return reply.type('image/svg+xml').send(placeholder);
+    if (!row) {
+      // A package source carries no artwork; show the external picture instead, passed through
+      // without being stored.
+      const title = (
+        await db.query<{ title: string }>('SELECT title FROM games WHERE id=$1', [params.gameId])
+      ).rows[0]?.title;
+      const picture =
+        title && !params.kind.startsWith('screenshot')
+          ? await externalImage(title, params.kind === 'hero')
+          : null;
+      if (picture) return reply.type(picture.type).send(picture.body);
+      // Not cached: artwork can arrive moments later, under this same address.
+      return reply.header('cache-control', 'no-store').type('image/svg+xml').send(placeholder);
+    }
     const etag = `"${row.sha256}"`;
     reply.header('etag', etag);
     if (req.headers['if-none-match'] === etag) return reply.code(304).send();
