@@ -6573,3 +6573,10 @@ html[data-appearance='mono'] {
 .restart-setting-list select {
   min-width: min(24rem, 100%);
 }
+
+.trailer-embed {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  border-radius: 8px;
+}

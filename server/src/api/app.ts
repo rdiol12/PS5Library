@@ -31,7 +31,7 @@ import { queuedJobControlAllowed, reorderQueuedJobs, startRunner } from '../jobs
 import { packageBuildAllowed, preparationRoutes } from '../jobs/preparation.js';
 import { installationRoutes } from '../jobs/installations.js';
 import { jobEvent, jobJSON, liveJobEvents } from '../jobs/events.js';
-import { externalInfo } from '../metadata/playstationdb.js';
+import { externalInfo, externalInfoNow } from '../metadata/playstationdb.js';
 import { resolveTrailerStream, streamHeight } from '../metadata/trailer-stream.js';
 import { AppError } from '../security/errors.js';
 import { uuid } from '../../../shared/schemas/index.js';
@@ -165,6 +165,11 @@ export async function createApp(
   await migrate(db);
   await reconcileArtifactCache(db, config.DATA_DIR);
   const settings = await runtimeSettings(db, config);
+  // The lookup cache lives in memory only, so it is refilled in the background after a restart.
+  void db
+    .query<{ title: string }>('SELECT title FROM games')
+    .then((result) => result.rows.forEach((row) => externalInfo(row.title)))
+    .catch(() => undefined);
   const logs = await serverLogger(config.DATA_DIR);
   const startedAt = new Date().toISOString();
   const requestStarted = new WeakMap<object, bigint>();
@@ -186,7 +191,7 @@ export async function createApp(
       reply.header('strict-transport-security', 'max-age=31536000');
     reply.header(
       'content-security-policy',
-      "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     if (
       req.url.startsWith('/api/') ||
@@ -818,6 +823,36 @@ export async function createApp(
     throw new AppError('NOT_FOUND', 404);
   };
   const streamLimit = { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } };
+  // Looks one game up right away, for a page opened before the background refill reached it.
+  app.get('/api/v1/games/:id/external', streamLimit, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    if (!config.features.externalMetadata) throw new AppError('NOT_FOUND', 404);
+    const game = (
+      await db.query<{ title: string }>(
+        `SELECT g.title
+         FROM games g
+         WHERE g.id = $1
+           AND EXISTS (
+             SELECT 1 FROM game_content_access a WHERE a.game_id = g.id AND a.user_id = $2
+           )`,
+        [uuid.parse((req.params as { id: string }).id), (await auth.user(req)).id],
+      )
+    ).rows[0];
+    const info = game ? await externalInfoNow(game.title) : null;
+    if (!info) throw new AppError('NOT_FOUND', 404);
+    return {
+      description: info.description,
+      genre: info.genre,
+      external: {
+        source: info.source,
+        url: info.url,
+        releaseDate: info.releaseDate,
+        metacritic: info.metacritic,
+        imageUrl: info.imageUrl,
+        videos: info.videos,
+      },
+    };
+  });
   app.get('/api/v1/games/:id/trailer-stream', streamLimit, async (req, reply) => {
     reply.header('cache-control', 'no-store');
     return trailerStream(

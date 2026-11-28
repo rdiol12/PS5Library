@@ -36,7 +36,7 @@ import {
 import { runWorker } from '../library/inspect.js';
 import { cacheArtwork, fetchArtwork, placeholder } from '../artwork/cache.js';
 import { quotaMaximum } from '../storage/usage.js';
-import { externalInfo } from '../metadata/playstationdb.js';
+import { externalImage, externalInfo } from '../metadata/playstationdb.js';
 
 export async function reconcileArtifactCache(db: DB, dataDir: string) {
   const removed = { artifacts: 0, backports: 0 };
@@ -50,7 +50,12 @@ export async function reconcileArtifactCache(db: DB, dataDir: string) {
     for (const row of rows) {
       if (!row.relative_path) continue;
       const info = await stat(path.join(dataDir, row.relative_path)).catch(() => null);
-      if (!info?.isFile() || info.size !== Number(row.size)) missing.push(row.id);
+      // A backport overlay is a folder; its recorded size is the tree's, not the entry's.
+      const present =
+        table === 'backport_artifacts' && info?.isDirectory()
+          ? true
+          : info?.isFile() && info.size === Number(row.size);
+      if (!present) missing.push(row.id);
     }
     if (missing.length) {
       await db.query(`UPDATE ${table} SET deleted_at=now() WHERE id = ANY($1::uuid[])`, [missing]);
@@ -1419,7 +1424,17 @@ export async function catalogRoutes(
       ])
     ).rows[0];
     reply.header('cache-control', 'private, max-age=3600').header('vary', 'Authorization, Cookie');
-    if (!row) return reply.type('image/svg+xml').send(placeholder);
+    if (!row) {
+      // A package source carries no artwork; show the external picture instead, passed through
+      // without being stored.
+      const title = (
+        await db.query<{ title: string }>('SELECT title FROM games WHERE id=$1', [params.gameId])
+      ).rows[0]?.title;
+      const picture =
+        title && !params.kind.startsWith('screenshot') ? await externalImage(title) : null;
+      if (picture) return reply.type(picture.type).send(picture.body);
+      return reply.type('image/svg+xml').send(placeholder);
+    }
     const etag = `"${row.sha256}"`;
     reply.header('etag', etag);
     if (req.headers['if-none-match'] === etag) return reply.code(304).send();

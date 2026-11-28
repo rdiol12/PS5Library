@@ -42,6 +42,21 @@ export const slugFor = (title: string) =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+const EDITION =
+  /\s*[:–-]?\s*\b(complete|enhanced|definitive|deluxe|standard|ultimate|gold|game of the year|goty)(\s+edition)?\s*$/i;
+// Addresses to try for a title, most specific first: the site drops apostrophes for some games
+// and lists special editions under the plain game name.
+export function slugCandidates(title: string) {
+  const plain = title.replace(EDITION, '');
+  return [
+    ...new Set(
+      [title.replace(/['’]/g, ''), title, plain.replace(/['’]/g, ''), plain]
+        .map(slugFor)
+        .filter((slug) => slug.length >= 3),
+    ),
+  ];
+}
+
 const decode = (text: string) =>
   text
     .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
@@ -73,7 +88,8 @@ export function parseGamePage(html: string, slug: string): ExternalGameInfo | nu
       // Ignore a malformed block; the page simply yields less.
     }
   }
-  if (!name || slugFor(name) !== slug) return null;
+  // The site is inconsistent about apostrophes in its addresses, so hyphens are not compared.
+  if (!name || slugFor(name).replace(/-/g, '') !== slug.replace(/-/g, '')) return null;
   const lines = decode(
     html.replace(/<script.*?<\/script>|<style.*?<\/style>/gs, ' ').replace(/<[^>]+>/g, '\n'),
   )
@@ -127,19 +143,41 @@ function remember(slug: string, value: ExternalGameInfo | null, ttl: number) {
   pages.set(slug, { expires: Date.now() + ttl, value });
 }
 
+const absent = (error: unknown) =>
+  error instanceof Error && (error.message === 'HTTP 404' || error.message === 'HTTP 500');
+
+// Fetches the first address that holds this title and remembers the outcome under its key.
+async function lookup(title: string): Promise<ExternalGameInfo | null> {
+  const key = slugFor(title);
+  let value: ExternalGameInfo | null = null,
+    ttl = MISS_TTL;
+  for (const slug of slugCandidates(title)) {
+    try {
+      value = parseGamePage(await get(`/games/${slug}/`), slug);
+      if (value) {
+        ttl = PAGE_TTL;
+        break;
+      }
+    } catch (error) {
+      // The site answers 500 for a game it does not list; anything else is retried sooner.
+      if (!absent(error)) {
+        value = pages.get(key)?.value ?? null;
+        ttl = ERROR_TTL;
+        break;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  remember(key, value, ttl);
+  return value;
+}
+
 async function drain() {
   if (running) return;
   running = true;
   try {
     while (enabled && queue.length) {
-      const slug = queue.shift()!;
-      try {
-        remember(slug, parseGamePage(await get(`/games/${slug}/`), slug), PAGE_TTL);
-      } catch (error) {
-        // No page for this title is a normal miss; anything else is retried sooner.
-        if (error instanceof Error && error.message === 'HTTP 404') remember(slug, null, MISS_TTL);
-        else remember(slug, pages.get(slug)?.value ?? null, ERROR_TTL);
-      }
+      await lookup(queue.shift()!);
       await new Promise((resolve) => setTimeout(resolve, REQUEST_GAP));
     }
   } finally {
@@ -147,16 +185,54 @@ async function drain() {
   }
 }
 
+const immediate = new Map<string, Promise<ExternalGameInfo | null>>();
+// For a single game a person is looking at right now: skips the background queue. Concurrent
+// callers share one request.
+export async function externalInfoNow(title: string): Promise<ExternalGameInfo | null> {
+  if (!enabled) return null;
+  const key = slugFor(title);
+  if (!key) return null;
+  const known = pages.get(key);
+  if (known && known.expires > Date.now()) return known.value;
+  let pending = immediate.get(key);
+  if (!pending) {
+    const queued = queue.findIndex((item) => slugFor(item) === key);
+    if (queued >= 0) queue.splice(queued, 1);
+    pending = lookup(title).finally(() => immediate.delete(key));
+    immediate.set(key, pending);
+  }
+  return pending;
+}
+
 // Synchronous: returns what is already known and schedules a background lookup otherwise, so a
 // catalog request never waits on the remote site.
 export function externalInfo(title: string): ExternalGameInfo | null {
   if (!enabled) return null;
-  const slug = slugFor(title);
-  if (!slug) return null;
-  const known = pages.get(slug);
-  if ((!known || known.expires <= Date.now()) && !queue.includes(slug) && queue.length < 500) {
-    queue.push(slug);
+  const key = slugFor(title);
+  if (!key) return null;
+  const known = pages.get(key);
+  if (
+    (!known || known.expires <= Date.now()) &&
+    !queue.some((item) => slugFor(item) === key) &&
+    queue.length < 500
+  ) {
+    queue.push(title);
     void drain();
   }
   return known?.value ?? null;
+}
+
+// The game's picture, passed straight through to the caller; nothing is written to disk.
+export async function externalImage(title: string) {
+  const url = (await externalInfoNow(title))?.imageUrl;
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+    const type = response.headers.get('content-type')?.split(';')[0] ?? '';
+    if (!response.ok || !/^image\/(jpeg|png|webp|avif)$/.test(type)) return null;
+    const body = Buffer.from(await response.arrayBuffer());
+    return body.length && body.length <= 8 * 1024 ** 2 ? { type, body } : null;
+  } catch {
+    return null;
+  }
 }

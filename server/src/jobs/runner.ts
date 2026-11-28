@@ -469,8 +469,16 @@ export async function startRunner(db: DB, config: Config, logs: Logger) {
               },
               onVerify: async () => {
                 await db.query(
-                  "UPDATE jobs SET state='VERIFYING',speed_bytes_per_second=0,updated_at=now() WHERE id=$1",
+                  "UPDATE jobs SET state='VERIFYING',downloaded_bytes=0,speed_bytes_per_second=0,eta_seconds=NULL,updated_at=now() WHERE id=$1",
                   [row.id],
+                );
+                await jobEvent(db, row.id);
+              },
+              // The byte counter restarts for the check so the bar shows how much is verified.
+              verifyProgress: async (completedBytes) => {
+                await db.query(
+                  "UPDATE jobs SET downloaded_bytes=$2,updated_at=now() WHERE id=$1 AND state='VERIFYING'",
+                  [row.id, completedBytes],
                 );
                 await jobEvent(db, row.id);
               },

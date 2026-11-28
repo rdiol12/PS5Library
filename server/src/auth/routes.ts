@@ -12,6 +12,7 @@ import { AppError } from '../security/errors.js';
 const frontendRoutes = new Set([
   'GET /api/v1/device/status',
   'GET /api/v1/device/catalog',
+  'GET /api/v1/device/games/:id/trailer-stream',
   'GET /api/v1/device/jobs',
   'GET /api/v1/device/consoles',
   'GET /api/v1/device/profile',

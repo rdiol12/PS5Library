@@ -246,7 +246,7 @@ test('game details select the installed release and do not plan another transfer
   );
   await vm.runInContext("details('game')", context);
   assert.equal(vm.runInContext('state.release.id', context), 'installed');
-  assert.equal(context.calls.length, 0);
+  assert.equal(context.calls.filter(([url]: [string]) => !url.endsWith('/external')).length, 0);
   assert.match(dialog.innerHTML, /Installed on this PS5/);
   assert.doesNotMatch(dialog.innerHTML, /Send to PS5|Download to this PS5|Unsupported method/);
   assert.doesNotMatch(

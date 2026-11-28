@@ -86,6 +86,15 @@ static SDL_Rect crop(const Json &value) {
   return {static_cast<int>(value["x"].number()), static_cast<int>(value["y"].number()),
           static_cast<int>(value["w"].number()), static_cast<int>(value["h"].number())};
 }
+// What a release actually downloads: the prepared package when the server has one, since a
+// source folder can be far larger than the package built from it.
+static Json releaseSize(const Json &release) {
+  const auto artifacts = release["artifacts"];
+  for (size_t i = 0; i < artifacts.size(); i++)
+    if (artifacts[i]["format"].string() == "pkg" && !artifacts[i]["size"].null())
+      return artifacts[i]["size"];
+  return release["size"];
+}
 static std::string localSession(const fs::path &config) {
   std::ifstream file(config.parent_path() / "cheat-session");
   std::string token;
@@ -1872,8 +1881,8 @@ class Storefront {
     std::string metadata = selected["platform"].string("PS5");
     if (!release["version"].string().empty())
       metadata += "  /  Version " + release["version"].string();
-    if (!release["size"].null())
-      metadata += "  /  " + amount(release["size"].number());
+    if (!releaseSize(release).null())
+      metadata += "  /  " + amount(releaseSize(release).number());
     draw().label(metadata, x, copyY + 122, Tokens::caption, Tokens::muted, 760, 2);
     button(
         "home-open", ready(selected) ? "Play or manage" : "View game", {x, copyY + 174, 270, 64}, 1,
@@ -1979,8 +1988,8 @@ class Storefront {
     std::string metadata = selected["platform"].string("PS5");
     if (!release["version"].string().empty())
       metadata += "  /  Version " + release["version"].string();
-    if (!release["size"].null())
-      metadata += "  /  " + amount(release["size"].number());
+    if (!releaseSize(release).null())
+      metadata += "  /  " + amount(releaseSize(release).number());
     draw().label(metadata, x, copyY + 122, Tokens::caption, Tokens::muted, 780, 2);
     draw().icon("cross", x + 12, copyY + 179, Tokens::white);
     draw().label("Open game", x + 36, copyY + 166, Tokens::control, Tokens::white);
@@ -2055,10 +2064,11 @@ class Storefront {
                  Tokens::accent);
     draw().label(g["description"].string("Description unavailable."), x,
                  y + Tokens::title * 2 + Tokens::gap * 4, Tokens::body, Tokens::muted, 1080, 3);
-    draw().label(releaseLabel(r) + "    " +
-                     (r["size"].null() ? "Size not scanned" : amount(r["size"].number())) + "    " +
-                     friendly(r["kind"].string()) + "    " + r["region"].string("Region unknown"),
-                 x, y + 300, Tokens::body);
+    draw().label(
+        releaseLabel(r) + "    " +
+            (releaseSize(r).null() ? "Size not scanned" : amount(releaseSize(r).number())) +
+            "    " + friendly(r["kind"].string()) + "    " + r["region"].string("Region unknown"),
+        x, y + 300, Tokens::body);
     draw().label(list(r["languages"]) + "    " + g["publisher"].string(), x, y + 343,
                  Tokens::caption, Tokens::muted);
     auto library = model_["library"];
@@ -2735,7 +2745,7 @@ class Storefront {
     gameImage(g, {artX, artY, 238, 310});
     draw().label(g["title"].string(), artX, artY + 334, Tokens::heading, Tokens::white, 260, 3);
     draw().label(releaseLabel(r), artX, artY + 432, Tokens::caption, Tokens::accent, 260, 2);
-    draw().label(r["size"].null() ? "Size unavailable" : amount(r["size"].number()), artX,
+    draw().label(releaseSize(r).null() ? "Size unavailable" : amount(releaseSize(r).number()), artX,
                  artY + 486, Tokens::body, Tokens::muted);
     const float contentX = x + 324, contentW = 850;
     draw().label("Version", contentX, artY, Tokens::heading);
@@ -2938,7 +2948,7 @@ class Storefront {
         const auto i = choices[n];
         button(
             "version:" + std::to_string(i),
-            releaseLabel(releases[i]) + "  /  " + amount(releases[i]["size"].number()),
+            releaseLabel(releases[i]) + "  /  " + amount(releaseSize(releases[i]).number()),
             {x + 40, top + 70 + (n % 4) * 80, w - 80, 64}, 2 + static_cast<int>(n % 4),
             [this, i] {
               release_ = i;
@@ -3046,7 +3056,7 @@ class Storefront {
       float textX = x + 300;
       draw().label(g["title"].string(), textX, top, Tokens::heading, Tokens::white,
                    static_cast<int>(w - 340), 2);
-      draw().label(releaseLabel(r) + "  ·  " + amount(r["size"].number()), textX, top + 90,
+      draw().label(releaseLabel(r) + "  ·  " + amount(releaseSize(r).number()), textX, top + 90,
                    Tokens::body);
       draw().label(selectedConsole()["name"].string(), textX, top + 140, Tokens::body);
       auto stores = plan_["storage"];

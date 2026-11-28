@@ -298,10 +298,10 @@ struct ArtworkView: View {
             Image(systemName: "gamecontroller.fill").font(.largeTitle)
                 .foregroundStyle(accent.opacity(0.3))
             if let image {
-                Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode).frame(
-                    maxWidth: .infinity,
-                    maxHeight: .infinity
-                ).transition(.opacity)
+                // Drawn as an overlay so a picture larger than its slot is cropped, never laid out.
+                Color.clear.overlay {
+                    Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode)
+                }.transition(.opacity)
             }
         }
         .clipped().allowsHitTesting(false).accessibilityHidden(true)
@@ -718,14 +718,9 @@ struct GameDetails: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 24) {
-                ZStack(alignment: .bottomLeading) {
-                    AutoTrailerView(game: game)
-                    LinearGradient(
-                        colors: [.clear, appBackground.opacity(0.35), appBackground],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    VStack(alignment: .leading, spacing: 9) {
+                // The artwork is a background so a picture wider than the screen cannot widen the
+                // layout and push the title off to the side.
+                VStack(alignment: .leading, spacing: 9) {
                         if store.ready(game) {
                             StatusPill(
                                 text: "Ready on PS5",
@@ -744,12 +739,23 @@ struct GameDetails: View {
                             Text(genres.prefix(3).joined(separator: " | "))
                                 .font(.subheadline.weight(.semibold)).foregroundStyle(secondaryText)
                         }
-                    }.padding(18).padding(.top, dynamicTypeSize.isAccessibilitySize ? 180 : 150)
                 }
+                .padding(18).padding(.top, dynamicTypeSize.isAccessibilitySize ? 180 : 150)
                 .frame(
                     maxWidth: .infinity,
-                    minHeight: dynamicTypeSize.isAccessibilitySize ? 460 : 360
+                    minHeight: dynamicTypeSize.isAccessibilitySize ? 460 : 360,
+                    alignment: .bottomLeading
                 )
+                .background {
+                    ZStack {
+                        AutoTrailerView(game: game)
+                        LinearGradient(
+                            colors: [.clear, appBackground.opacity(0.35), appBackground],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)

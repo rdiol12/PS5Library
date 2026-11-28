@@ -455,6 +455,9 @@ const watchPreparations = () =>
           observation.details?.title ||
           String(observation.path).split(/[\\/]/).filter(Boolean).at(-1),
         progress: { stage: watchStages[observation.state] },
+        downloadedBytes:
+          observation.state === 'HASHING' ? observation.details?.hashedBytes : undefined,
+        totalBytes: observation.state === 'HASHING' ? observation.details?.totalBytes : undefined,
       })),
   );
 const preparationItems = () => [
@@ -3128,6 +3131,17 @@ async function details(id) {
     throw Error('No downloadable releases are available for this game');
   state.release = state.game.releases.find(installedEntry) || state.game.releases[0];
   state.plan = null;
+  const opened = state.game;
+  if (!opened.external && state.settings?.externalMetadata !== false)
+    api(`/games/${id}/external`)
+      .then((found) => {
+        if (!found.external) return;
+        opened.external = found.external;
+        if (!opened.description && found.description) opened.description = found.description;
+        if (!opened.genres?.length && found.genre) opened.genres = [found.genre];
+        if (state.game === opened) drawDetails();
+      })
+      .catch(() => undefined);
   detailVineUntil = Date.now() + 800;
   drawDetails();
   await updatePlan(false);
@@ -3206,6 +3220,7 @@ function releaseActions(r) {
 }
 function trailerPanel(g) {
   let content;
+  const streamed = (g.external?.videos || []).find((id) => /^[\w-]{11}$/.test(id));
   if (g.trailer) {
     content = `<video
       controls
@@ -3227,7 +3242,19 @@ function trailerPanel(g) {
       g.trailerState === 'ERROR'
         ? '<p class="error">Preparation failed. Choose a valid MP4 and try again.</p>'
         : '';
-    content = `<p>On PS5, highlight this game for five seconds to play its trailer with sound.</p>
+    content = streamed
+      ? `<p>This trailer is streamed from YouTube. On PS5, highlight the game for five seconds to play it with sound; the phone apps play it muted on the game page.</p>
+      <iframe
+        class="trailer-embed"
+        src="https://www.youtube-nocookie.com/embed/${streamed}"
+        title="Trailer for ${esc(g.title)}"
+        loading="lazy"
+        referrerpolicy="strict-origin-when-cross-origin"
+        allow="encrypted-media; picture-in-picture; fullscreen"
+        allowfullscreen
+      ></iframe>
+      ${upload.replace('Add an authorized MP4 trailer', 'Replace it with your own MP4 trailer')}${error}`
+      : `<p>On PS5, highlight this game for five seconds to play its trailer with sound.</p>
       ${upload}${error}`;
   }
 
@@ -4056,6 +4083,9 @@ dialog.addEventListener('cancel', (event) => {
 dialog.addEventListener('close', () => {
   pendingConfirmation = null;
   dialog.classList.remove('closing');
+  // A closed dialog stays in the page, so anything playing in it has to be stopped by hand.
+  for (const frame of dialog.querySelectorAll('iframe')) frame.remove();
+  for (const video of dialog.querySelectorAll('video')) video.pause();
 });
 setInterval(async () => {
   if (state.user && savedDataVisible() && !refreshing)

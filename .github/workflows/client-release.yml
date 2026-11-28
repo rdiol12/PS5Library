@@ -18,6 +18,10 @@ on:
         options:
           - new tag
           - update existing
+      update_origin:
+        description: Server address the PS5 Home tile checks for app updates (for example http://192.168.1.10:3150)
+        type: string
+        default: http://127.0.0.1:3150
 
 permissions:
   contents: read
@@ -147,22 +151,37 @@ jobs:
       - run: npm ci
       - run: node scripts/upstream.mjs LibProsperoPKG-drakmor UFS2Tool
       - run: npm run build:worker
-      - name: Build the app ELF
+      - name: Build the app and agent
         run: |
           docker build -f docker/ps5-build.Dockerfile -t ps5library-build:0.43 .
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/workspace" ps5library-build:0.43 \
             cmake -S ps5 -B ps5/build/ps5 -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=/opt/ps5-payload-sdk/toolchain/prospero.cmake
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/workspace" ps5library-build:0.43 \
-            cmake --build ps5/build/ps5 --target ps5library -j 2
-      - name: Package the app FPKG
+            cmake --build ps5/build/ps5 -j 2
+      - name: Build the native title (PPSA99051)
+        env:
+          UPDATE_ORIGIN: ${{ inputs.update_origin }}
+        run: |
+          git clone https://github.com/blackbearreloaded/ProsperoTV.git upstream/ProsperoTV
+          git -C upstream/ProsperoTV checkout fdee81e746308f7f2b27f7914a84eab678088fb6
+          # The repository's .dockerignore keeps docker/ out of the default context.
+          context="$(mktemp -d)"
+          mkdir "$context/docker"
+          cp docker/json-c-0.19-release.patch "$context/docker/"
+          docker build -f docker/ps5-native-build.Dockerfile -t ps5library-native-build:0.2 "$context"
+          # App 0.2.92 is content version 01.092.000.
+          patch="$(sed -n 's/.*appVersion = "[0-9]*\.[0-9]*\.\([0-9]*\)".*/\1/p' ps5/common/version.hpp)"
+          content="$(printf '01.%03d.000' "$patch")"
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e 'GIT_CONFIG_VALUE_0=*' \
+            -e PUBLIC_URL="${UPDATE_ORIGIN%/}" -v "$PWD:/workspace" -w /workspace ps5library-native-build:0.2 \
+            python3 ps5/native/build.py --upstream upstream/ProsperoTV --mode app --content-version "$content"
+      - name: Package the native app FPKG
         run: |
           worker="worker/bin/Release/net10.0/PS5Library.Worker.dll"
-          rm -rf fpkg-src fpkg-out
-          mkdir -p fpkg-src/sce_sys fpkg-out artifacts
-          dotnet "$worker" elf-to-fself ps5/build/ps5/ps5library.elf fpkg-src/eboot.bin
-          cp ps5/assets/param.json fpkg-src/sce_sys/param.json
-          cp ps5/assets/icon0.png fpkg-src/sce_sys/icon0.png
-          dotnet "$worker" build fpkg-src fpkg-out FPKG
+          rm -rf fpkg-out
+          mkdir -p fpkg-out artifacts
+          dotnet "$worker" build ps5/build/native-app/dist/PPSA99051 fpkg-out FPKG
           pkg="$(ls fpkg-out/*.pkg | head -1)"
           test -f "$pkg"
           cp "$pkg" artifacts/PS5Library.fpkg
