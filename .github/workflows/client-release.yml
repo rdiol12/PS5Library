@@ -158,6 +158,15 @@ jobs:
             cmake -S ps5 -B ps5/build/ps5 -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=/opt/ps5-payload-sdk/toolchain/prospero.cmake
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/workspace" ps5library-build:0.43 \
             cmake --build ps5/build/ps5 -j 2
+      # The native build needs three files that cannot be published. They live in a private
+      # repository named by the NATIVE_ASSETS_REPOSITORY variable, read with a deploy key.
+      - name: Fetch the private native build inputs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ vars.NATIVE_ASSETS_REPOSITORY }}
+          ssh-key: ${{ secrets.NATIVE_ASSETS_DEPLOY_KEY }}
+          path: native-assets
+          persist-credentials: false
       - name: Build the native title (PPSA99051)
         env:
           UPDATE_ORIGIN: ${{ inputs.update_origin }}
@@ -175,7 +184,8 @@ jobs:
           docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e 'GIT_CONFIG_VALUE_0=*' \
             -e PUBLIC_URL="${UPDATE_ORIGIN%/}" -v "$PWD:/workspace" -w /workspace ps5library-native-build:0.2 \
-            python3 ps5/native/build.py --upstream upstream/ProsperoTV --mode app --content-version "$content"
+            python3 ps5/native/build.py --upstream upstream/ProsperoTV --mode app --content-version "$content" \
+            --selection-audio native-assets/snd0.at9 --right-sprx native-assets/right.sprx
       - name: Package the native app FPKG
         run: |
           worker="worker/bin/Release/net10.0/PS5Library.Worker.dll"

@@ -212,7 +212,7 @@ export async function catalogFor(db: DB, userId: string, query = '') {
   ]);
   const hashes = new Map(artwork.map((a) => [`${a.game_id}:${a.kind}`, a.sha256]));
   const image = (id: string, kind: string) =>
-    `/api/v1/artwork/${id}/${kind}?v=${hashes.get(`${id}:${kind}`) ?? 'missing'}`;
+    `/api/v1/artwork/${id}/${kind}?v=${hashes.get(`${id}:${kind}`) ?? (kind === 'hero' ? hashes.get(`${id}:cover`) : undefined) ?? 'missing'}`;
   return games.map((g) => {
     // Live third-party details only fill gaps; the dump's own metadata always wins.
     const external = externalInfo(g.title);
@@ -1417,11 +1417,15 @@ export async function catalogRoutes(
       ).rowCount
     )
       throw new AppError('NOT_FOUND', 404);
+    // A game with no wide picture of its own shows its cover there rather than nothing.
     const row = (
-      await db.query('SELECT * FROM artwork WHERE game_id=$1 AND kind=$2', [
-        params.gameId,
-        params.kind,
-      ])
+      await db.query(
+        `SELECT * FROM artwork
+         WHERE game_id=$1 AND (kind=$2 OR ($2='hero' AND kind='cover'))
+         ORDER BY (kind=$2) DESC
+         LIMIT 1`,
+        [params.gameId, params.kind],
+      )
     ).rows[0];
     reply.header('cache-control', 'private, max-age=3600').header('vary', 'Authorization, Cookie');
     if (!row) {
@@ -1433,7 +1437,8 @@ export async function catalogRoutes(
       const picture =
         title && !params.kind.startsWith('screenshot') ? await externalImage(title) : null;
       if (picture) return reply.type(picture.type).send(picture.body);
-      return reply.type('image/svg+xml').send(placeholder);
+      // Not cached: artwork can arrive moments later, under this same address.
+      return reply.header('cache-control', 'no-store').type('image/svg+xml').send(placeholder);
     }
     const etag = `"${row.sha256}"`;
     reply.header('etag', etag);

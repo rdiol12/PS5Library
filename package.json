@@ -38,7 +38,8 @@
     "upstream": "node scripts/upstream.mjs",
     "test:native": "node --env-file=.env --import tsx --test server/tests/native/*.test.ts",
     "check:public-release": "node scripts/check-public-release.mjs",
-    "native:update": "node --env-file-if-exists=.env scripts/native-update.mjs"
+    "native:update": "node --env-file-if-exists=.env scripts/native-update.mjs",
+    "native:release": "pwsh -NoProfile -File scripts/release-native-app.ps1"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
